@@ -170,16 +170,40 @@ pub async fn execute_query(
         let embedding_result = get_workspace_embedding_provider(&state, workspace_id).await;
         let vector_result = get_workspace_vector_storage(&state, workspace_id).await;
 
-        // Check if LLM provider override is requested
+        // Check if LLM provider override is requested (from request or workspace config)
         let llm_override = if let (Some(ref provider), Some(ref model)) =
             (&request.llm_provider, &request.llm_model)
         {
+            // Case 1: Explicit provider/model in request
             debug!(provider = %provider, model = %model, "Creating LLM provider override from request");
             Some(
-                edgequake_llm::ProviderFactory::create_llm_provider(provider, model).map_err(
+                crate::safety_limits::create_safe_llm_provider(provider, model).map_err(
                     |e| ApiError::Internal(format!("Failed to create LLM provider: {}", e)),
                 )?,
             )
+        } else if let Some(ref ws) = workspace {
+            // Case 2: Use workspace LLM config (same as streaming endpoint)
+            if !ws.llm_provider.is_empty() && !ws.llm_model.is_empty() {
+                debug!(
+                    provider = %ws.llm_provider,
+                    model = %ws.llm_model,
+                    "Creating LLM provider override from workspace config"
+                );
+                match crate::safety_limits::create_safe_llm_provider(&ws.llm_provider, &ws.llm_model) {
+                    Ok(provider) => Some(provider),
+                    Err(e) => {
+                        warn!(
+                            provider = %ws.llm_provider,
+                            model = %ws.llm_model,
+                            error = %e,
+                            "Workspace LLM provider failed, falling back to server default"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -317,7 +341,11 @@ pub async fn execute_query(
                 id: chunk.id.clone(),
                 score: chunk.score,
                 rerank_score,
-                snippet: Some(chunk.content.chars().take(200).collect()),
+                snippet: Some(if request.context_only {
+                    chunk.content.clone()
+                } else {
+                    chunk.content.chars().take(200).collect()
+                }),
                 reference_id: Some(ref_id),
                 document_id: chunk.document_id.clone(),
                 file_path: None, // Resolved below via KV metadata lookup
@@ -377,7 +405,11 @@ pub async fn execute_query(
             id: entity.name.clone(),
             score: entity.score,
             rerank_score: None,
-            snippet: Some(entity.description.chars().take(200).collect()),
+            snippet: Some(if request.context_only {
+                entity.description.clone()
+            } else {
+                entity.description.chars().take(200).collect()
+            }),
             reference_id: Some(ref_id),
             document_id: entity.source_document_id.clone(),
             file_path: entity.source_file_path.clone(),

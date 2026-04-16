@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use edgequake_llm::{
-    ChatMessage, CompletionOptions, EmbeddingProvider, LLMProvider, LLMResponse, LlmError,
-    ProviderFactory, Result,
+    ChatMessage, CompletionOptions, ConfigProviderType, EmbeddingProvider, LLMProvider, LLMResponse,
+    LlmError, ProviderConfig, ProviderFactory, Result,
 };
 use futures::stream::BoxStream;
 
@@ -332,10 +332,52 @@ fn check_api_key(provider_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Create an LLM provider, using EDGEQUAKE_LLM_TIMEOUT to override the 120s default
+/// when the openai-compatible provider is used with local models.
+fn create_llm_provider_with_timeout(provider_name: &str, model: &str) -> Result<Arc<dyn LLMProvider>> {
+    let timeout: Option<u64> = std::env::var("EDGEQUAKE_LLM_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok());
+
+    // Only override for openai-compatible when timeout is explicitly set
+    if let Some(timeout_secs) = timeout {
+        if provider_name == "openai-compatible" {
+            if let Ok(base_url) = std::env::var("OPENAI_COMPATIBLE_BASE_URL") {
+                tracing::info!(
+                    provider = provider_name,
+                    model = model,
+                    timeout_secs = timeout_secs,
+                    base_url = %base_url,
+                    "Using custom LLM timeout for openai-compatible provider"
+                );
+                let mut config = ProviderConfig {
+                    name: "openai-compatible".to_string(),
+                    display_name: "OpenAI Compatible".to_string(),
+                    provider_type: ConfigProviderType::OpenAICompatible,
+                    base_url: Some(base_url),
+                    default_llm_model: Some(model.to_string()),
+                    timeout_seconds: timeout_secs,
+                    ..Default::default()
+                };
+                if let Ok(api_key) = std::env::var("OPENAI_COMPATIBLE_API_KEY") {
+                    if !api_key.is_empty() {
+                        config.api_key = Some(api_key);
+                    }
+                }
+                let (llm, _) = ProviderFactory::from_config_with_model(&config, Some(model))?;
+                return Ok(llm);
+            }
+        }
+    }
+
+    // Default path for all other cases
+    ProviderFactory::create_llm_provider(provider_name, model)
+}
+
 /// Create a safety-limited LLM provider from workspace configuration.
 pub fn create_safe_llm_provider(provider_name: &str, model: &str) -> Result<Arc<dyn LLMProvider>> {
     check_api_key(provider_name)?;
-    let inner = ProviderFactory::create_llm_provider(provider_name, model)?;
+    let inner = create_llm_provider_with_timeout(provider_name, model)?;
     let config = SafetyLimitsConfig::from_env();
 
     tracing::info!(

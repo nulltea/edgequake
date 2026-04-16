@@ -110,7 +110,11 @@ pub struct PipelineConfig {
 fn default_chunk_timeout() -> u64 {
     // WHY 180: Ollama and other local LLMs need more time for entity extraction
     // prompts. Testing showed gemma3 can take 90-120s per chunk. 180s gives margin.
-    180 // 180 seconds default timeout (increased from 60s for local LLM support)
+    // ENV override: EDGEQUAKE_CHUNK_TIMEOUT_SECS for slow local models (e.g. 600).
+    std::env::var("EDGEQUAKE_CHUNK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(180)
 }
 
 fn default_max_retries() -> u32 {
@@ -132,7 +136,10 @@ impl Default for PipelineConfig {
             enable_chunk_embeddings: true,
             enable_entity_embeddings: true,
             enable_relationship_embeddings: true,
-            max_concurrent_extractions: 16,
+            max_concurrent_extractions: std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16),
             // OODA-06: Enable lineage tracking by default
             // WHY: Lineage data is critical for provenance queries. Without it,
             // no chunk↔entity↔document traceability is possible. The overhead is

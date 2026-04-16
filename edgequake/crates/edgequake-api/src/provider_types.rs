@@ -178,6 +178,23 @@ impl AvailableProvidersResponse {
                 },
             },
             ProviderInfo {
+                id: "openai-compatible".to_string(),
+                name: "Aperture".to_string(),
+                description: "OpenAI-compatible endpoint (Aperture, vLLM, llama.cpp)".to_string(),
+                available: std::env::var("OPENAI_COMPATIBLE_BASE_URL").is_ok(),
+                config_requirements: vec![ConfigRequirement {
+                    env_var: "OPENAI_COMPATIBLE_BASE_URL".to_string(),
+                    required: true,
+                    description: "OpenAI-compatible base URL".to_string(),
+                    satisfied: std::env::var("OPENAI_COMPATIBLE_BASE_URL").is_ok(),
+                }],
+                default_models: DefaultModels {
+                    chat_model: "gemma 4 (26B A4B)".to_string(),
+                    embedding_model: String::new(),
+                    embedding_dimension: 0,
+                },
+            },
+            ProviderInfo {
                 id: "anthropic".to_string(),
                 name: "Anthropic".to_string(),
                 description: "Anthropic Claude (Opus 4.6, Sonnet 4.5, Haiku 4.5)".to_string(),

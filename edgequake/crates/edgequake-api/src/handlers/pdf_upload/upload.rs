@@ -368,6 +368,9 @@ pub async fn upload_pdf_document(
         None
     };
 
+    // Use explicit title as filename if provided (e.g. citation-format name from API clients)
+    let filename = options.title.clone().unwrap_or(filename);
+
     let pdf_id = match pdf_storage
         .create_pdf(CreatePdfRequest {
             workspace_id,

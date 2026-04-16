@@ -1,0 +1,346 @@
+"""
+title: EdgeQuake RAG
+author: EdgeQuake
+version: 0.2.0
+description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships.
+"""
+
+import json
+import os
+import tempfile
+import requests
+from typing import Optional
+from pydantic import BaseModel, Field
+
+
+class Tools:
+    class Valves(BaseModel):
+        edgequake_base_url: str = Field(
+            default="http://host.docker.internal:8080",
+            description="EdgeQuake API base URL",
+        )
+        workspace_id: str = Field(
+            default="00000000-0000-0000-0000-000000000003",
+            description="EdgeQuake workspace ID",
+        )
+        tenant_id: str = Field(
+            default="00000000-0000-0000-0000-000000000002",
+            description="EdgeQuake tenant ID",
+        )
+        query_mode: str = Field(
+            default="hybrid",
+            description="Default RAG query mode: naive, local, global, hybrid, mix",
+        )
+
+    def __init__(self):
+        self.valves = self.Valves()
+
+    def _headers(self) -> dict:
+        return {
+            "X-Workspace-ID": self.valves.workspace_id,
+            "X-Tenant-ID": self.valves.tenant_id,
+        }
+
+    def _api(self, method: str, path: str, **kwargs) -> dict:
+        url = f"{self.valves.edgequake_base_url}/api/v1{path}"
+        headers = {**self._headers(), **kwargs.pop("headers", {})}
+        r = requests.request(method, url, headers=headers, timeout=120, **kwargs)
+        r.raise_for_status()
+        return r.json()
+
+    def query_knowledge_base(
+        self,
+        query: str,
+        mode: Optional[str] = None,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Search the EdgeQuake knowledge graph using RAG. Returns retrieved context (chunks, entities, relationships) from ingested documents.
+        The chat model should use this context to generate the answer.
+        Use this tool when the user asks a question that might be answered by the knowledge base.
+
+        :param query: The natural language question to search for.
+        :param mode: Query mode — one of: naive, local, global, hybrid, mix. Leave empty for default.
+        """
+        body = {
+            "query": query,
+            "mode": mode or self.valves.query_mode,
+            "context_only": True,
+        }
+        try:
+            data = self._api("POST", "/query", json=body)
+        except requests.HTTPError as e:
+            return f"EdgeQuake query failed: {e}"
+
+        sources = data.get("sources", [])
+        if not sources:
+            return "No relevant context found in the knowledge base."
+
+        chunks = []
+        entities = []
+        relationships = []
+        seen_docs = set()
+
+        for src in sources:
+            stype = src.get("source_type", "")
+            if stype == "chunk":
+                snippet = src.get("snippet", "")
+                doc = src.get("file_path", "")
+                if snippet:
+                    chunks.append(f"[{doc}]: {snippet}")
+                if doc:
+                    seen_docs.add(doc)
+            elif stype == "entity":
+                name = src.get("id", "")
+                desc = src.get("snippet", "")
+                entities.append(f"- {name}: {desc}")
+            elif stype == "relationship":
+                desc = src.get("snippet", "")
+                relationships.append(f"- {desc}")
+
+        parts = []
+        if chunks:
+            parts.append("**Text chunks:**\n" + "\n\n".join(chunks[:10]))
+        if entities:
+            parts.append("**Entities:**\n" + "\n".join(entities[:15]))
+        if relationships:
+            parts.append("**Relationships:**\n" + "\n".join(relationships[:10]))
+        if seen_docs:
+            parts.append("**Source documents:** " + ", ".join(seen_docs))
+
+        return "\n\n".join(parts)
+
+    def list_documents(
+        self,
+        search: Optional[str] = None,
+        __user__: dict = {},
+    ) -> str:
+        """
+        List documents in the EdgeQuake knowledge base. Optionally filter by search term.
+
+        :param search: Optional search term to filter documents by title or content.
+        """
+        params = {"page_size": 20}
+        if search:
+            params["search"] = search
+        try:
+            data = self._api("GET", "/documents", params=params)
+        except requests.HTTPError as e:
+            return f"Failed to list documents: {e}"
+
+        docs = data.get("documents", data.get("items", []))
+        if not docs:
+            return "No documents found."
+
+        lines = [f"**{len(docs)} document(s):**\n"]
+        for doc in docs:
+            title = doc.get("title", doc.get("filename", "Untitled"))
+            status = doc.get("status", "unknown")
+            doc_id = doc.get("id", doc.get("document_id", ""))
+            lines.append(f"- **{title}** ({status}) `{doc_id}`")
+        return "\n".join(lines)
+
+    def search_entities(
+        self,
+        search: str,
+        label: Optional[str] = None,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Search for entities (people, organizations, technologies, concepts) in the EdgeQuake knowledge graph.
+
+        :param search: Search term to find entities by name.
+        :param label: Optional entity type filter: PERSON, ORGANIZATION, TECHNOLOGY, CONCEPT, EVENT, LOCATION, PRODUCT.
+        """
+        params = {
+            "search": search,
+            "limit": 15,
+        }
+        if label:
+            params["label"] = label
+        try:
+            data = self._api("GET", "/graph/entities", params=params)
+        except requests.HTTPError as e:
+            return f"Entity search failed: {e}"
+
+        entities = data.get("entities", data.get("items", []))
+        if not entities:
+            return f"No entities found for '{search}'."
+
+        lines = [f"**{len(entities)} entities matching '{search}':**\n"]
+        for ent in entities:
+            name = ent.get("name", "")
+            etype = ent.get("label", ent.get("type", ""))
+            desc = ent.get("description", "")[:120]
+            lines.append(f"- **{name}** [{etype}] — {desc}")
+        return "\n".join(lines)
+
+    def explore_entity(
+        self,
+        entity_name: str,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Explore an entity's neighborhood in the knowledge graph — shows all directly connected entities and their relationships.
+
+        :param entity_name: The entity name to explore (e.g. RUST, OPENAI, MACHINE_LEARNING).
+        """
+        try:
+            data = self._api(
+                "GET",
+                f"/graph/entities/{requests.utils.quote(entity_name, safe='')}/neighborhood",
+                params={},
+            )
+        except requests.HTTPError as e:
+            return f"Entity exploration failed: {e}"
+
+        entity = data.get("entity", {})
+        neighbors = data.get("neighbors", data.get("relationships", []))
+
+        parts = [f"**{entity.get('name', entity_name)}** [{entity.get('label', '')}]"]
+        desc = entity.get("description", "")
+        if desc:
+            parts.append(desc[:300])
+
+        if neighbors:
+            parts.append(f"\n**Connections ({len(neighbors)}):**")
+            for rel in neighbors[:15]:
+                src = rel.get("source", rel.get("source_name", ""))
+                tgt = rel.get("target", rel.get("target_name", ""))
+                lbl = rel.get("label", rel.get("relationship", ""))
+                other = tgt if src.upper() == entity_name.upper() else src
+                parts.append(f"- {lbl} → **{other}**")
+        else:
+            parts.append("\nNo connections found.")
+        return "\n".join(parts)
+
+    def upload_text_document(
+        self,
+        content: str,
+        title: Optional[str] = None,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Upload a text document to the EdgeQuake knowledge base for entity extraction and indexing.
+
+        :param content: The full text content of the document.
+        :param title: Optional title for the document.
+        """
+        body = {
+            "content": content,
+
+            "async_processing": True,
+        }
+        if title:
+            body["title"] = title
+        try:
+            data = self._api("POST", "/documents", json=body)
+        except requests.HTTPError as e:
+            return f"Upload failed: {e}"
+
+        doc_id = data.get("document_id", "")
+        status = data.get("status", "unknown")
+        return f"Document uploaded. ID: `{doc_id}`, status: {status}. Processing will continue in the background."
+
+    def upload_pdf(
+        self,
+        file_path: str,
+        title: Optional[str] = None,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Upload a PDF file from the server filesystem to the EdgeQuake knowledge base.
+
+        :param file_path: Absolute path to the PDF file on the server.
+        :param title: Optional title for the document.
+        """
+        if not os.path.isfile(file_path):
+            return f"File not found: {file_path}"
+
+        url = f"{self.valves.edgequake_base_url}/api/v1/documents/pdf"
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (os.path.basename(file_path), f, "application/pdf")}
+                data = {}
+                if title:
+                    data["title"] = title
+                r = requests.post(url, files=files, data=data, headers=self._headers(), timeout=120)
+                r.raise_for_status()
+                resp = r.json()
+        except requests.HTTPError as e:
+            return f"PDF upload failed: {e}"
+        except Exception as e:
+            return f"PDF upload error: {e}"
+
+        pdf_id = resp.get("pdf_id", "")
+        status = resp.get("status", "unknown")
+        pages = resp.get("metadata", {}).get("page_count", "?")
+        return f"PDF uploaded ({pages} pages). ID: `{pdf_id}`, status: {status}. Processing in background."
+
+    def upload_pdf_from_url(
+        self,
+        url: str,
+        author: str,
+        year: str,
+        paper_title: str,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Download a PDF from a URL and upload it to the EdgeQuake knowledge base.
+        The filename follows academic citation format: "Author et al. - Year - Title.pdf"
+
+        :param url: The URL of the PDF to download.
+        :param author: First author's last name (e.g. "Lin").
+        :param year: Publication year (e.g. "2024").
+        :param paper_title: Full paper title.
+        """
+        try:
+            r = requests.get(url, timeout=60, stream=True)
+            r.raise_for_status()
+        except Exception as e:
+            return f"Failed to download PDF from URL: {e}"
+
+        filename = f"{author} et al. - {year} - {paper_title}.pdf"
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            for chunk in r.iter_content(chunk_size=8192):
+                tmp.write(chunk)
+            tmp_path = tmp.name
+
+        try:
+            result = self.upload_pdf(tmp_path, title=filename, __user__=__user__)
+        finally:
+            os.unlink(tmp_path)
+        return result
+
+    def search_relationships(
+        self,
+        relationship_type: Optional[str] = None,
+        __user__: dict = {},
+    ) -> str:
+        """
+        Search relationships between entities in the EdgeQuake knowledge graph.
+
+        :param relationship_type: Optional filter by relationship type (e.g. USES, IMPLEMENTS, PART_OF, RELATED_TO).
+        """
+        params = {"page_size": 20}
+        if relationship_type:
+            params["relationship_type"] = relationship_type
+        try:
+            data = self._api("GET", "/graph/relationships", params=params)
+        except requests.HTTPError as e:
+            return f"Relationship search failed: {e}"
+
+        rels = data.get("items", [])
+        total = data.get("total", len(rels))
+        if not rels:
+            return "No relationships found."
+
+        lines = [f"**{total} relationship(s)** (showing {len(rels)}):\n"]
+        for rel in rels:
+            src = rel.get("src_id", "")
+            tgt = rel.get("tgt_id", "")
+            rtype = rel.get("relation_type", rel.get("label", ""))
+            desc = rel.get("description", "")[:100]
+            lines.append(f"- **{src}** —[{rtype}]→ **{tgt}**{f': {desc}' if desc else ''}")
+        return "\n".join(lines)

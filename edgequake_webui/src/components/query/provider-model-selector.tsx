@@ -118,15 +118,19 @@ export function ProviderModelSelector({
     }, {} as Record<string, { displayName: string; models: typeof llmData.models }>);
   }, [llmData]);
 
-  // Get available provider IDs for filtering
+  // Get available provider IDs for filtering.
+  // Includes providers from the settings endpoint AND any custom providers
+  // loaded from models.toml (which won't appear in the hardcoded settings list).
   const availableProviderIds = useMemo(() => {
-    if (!providers?.llm_providers) return new Set<string>();
-    return new Set(
-      providers.llm_providers
-        .filter((p) => p.available)
-        .map((p) => p.id)
-    );
-  }, [providers]);
+    const settingsIds = providers?.llm_providers
+      ? providers.llm_providers.filter((p) => p.available).map((p) => p.id)
+      : [];
+    // Custom providers from models.toml are available if they appear in the models list
+    const modelProviderIds = llmData?.models
+      ? llmData.models.map((m) => m.provider)
+      : [];
+    return new Set([...settingsIds, ...modelProviderIds]);
+  }, [providers, llmData]);
 
   // Find current selection display info
   const currentSelection = useMemo(() => {
