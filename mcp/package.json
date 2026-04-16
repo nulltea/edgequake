@@ -55,7 +55,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "edgequake-sdk": "^0.1.0",
+    "edgequake-sdk": "file:../sdks/typescript",
     "zod": "^3.24.0"
   },
   "devDependencies": {

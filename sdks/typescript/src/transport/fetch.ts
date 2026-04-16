@@ -106,9 +106,16 @@ export class FetchTransport implements HttpTransport {
   ): Promise<T> {
     const formData = new FormData();
 
-    // WHY: Convert Buffer/ArrayBuffer to Blob for universal FormData compatibility
+    // WHY: Convert Buffer/ArrayBuffer to Blob for universal FormData compatibility.
+    // Pass filename as third arg to append — omitting it causes FormData to
+    // default to "blob", losing the original filename.
     const blob = file instanceof Blob ? file : new Blob([file as BlobPart]);
-    formData.append("file", blob);
+    const fileName = (file as any).name as string | undefined;
+    if (fileName !== undefined) {
+      formData.append("file", blob, fileName);
+    } else {
+      formData.append("file", blob);
+    }
 
     if (metadata) {
       for (const [key, value] of Object.entries(metadata)) {
@@ -136,7 +143,12 @@ export class FetchTransport implements HttpTransport {
 
     for (const file of files) {
       const blob = file instanceof Blob ? file : new Blob([file as BlobPart]);
-      formData.append("files", blob);
+      const fileName = (file as any).name as string | undefined;
+      if (fileName !== undefined) {
+        formData.append("files", blob, fileName);
+      } else {
+        formData.append("files", blob);
+      }
     }
 
     if (metadata) {

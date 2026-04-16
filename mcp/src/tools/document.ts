@@ -98,12 +98,11 @@ export function registerDocumentTools(server: McpServer): void {
         // Determine file type and upload accordingly
         if (fileExt === ".pdf") {
           // Upload as PDF using pdf.upload
-          const blob = new Blob([fileBuffer], { type: "application/pdf" });
-          // Create a File-like object
-          const file = Object.assign(blob, {
-            name: fileName,
-            lastModified: Date.now(),
-          }) as File;
+          // WHY: Use File constructor (not Object.assign on Blob) — File.name is
+          // on the prototype and is read by FormData.append to set the filename.
+          const file = new File([fileBuffer], fileName, {
+            type: "application/pdf",
+          });
 
           const result = await client.documents.pdf.upload(
             file,
@@ -138,11 +137,9 @@ export function registerDocumentTools(server: McpServer): void {
         ) {
           // Upload as text file using uploadFile
           const textContent = fileBuffer.toString("utf-8");
-          const blob = new Blob([textContent], { type: "text/plain" });
-          const file = Object.assign(blob, {
-            name: fileName,
-            lastModified: Date.now(),
-          }) as File;
+          const file = new File([textContent], fileName, {
+            type: "text/plain",
+          });
 
           const result = await client.documents.uploadFile(file);
 
