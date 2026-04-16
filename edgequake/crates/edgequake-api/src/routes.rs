@@ -472,6 +472,8 @@ fn api_v1_routes() -> Router<AppState> {
         .route("/models/health", get(handlers::check_providers_health))
         .route("/models/{provider}", get(handlers::get_provider))
         .route("/models/{provider}/{model}", get(handlers::get_model))
+        // Algorithm extraction extension
+        .nest("/algorithms", handlers::algorithm_routes())
 }
 
 #[cfg(test)]

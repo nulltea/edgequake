@@ -1,6 +1,7 @@
 'use client';
 
 import { AdminQuotaSection } from '@/components/settings/admin-quota-section';
+import { AlgorithmLLMSettingsCard } from '@/components/settings/algorithm-llm-settings-card';
 import { ProviderStatusCard } from '@/components/settings/provider-status-card';
 import { PdfParserSettingsCard } from '@/components/settings/pdf-parser-settings-card';
 import { VisionLLMSettingsCard } from '@/components/settings/vision-llm-settings-card';
@@ -227,6 +228,9 @@ export default function SettingsPage() {
 
       {/* Vision LLM Configuration (SPEC-040) */}
       <VisionLLMSettingsCard />
+
+      {/* Algorithm LLM Configuration */}
+      <AlgorithmLLMSettingsCard />
 
       {/* Workspace Maintenance (SPEC-032) */}
       <RebuildEmbeddingsButton variant="card" />

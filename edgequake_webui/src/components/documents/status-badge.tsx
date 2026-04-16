@@ -25,6 +25,7 @@ import {
     Brain,
     CheckCircle,
     Clock,
+    CodeXml,
     Cpu,
     Database,
     FileText,
@@ -69,6 +70,12 @@ const statusConfig = {
   embedding: { icon: Cpu, color: 'bg-cyan-500', textColor: 'text-cyan-600 dark:text-cyan-400', label: 'Embedding', animate: true },
   storing: { icon: Database, color: 'bg-teal-500', textColor: 'text-teal-600 dark:text-teal-400', label: 'Storing', animate: true },
   
+  // Algorithm extraction stages
+  algo_identifying: { icon: CodeXml, color: 'bg-violet-500', textColor: 'text-violet-600 dark:text-violet-400', label: 'Identifying Algorithms', animate: true },
+  algo_extracting: { icon: CodeXml, color: 'bg-violet-500', textColor: 'text-violet-600 dark:text-violet-400', label: 'Extracting Algorithms', animate: true },
+  algo_verifying: { icon: CodeXml, color: 'bg-violet-500', textColor: 'text-violet-600 dark:text-violet-400', label: 'Verifying Algorithms', animate: true },
+  algo_embedding: { icon: CodeXml, color: 'bg-violet-500', textColor: 'text-violet-600 dark:text-violet-400', label: 'Embedding Algorithms', animate: true },
+
   // Terminal states
   completed: { icon: CheckCircle, color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Completed', animate: false },
   failed: { icon: XCircle, color: 'bg-red-500', textColor: 'text-red-600 dark:text-red-400', label: 'Failed', animate: false },
@@ -125,7 +132,7 @@ function getStageProgress(status: DocumentStatus): { current: number; total: num
  * Check if a status represents an active processing state
  */
 export function isProcessingStatus(status: DocumentStatus): boolean {
-  return ['processing', 'chunking', 'extracting', 'embedding', 'indexing'].includes(status);
+  return ['processing', 'chunking', 'extracting', 'embedding', 'indexing', 'algo_identifying', 'algo_extracting', 'algo_verifying', 'algo_embedding'].includes(status);
 }
 
 /**

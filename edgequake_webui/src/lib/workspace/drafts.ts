@@ -50,3 +50,29 @@ export function getWorkspacePdfParserBackend(
 ): PdfParserBackendChoice {
   return workspace?.pdf_parser_backend ?? "none";
 }
+
+export function getWorkspaceAlgorithmAnalysisSelection(
+  workspace?: Workspace | null,
+): LLMSelection | undefined {
+  if (!workspace?.algorithm_analysis_llm_provider || !workspace.algorithm_analysis_llm_model) {
+    return undefined;
+  }
+  return {
+    model: workspace.algorithm_analysis_llm_model,
+    provider: workspace.algorithm_analysis_llm_provider,
+    fullId: `${workspace.algorithm_analysis_llm_provider}/${workspace.algorithm_analysis_llm_model}`,
+  };
+}
+
+export function getWorkspaceAlgorithmExtractionSelection(
+  workspace?: Workspace | null,
+): LLMSelection | undefined {
+  if (!workspace?.algorithm_extraction_llm_provider || !workspace.algorithm_extraction_llm_model) {
+    return undefined;
+  }
+  return {
+    model: workspace.algorithm_extraction_llm_model,
+    provider: workspace.algorithm_extraction_llm_provider,
+    fullId: `${workspace.algorithm_extraction_llm_provider}/${workspace.algorithm_extraction_llm_model}`,
+  };
+}

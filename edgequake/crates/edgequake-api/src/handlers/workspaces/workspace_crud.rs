@@ -270,6 +270,12 @@ pub async fn update_workspace(
         vision_llm_provider: request.vision_llm_provider,
         vision_llm_model: request.vision_llm_model,
         pdf_parser_backend: request.pdf_parser_backend,
+        // Algorithm LLM configuration
+        algorithm_analysis_llm_provider: request.algorithm_analysis_llm_provider,
+        algorithm_analysis_llm_model: request.algorithm_analysis_llm_model,
+        algorithm_extraction_llm_provider: request.algorithm_extraction_llm_provider,
+        algorithm_extraction_llm_model: request.algorithm_extraction_llm_model,
+        algorithm_review_mode: request.algorithm_review_mode,
     };
 
     let workspace = state

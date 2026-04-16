@@ -1,5 +1,6 @@
 'use client';
 
+import { AlgorithmsTabContent } from '@/components/algorithms';
 import { ContentRenderer } from '@/components/document/content-renderer';
 import { MetadataSidebar } from '@/components/document/metadata-sidebar';
 import { PDFViewer } from '@/components/documents/pdf-viewer';
@@ -15,6 +16,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
     AlertCircle,
     ArrowLeft,
+    CodeXml,
     Download,
     Loader2,
     Network,
@@ -43,7 +45,8 @@ export default function DocumentViewPage() {
   const documentId = params.id as string;
   const { selectedWorkspaceId } = useTenantStore();
   
-  // Get highlight parameters from URL
+  // Get tab and highlight parameters from URL
+  const defaultTab = searchParams.get('tab') === 'algorithms' ? 'algorithms' : 'content';
   const highlightText = searchParams.get('highlight') || undefined;
   const startLine = searchParams.get('start_line') 
     ? parseInt(searchParams.get('start_line')!) 
@@ -281,76 +284,99 @@ export default function DocumentViewPage() {
       <div className="flex-1 flex overflow-hidden">
         {/* OODA-43: Desktop layout with PDF side-by-side support */}
         <div className="hidden lg:flex flex-1 overflow-hidden">
-          {/* Content Area - 65% (or full width for PDF side-by-side) */}
-          <div className={isPdfDocument ? "flex-1 overflow-hidden" : "flex-1 overflow-auto"}>
-            {isPdfDocument ? (
-              /* OODA-43: PDF documents show side-by-side PDF and Markdown viewer */
-              <SideBySideViewer
-                height={undefined}
-                className="h-full"
-                leftTitle="PDF Document"
-                rightTitle="Extracted Markdown"
-                leftPanel={
-                  // OODA-48: Use pdfIdForViewer which is guaranteed to exist when isPdfDocument is true
-                  <PDFViewer
-                    file={getPdfDownloadUrl(pdfIdForViewer!)}
-                  />
-                }
-                rightPanel={
-                  // OODA-91: Show loading state while PDF markdown is being fetched
-                  isPdfContentLoading ? (
-                    <div className="flex items-center justify-center h-full">
-                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : (
-                    <ContentRenderer 
-                      document={documentWithContent} 
-                      highlightText={highlightText}
-                      startLine={activeStartLine}
-                      endLine={activeEndLine}
-                    />
-                  )
-                }
-              />
-            ) : (
-              /* Non-PDF documents show ContentRenderer only */
-              <ContentRenderer 
-                document={documentWithContent} 
-                highlightText={highlightText}
-                startLine={activeStartLine}
-                endLine={activeEndLine}
-              />
-            )}
-          </div>
+          <Tabs defaultValue={defaultTab} className="flex-1 flex flex-col overflow-hidden">
+            {/* Desktop tab bar */}
+            <TabsList className="shrink-0 w-fit mx-3 mt-2">
+              <TabsTrigger value="content">Content</TabsTrigger>
+              <TabsTrigger value="algorithms">
+                <CodeXml className="h-3.5 w-3.5" />
+                Algorithms
+              </TabsTrigger>
+            </TabsList>
 
-          {/* Metadata Sidebar - Resizable (shown for all document types including PDF).
-              WHY: The sidebar contains the LineageTree which shows the Vision LLM
-              used for PDF → Markdown transcription. Hiding it for PDF documents
-              would make lineage information inaccessible to the user.
-              SPEC-040: Vision LLM lineage must be visible in document detail view. */}
-          <ResizablePanel
-            side="right"
-            defaultWidth={400}
-            minWidth={280}
-            maxWidth={700}
-            storageKey="document-detail-sidebar-width"
-            ariaLabel="Resize metadata sidebar"
-          >
-            <MetadataSidebar
-              document={document}
-              onChunkSelect={handleChunkSelect}
-              onChunkResolved={handleChunkResolved}
-              selectedChunkId={selectedChunkId}
-            />
-          </ResizablePanel>
+            {/* Content tab */}
+            <TabsContent value="content" className="flex-1 flex overflow-hidden m-0 mt-0">
+              {/* Content Area - 65% (or full width for PDF side-by-side) */}
+              <div className={isPdfDocument ? "flex-1 overflow-hidden" : "flex-1 overflow-auto"}>
+                {isPdfDocument ? (
+                  /* OODA-43: PDF documents show side-by-side PDF and Markdown viewer */
+                  <SideBySideViewer
+                    height={undefined}
+                    className="h-full"
+                    leftTitle="PDF Document"
+                    rightTitle="Extracted Markdown"
+                    leftPanel={
+                      // OODA-48: Use pdfIdForViewer which is guaranteed to exist when isPdfDocument is true
+                      <PDFViewer
+                        file={getPdfDownloadUrl(pdfIdForViewer!)}
+                      />
+                    }
+                    rightPanel={
+                      // OODA-91: Show loading state while PDF markdown is being fetched
+                      isPdfContentLoading ? (
+                        <div className="flex items-center justify-center h-full">
+                          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : (
+                        <ContentRenderer
+                          document={documentWithContent}
+                          highlightText={highlightText}
+                          startLine={activeStartLine}
+                          endLine={activeEndLine}
+                        />
+                      )
+                    }
+                  />
+                ) : (
+                  /* Non-PDF documents show ContentRenderer only */
+                  <ContentRenderer
+                    document={documentWithContent}
+                    highlightText={highlightText}
+                    startLine={activeStartLine}
+                    endLine={activeEndLine}
+                  />
+                )}
+              </div>
+
+              {/* Metadata Sidebar - Resizable (shown for all document types including PDF).
+                  WHY: The sidebar contains the LineageTree which shows the Vision LLM
+                  used for PDF → Markdown transcription. Hiding it for PDF documents
+                  would make lineage information inaccessible to the user.
+                  SPEC-040: Vision LLM lineage must be visible in document detail view. */}
+              <ResizablePanel
+                side="right"
+                defaultWidth={400}
+                minWidth={280}
+                maxWidth={700}
+                storageKey="document-detail-sidebar-width"
+                ariaLabel="Resize metadata sidebar"
+              >
+                <MetadataSidebar
+                  document={document}
+                  onChunkSelect={handleChunkSelect}
+                  onChunkResolved={handleChunkResolved}
+                  selectedChunkId={selectedChunkId}
+                />
+              </ResizablePanel>
+            </TabsContent>
+
+            {/* Algorithms tab */}
+            <TabsContent value="algorithms" className="flex-1 overflow-auto m-0 mt-0">
+              <AlgorithmsTabContent documentId={documentId} />
+            </TabsContent>
+          </Tabs>
         </div>
 
         {/* Mobile/Tablet: Tabbed layout */}
         <div className="flex-1 lg:hidden overflow-hidden">
-          <Tabs defaultValue="content" className="h-full flex flex-col">
-            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-3' : 'grid-cols-2'} rounded-none border-b`}>
+          <Tabs defaultValue={defaultTab} className="h-full flex flex-col">
+            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-4' : 'grid-cols-3'} rounded-none border-b`}>
               {isPdfDocument && <TabsTrigger value="pdf">PDF</TabsTrigger>}
               <TabsTrigger value="content">Markdown</TabsTrigger>
+              <TabsTrigger value="algorithms">
+                <CodeXml className="h-3.5 w-3.5" />
+                Algorithms
+              </TabsTrigger>
               <TabsTrigger value="metadata">Details</TabsTrigger>
             </TabsList>
             {/* OODA-48: Use pdfIdForViewer which is guaranteed to exist when isPdfDocument is true */}
@@ -368,13 +394,16 @@ export default function DocumentViewPage() {
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                 </div>
               ) : (
-                <ContentRenderer 
-                  document={documentWithContent} 
+                <ContentRenderer
+                  document={documentWithContent}
                   highlightText={highlightText}
                   startLine={activeStartLine}
                   endLine={activeEndLine}
                 />
               )}
+            </TabsContent>
+            <TabsContent value="algorithms" className="flex-1 overflow-auto m-0 mt-0">
+              <AlgorithmsTabContent documentId={documentId} />
             </TabsContent>
             <TabsContent value="metadata" className="flex-1 overflow-hidden m-0 mt-0">
               <MetadataSidebar

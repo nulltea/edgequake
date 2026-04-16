@@ -24,6 +24,11 @@ impl DocumentTaskProcessor {
             "indexing" => "storing",
             "completed" | "indexed" => "completed",
             "failed" => "failed",
+            // Algorithm extraction stages
+            "algo_identifying" => "algo_identifying",
+            "algo_extracting" => "algo_extracting",
+            "algo_verifying" => "algo_verifying",
+            "algo_embedding" => "algo_embedding",
             other => other, // Pass through unknown statuses
         };
 
@@ -37,6 +42,11 @@ impl DocumentTaskProcessor {
             "indexing" | "storing" => "Storing in knowledge graph...",
             "completed" | "indexed" => "Processing complete",
             "failed" => "Processing failed",
+            // Algorithm extraction stages
+            "algo_identifying" => "Identifying algorithms...",
+            "algo_extracting" => "Extracting algorithm definitions...",
+            "algo_verifying" => "Verifying algorithm quality...",
+            "algo_embedding" => "Generating algorithm embeddings...",
             _ => "Processing...",
         };
 

@@ -81,6 +81,24 @@ pub struct DirectoryScanData {
     pub workspace_id: String,
 }
 
+/// Algorithm extraction task payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlgorithmExtractionData {
+    pub document_id: String,
+    pub workspace_id: String,
+    /// Source text to extract algorithms from (document content or PDF markdown).
+    pub source_text: String,
+}
+
+/// Algorithm embedding task payload — generates vector embeddings for approved algorithms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlgorithmEmbeddingData {
+    pub document_id: String,
+    pub workspace_id: String,
+    /// Algorithm IDs to embed (all approved algorithms for this document).
+    pub algorithm_ids: Vec<String>,
+}
+
 /// Reindex task payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexData {

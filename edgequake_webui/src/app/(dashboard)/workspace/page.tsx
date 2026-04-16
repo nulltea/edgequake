@@ -15,6 +15,13 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -29,6 +36,8 @@ import { useWorkspaceTenantValidator } from '@/hooks/use-workspace-tenant-valida
 import { getWorkspace, getWorkspaceStats, updateWorkspace } from '@/lib/api/edgequake';
 import { fetchProvidersHealth } from '@/lib/api/models';
 import {
+  getWorkspaceAlgorithmAnalysisSelection,
+  getWorkspaceAlgorithmExtractionSelection,
   getWorkspaceEmbeddingSelection,
   getWorkspaceLlmSelection,
   getWorkspacePdfParserBackend,
@@ -55,6 +64,7 @@ import {
     Settings,
     Sparkles,
     Tags,
+    CodeXml,
     XCircle,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -99,6 +109,9 @@ export default function WorkspacePage() {
   const [selectedVisionLLM, setSelectedVisionLLM] = useState<LLMSelection | undefined>(undefined);
   const [selectedPdfParserBackend, setSelectedPdfParserBackend] =
     useState<PdfParserBackendChoice>('none');
+  const [selectedAlgoAnalysisLLM, setSelectedAlgoAnalysisLLM] = useState<LLMSelection | undefined>(undefined);
+  const [selectedAlgoExtractionLLM, setSelectedAlgoExtractionLLM] = useState<LLMSelection | undefined>(undefined);
+  const [selectedAlgoReviewMode, setSelectedAlgoReviewMode] = useState<string>('manual');
 
   // Fetch workspace data
   const {
@@ -154,6 +167,11 @@ export default function WorkspacePage() {
       vision_llm_provider?: string;
       vision_llm_model?: string;
       pdf_parser_backend?: PdfParserBackendChoice;
+      algorithm_analysis_llm_provider?: string;
+      algorithm_analysis_llm_model?: string;
+      algorithm_extraction_llm_provider?: string;
+      algorithm_extraction_llm_model?: string;
+      algorithm_review_mode?: string;
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
       _visionChanged?: boolean;
@@ -167,6 +185,11 @@ export default function WorkspacePage() {
         vision_llm_provider: data.vision_llm_provider,
         vision_llm_model: data.vision_llm_model,
         pdf_parser_backend: data.pdf_parser_backend,
+        algorithm_analysis_llm_provider: data.algorithm_analysis_llm_provider,
+        algorithm_analysis_llm_model: data.algorithm_analysis_llm_model,
+        algorithm_extraction_llm_provider: data.algorithm_extraction_llm_provider,
+        algorithm_extraction_llm_model: data.algorithm_extraction_llm_model,
+        algorithm_review_mode: data.algorithm_review_mode,
       }),
     onSuccess: (_result, variables) => {
       toast.success(t('workspace.updateSuccess', 'Workspace updated successfully'));
@@ -258,6 +281,13 @@ export default function WorkspacePage() {
     data.vision_llm_model = selectedVisionLLM?.model ?? '';
     data.pdf_parser_backend = selectedPdfParserBackend;
 
+    // Algorithm extraction config
+    data.algorithm_analysis_llm_provider = selectedAlgoAnalysisLLM?.provider ?? '';
+    data.algorithm_analysis_llm_model = selectedAlgoAnalysisLLM?.model ?? '';
+    data.algorithm_extraction_llm_provider = selectedAlgoExtractionLLM?.provider ?? '';
+    data.algorithm_extraction_llm_model = selectedAlgoExtractionLLM?.model ?? '';
+    data.algorithm_review_mode = selectedAlgoReviewMode;
+
     // Track which models changed for post-save rebuild notification
     data._embeddingChanged = embeddingModelChanged ?? false;
     data._llmChanged = llmModelChanged ?? false;
@@ -272,6 +302,9 @@ export default function WorkspacePage() {
     setSelectedEmbedding(getWorkspaceEmbeddingSelection(workspace));
     setSelectedVisionLLM(getWorkspaceVisionSelection(workspace));
     setSelectedPdfParserBackend(getWorkspacePdfParserBackend(workspace));
+    setSelectedAlgoAnalysisLLM(getWorkspaceAlgorithmAnalysisSelection(workspace));
+    setSelectedAlgoExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
+    setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
   };
 
   const handleEditStart = () => {
@@ -279,6 +312,9 @@ export default function WorkspacePage() {
     setSelectedEmbedding(getWorkspaceEmbeddingSelection(workspace));
     setSelectedVisionLLM(getWorkspaceVisionSelection(workspace));
     setSelectedPdfParserBackend(getWorkspacePdfParserBackend(workspace));
+    setSelectedAlgoAnalysisLLM(getWorkspaceAlgorithmAnalysisSelection(workspace));
+    setSelectedAlgoExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
+    setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
     setIsEditing(true);
   };
 
@@ -722,6 +758,73 @@ export default function WorkspacePage() {
                     'This default applies to subsequent PDF uploads. Existing documents keep their original extraction method unless reprocessed.',
                   )}
                 </span>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Algorithm Extraction */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <CodeXml className="h-5 w-5 text-violet-600" />
+              Algorithm Extraction
+            </CardTitle>
+            <CardDescription>
+              LLM models and review behavior for the algorithm extraction pipeline.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {isEditing ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">Analysis LLM (Stages 1 &amp; 3)</label>
+                  <LLMModelSelector value={selectedAlgoAnalysisLLM} onChange={setSelectedAlgoAnalysisLLM} />
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">Extraction LLM (Stage 2)</label>
+                  <LLMModelSelector value={selectedAlgoExtractionLLM} onChange={setSelectedAlgoExtractionLLM} />
+                </div>
+                <div>
+                  <label className="text-sm font-medium mb-1.5 block">Review Mode</label>
+                  <Select value={selectedAlgoReviewMode} onValueChange={setSelectedAlgoReviewMode}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="manual">Manual — Review before embedding</SelectItem>
+                      <SelectItem value="auto">Auto-approve — Embed immediately after extraction</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                  {getProviderIcon(workspace.algorithm_analysis_llm_provider)}
+                  <div className="flex-1">
+                    <div className="text-xs text-muted-foreground">Analysis LLM (Stages 1 &amp; 3)</div>
+                    <div className="font-medium">{workspace.algorithm_analysis_llm_model || 'Workspace Default'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                  {getProviderIcon(workspace.algorithm_extraction_llm_provider)}
+                  <div className="flex-1">
+                    <div className="text-xs text-muted-foreground">Extraction LLM (Stage 2)</div>
+                    <div className="font-medium">{workspace.algorithm_extraction_llm_model || 'Workspace Default'}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                  <div className="flex-1">
+                    <div className="text-xs text-muted-foreground">Review Mode</div>
+                    <div className="font-medium">
+                      {(workspace.algorithm_review_mode || 'manual') === 'auto' ? 'Auto-approve' : 'Manual Review'}
+                    </div>
+                  </div>
+                  <Badge variant={(workspace.algorithm_review_mode || 'manual') === 'auto' ? 'default' : 'secondary'}>
+                    {workspace.algorithm_review_mode || 'manual'}
+                  </Badge>
+                </div>
               </div>
             )}
           </CardContent>

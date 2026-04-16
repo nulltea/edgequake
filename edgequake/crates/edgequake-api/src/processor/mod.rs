@@ -76,6 +76,8 @@
 //! - [`BR0472`]: Documents processed with workspace-specific providers
 
 // Sub-modules organized by responsibility (SRP)
+mod algorithm_embedding;
+mod algorithm_extraction;
 mod pdf_processing;
 pub mod pipeline_checkpoint;
 mod status_updates;

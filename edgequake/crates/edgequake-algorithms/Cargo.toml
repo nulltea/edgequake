@@ -1,0 +1,24 @@
+[package]
+name = "edgequake-algorithms"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Algorithm extraction extension for EdgeQuake — 3-pass LLM pipeline for extracting structured algorithm definitions from documents"
+
+[dependencies]
+edgequake-llm = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true, optional = true }
+tokio = { workspace = true }
+
+[features]
+default = ["postgres"]
+postgres = ["dep:sqlx"]

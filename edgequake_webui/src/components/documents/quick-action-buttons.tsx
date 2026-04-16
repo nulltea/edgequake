@@ -16,7 +16,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import type { Document } from '@/types';
-import { ExternalLink, Eye, RefreshCw, Sparkles } from 'lucide-react';
+import { CodeXml, ExternalLink, Eye, RefreshCw, Sparkles } from 'lucide-react';
 import * as React from 'react';
 
 /**
@@ -40,6 +40,8 @@ export interface QuickActionButtonsProps {
   onPreview: (doc: Document) => void;
   /** Handler for "View in Graph" click - navigates to graph view */
   onViewInGraph: (doc: Document) => void;
+  /** Handler for "View Algorithms" click - navigates to algorithms tab */
+  onViewAlgorithms?: (doc: Document) => void;
   /** Handler for "Retry" click - reprocesses failed document */
   onRetry: (id: string) => void;
   /** Whether retry operation is in progress */
@@ -93,6 +95,7 @@ export function QuickActionButtons({
   onViewDetails,
   onPreview,
   onViewInGraph,
+  onViewAlgorithms,
   onRetry,
   isRetrying,
   children,
@@ -123,6 +126,15 @@ export function QuickActionButtons({
           icon={<Sparkles className="h-4 w-4" />}
           label="View in Graph"
           onClick={() => onViewInGraph(doc)}
+        />
+      )}
+
+      {/* View Algorithms - only for completed documents */}
+      {canViewInGraph && onViewAlgorithms && (
+        <ActionButton
+          icon={<CodeXml className="h-4 w-4" />}
+          label="Algorithms"
+          onClick={() => onViewAlgorithms(doc)}
         />
       )}
 

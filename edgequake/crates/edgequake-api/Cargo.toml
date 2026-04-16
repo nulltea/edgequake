@@ -24,6 +24,7 @@ edgequake-tasks = { path = "../edgequake-tasks", features = ["postgres"] }
 edgequake-auth = { path = "../edgequake-auth" }
 edgequake-rate-limiter = { path = "../edgequake-rate-limiter" }
 edgequake-audit = { path = "../edgequake-audit" }
+edgequake-algorithms = { path = "../edgequake-algorithms" }
 # Direct dependency kept because the API crate implements the progress callback type.
 edgequake-pdf2md = "=0.8.0"
 

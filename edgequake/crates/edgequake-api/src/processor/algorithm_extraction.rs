@@ -1,0 +1,346 @@
+//! Algorithm extraction task processor.
+//!
+//! Processes AlgorithmExtraction tasks through the 3-pass LLM pipeline
+//! with per-stage status updates visible in the documents UI.
+//! Supports workspace-level LLM overrides: separate models for
+//! analysis (passes 1,3) and extraction (pass 2).
+
+use super::*;
+use tokio_util::sync::CancellationToken;
+
+impl DocumentTaskProcessor {
+    /// Process an algorithm extraction task through the 3-pass LLM pipeline.
+    pub(super) async fn process_algorithm_extraction(
+        &self,
+        task: &mut Task,
+        data: edgequake_tasks::AlgorithmExtractionData,
+        cancel_token: CancellationToken,
+    ) -> TaskResult<serde_json::Value> {
+        let document_id = &data.document_id;
+
+        info!(
+            document_id = %document_id,
+            workspace_id = %data.workspace_id,
+            source_text_len = data.source_text.len(),
+            "Processing algorithm extraction task"
+        );
+
+        // Resolve per-pass LLM providers from workspace config
+        let workspace_id = if !data.workspace_id.is_empty() && data.workspace_id != "default" {
+            Some(data.workspace_id.as_str())
+        } else {
+            None
+        };
+
+        let (analysis_provider, extraction_provider) = self
+            .resolve_algorithm_llm_providers(workspace_id)
+            .await
+            .map_err(|e| TaskError::Process(format!("LLM provider error: {e}")))?;
+
+        let analysis_extractor =
+            edgequake_algorithms::AlgorithmExtractor::new(analysis_provider);
+        let extraction_extractor =
+            edgequake_algorithms::AlgorithmExtractor::new(extraction_provider);
+
+        // === Pass 1: Inventory (uses analysis LLM) ===
+        self.check_cancelled(&cancel_token, "algo_identifying", document_id)
+            .await?;
+        self.update_document_status(document_id, "algo_identifying", None)
+            .await
+            .ok();
+        task.update_progress("algo_identifying".to_string(), 3, 15);
+
+        let inventory = analysis_extractor
+            .run_inventory(&data.source_text)
+            .await
+            .map_err(|e| TaskError::Process(format!("Algorithm extraction failed: {e}")))?;
+
+        if inventory.algorithms.is_empty() {
+            info!(document_id = %document_id, "No algorithms found in document");
+            self.update_document_status(document_id, "completed", None)
+                .await
+                .ok();
+            task.update_progress("completed".to_string(), 3, 100);
+            return Ok(json!({
+                "document_id": document_id,
+                "algorithm_count": 0,
+            }));
+        }
+
+        let algo_count = inventory.algorithms.len();
+
+        // === Pass 2: Extraction (uses extraction LLM) ===
+        self.check_cancelled(&cancel_token, "algo_extracting", document_id)
+            .await?;
+        self.update_document_status(document_id, "algo_extracting", None)
+            .await
+            .ok();
+        task.update_progress("algo_extracting".to_string(), 3, 40);
+
+        let extraction = extraction_extractor
+            .run_extraction(&data.source_text, &inventory)
+            .await
+            .map_err(|e| TaskError::Process(format!("Algorithm extraction failed: {e}")))?;
+
+        // === Pass 3: Verification (uses analysis LLM) ===
+        self.check_cancelled(&cancel_token, "algo_verifying", document_id)
+            .await?;
+        self.update_document_status(document_id, "algo_verifying", None)
+            .await
+            .ok();
+        task.update_progress("algo_verifying".to_string(), 3, 70);
+
+        let verification = analysis_extractor.run_verification(&extraction).await;
+
+        // === Store results ===
+        task.update_progress("storing".to_string(), 3, 90);
+
+        let count = extraction.algorithms.len();
+
+        // Check workspace review mode
+        let auto_approve = self
+            .resolve_algorithm_review_mode(workspace_id)
+            .await
+            .unwrap_or(false);
+
+        #[cfg(feature = "postgres")]
+        {
+            use edgequake_algorithms::{
+                Algorithm, AlgorithmStatus, AlgorithmStorage, PostgresAlgorithmStorage,
+            };
+
+            let database_url = std::env::var("DATABASE_URL").map_err(|_| {
+                TaskError::Process("DATABASE_URL not set for algorithm storage".to_string())
+            })?;
+            let pool = sqlx::PgPool::connect(&database_url).await.map_err(|e| {
+                TaskError::Process(format!("Failed to connect to database: {e}"))
+            })?;
+            let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool));
+
+            let tenant_id = task.tenant_id;
+            let workspace_id_uuid = task.workspace_id;
+
+            // Delete existing algorithms (re-extraction)
+            let _ = storage
+                .delete_algorithms_by_document(document_id, tenant_id, workspace_id_uuid)
+                .await;
+
+            let initial_status = if auto_approve {
+                AlgorithmStatus::Approved
+            } else {
+                AlgorithmStatus::Pending
+            };
+
+            let now = chrono::Utc::now();
+            let algorithms: Vec<Algorithm> = extraction
+                .algorithms
+                .into_iter()
+                .map(|ea| Algorithm {
+                    id: uuid::Uuid::new_v4(),
+                    tenant_id,
+                    workspace_id: workspace_id_uuid,
+                    document_id: document_id.clone(),
+                    name: ea.name,
+                    description: if ea.description.is_empty() {
+                        None
+                    } else {
+                        Some(ea.description)
+                    },
+                    steps: ea.steps,
+                    inputs: ea.inputs,
+                    outputs: ea.outputs,
+                    preconditions: ea.preconditions,
+                    complexity: ea.complexity,
+                    mathematical_notation: ea.mathematical_notation,
+                    pseudocode: ea.pseudocode,
+                    tags: ea.tags,
+                    confidence: ea.confidence,
+                    status: initial_status,
+                    verification_status: verification
+                        .as_ref()
+                        .map(|v| v.verification_status.clone()),
+                    verification_details: verification
+                        .as_ref()
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    created_at: now,
+                    updated_at: now,
+                })
+                .collect();
+
+            let stored_count = algorithms.len();
+            let algorithm_ids: Vec<String> =
+                algorithms.iter().map(|a| a.id.to_string()).collect();
+
+            storage
+                .create_algorithms(&algorithms)
+                .await
+                .map_err(|e| TaskError::Process(format!("Failed to store algorithms: {e}")))?;
+
+            info!(
+                document_id = %document_id,
+                count = stored_count,
+                auto_approve = auto_approve,
+                "Algorithm extraction complete — stored in database"
+            );
+
+            // Auto-approve mode: run embedding inline as a continuation
+            if auto_approve && !algorithm_ids.is_empty() {
+                info!(document_id = %document_id, count = algorithm_ids.len(), "Auto-approve: embedding algorithms inline");
+
+                self.update_document_status(document_id, "algo_embedding", None)
+                    .await
+                    .ok();
+                task.update_progress("algo_embedding".to_string(), 4, 92);
+
+                let embed_data = edgequake_tasks::AlgorithmEmbeddingData {
+                    document_id: document_id.clone(),
+                    workspace_id: data.workspace_id.clone(),
+                    algorithm_ids,
+                };
+
+                // Reuse the embedding processor method via a sub-task
+                // We run it inline since the processor is already active
+                match self
+                    .process_algorithm_embedding(task, embed_data, cancel_token.clone())
+                    .await
+                {
+                    Ok(_) => {
+                        info!(document_id = %document_id, "Auto-approve: embedding complete");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Auto-approve: embedding failed (non-fatal, algorithms still stored)");
+                    }
+                }
+                // process_algorithm_embedding already sets completed status
+                return Ok(json!({
+                    "document_id": document_id,
+                    "algorithm_count": count,
+                    "algorithms_identified": algo_count,
+                    "auto_approved": true,
+                    "embedded": true,
+                    "verification_status": verification.as_ref().map(|v| &v.verification_status),
+                }));
+            }
+        }
+
+        // Restore document to completed status
+        self.update_document_status(document_id, "completed", None)
+            .await
+            .ok();
+        task.update_progress("completed".to_string(), 3, 100);
+
+        self.pipeline_state
+            .info(format!(
+                "Algorithm extraction complete: {} algorithms from document {}",
+                count, document_id
+            ))
+            .await;
+
+        Ok(json!({
+            "document_id": document_id,
+            "algorithm_count": count,
+            "algorithms_identified": algo_count,
+            "auto_approved": auto_approve,
+            "verification_status": verification.as_ref().map(|v| &v.verification_status),
+        }))
+    }
+
+    /// Resolve per-pass LLM providers for algorithm extraction.
+    ///
+    /// Returns (analysis_provider, extraction_provider) where:
+    /// - analysis_provider is used for passes 1 (inventory) and 3 (verification)
+    /// - extraction_provider is used for pass 2 (detailed extraction)
+    ///
+    /// Falls back to workspace default LLM, then server default.
+    async fn resolve_algorithm_llm_providers(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<(
+        std::sync::Arc<dyn edgequake_llm::traits::LLMProvider>,
+        std::sync::Arc<dyn edgequake_llm::traits::LLMProvider>,
+    ), String> {
+        use crate::safety_limits::create_safe_llm_provider;
+
+        let default_provider = std::sync::Arc::clone(&self.llm_provider);
+
+        let workspace_service = match &self.workspace_service {
+            Some(ws) => ws,
+            _ => return Ok((default_provider.clone(), default_provider)),
+        };
+
+        let workspace_id = match workspace_id {
+            Some(id) if !id.is_empty() && id != "default" => id,
+            _ => return Ok((default_provider.clone(), default_provider)),
+        };
+
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("Invalid workspace ID: {e}"))?;
+
+        let ws = workspace_service
+            .get_workspace(workspace_uuid)
+            .await
+            .map_err(|e| format!("Failed to get workspace: {e}"))?
+            .ok_or_else(|| format!("Workspace not found: {workspace_id}"))?;
+
+        // Resolve analysis provider: algorithm_analysis_llm > workspace default > server default
+        let analysis_provider = if let (Some(ref provider), Some(ref model)) = (
+            &ws.algorithm_analysis_llm_provider,
+            &ws.algorithm_analysis_llm_model,
+        ) {
+            create_safe_llm_provider(provider, model)
+                .map_err(|e| format!("Failed to create analysis LLM provider: {e}"))?
+        } else if self.strict_workspace_mode {
+            create_safe_llm_provider(&ws.llm_provider, &ws.llm_model)
+                .map_err(|e| format!("Failed to create workspace LLM provider: {e}"))?
+        } else {
+            default_provider.clone()
+        };
+
+        // Resolve extraction provider: algorithm_extraction_llm > workspace default > server default
+        let extraction_provider = if let (Some(ref provider), Some(ref model)) = (
+            &ws.algorithm_extraction_llm_provider,
+            &ws.algorithm_extraction_llm_model,
+        ) {
+            create_safe_llm_provider(provider, model)
+                .map_err(|e| format!("Failed to create extraction LLM provider: {e}"))?
+        } else if self.strict_workspace_mode {
+            create_safe_llm_provider(&ws.llm_provider, &ws.llm_model)
+                .map_err(|e| format!("Failed to create workspace LLM provider: {e}"))?
+        } else {
+            default_provider.clone()
+        };
+
+        Ok((analysis_provider, extraction_provider))
+    }
+
+    /// Check if workspace uses auto-approve mode for algorithms.
+    async fn resolve_algorithm_review_mode(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<bool, String> {
+        let workspace_service = match &self.workspace_service {
+            Some(ws) => ws,
+            _ => return Ok(false),
+        };
+
+        let workspace_id = match workspace_id {
+            Some(id) if !id.is_empty() && id != "default" => id,
+            _ => return Ok(false),
+        };
+
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("Invalid workspace ID: {e}"))?;
+
+        let ws = workspace_service
+            .get_workspace(workspace_uuid)
+            .await
+            .map_err(|e| format!("Failed to get workspace: {e}"))?
+            .ok_or_else(|| format!("Workspace not found: {workspace_id}"))?;
+
+        Ok(ws
+            .algorithm_review_mode
+            .as_deref()
+            .map(|m| m == "auto")
+            .unwrap_or(false))
+    }
+}

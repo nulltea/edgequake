@@ -23,6 +23,10 @@ const PROCESSING_STATUSES = [
   "extracting",
   "embedding",
   "indexing",
+  "algo_identifying",
+  "algo_extracting",
+  "algo_verifying",
+  "algo_embedding",
 ] as const;
 
 /**

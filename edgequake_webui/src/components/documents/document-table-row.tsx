@@ -131,6 +131,10 @@ export interface DocumentTableRowProps {
   onCancel: (trackId: string) => void;
   /** Called when Delete action is triggered */
   onDelete: (docId: string) => void;
+  /** Called when Extract Algorithms action is triggered */
+  onExtractAlgorithms?: (docId: string) => void;
+  /** Called when View Algorithms action is triggered */
+  onViewAlgorithms?: (doc: Document) => void;
   /** Whether a retry operation is pending */
   isRetrying: boolean;
   /** Whether a cancel operation is pending */
@@ -156,6 +160,8 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onRetry,
   onCancel,
   onDelete,
+  onExtractAlgorithms,
+  onViewAlgorithms,
   isRetrying,
   isCancelling,
 }: DocumentTableRowProps) {
@@ -232,8 +238,8 @@ export const DocumentTableRow = memo(function DocumentTableRow({
       <TableCell>
         <div className="flex flex-col gap-1">
           <EnhancedStatusBadge document={doc} />
-          {/* Show stage_message for PDF conversion progress */}
-          {doc.stage_message && doc.current_stage === 'converting' && (
+          {/* Show stage_message for PDF conversion and algorithm extraction progress */}
+          {doc.stage_message && (doc.current_stage === 'converting' || doc.current_stage?.startsWith('algo_')) && (
             <span className="text-xs text-muted-foreground truncate">
               {doc.stage_message}
             </span>
@@ -287,6 +293,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
           onViewDetails={onViewDetails}
           onPreview={onClick}
           onViewInGraph={onViewInGraph}
+          onViewAlgorithms={onViewAlgorithms}
           onRetry={onRetry}
           isRetrying={isRetrying}
         >
@@ -296,6 +303,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
             onCancel={onCancel}
             onReprocess={onRetry}
             onDelete={onDelete}
+            onExtractAlgorithms={onExtractAlgorithms}
             isCancelling={isCancelling}
           />
         </QuickActionButtons>

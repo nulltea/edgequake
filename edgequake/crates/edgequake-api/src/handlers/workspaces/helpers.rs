@@ -86,6 +86,12 @@ pub(super) fn workspace_to_response(workspace: &Workspace) -> WorkspaceResponse 
         pdf_parser_backend: workspace
             .pdf_parser_backend
             .map(|backend| backend.as_str().to_string()),
+        // Algorithm LLM configuration
+        algorithm_analysis_llm_provider: workspace.algorithm_analysis_llm_provider.clone(),
+        algorithm_analysis_llm_model: workspace.algorithm_analysis_llm_model.clone(),
+        algorithm_extraction_llm_provider: workspace.algorithm_extraction_llm_provider.clone(),
+        algorithm_extraction_llm_model: workspace.algorithm_extraction_llm_model.clone(),
+        algorithm_review_mode: workspace.algorithm_review_mode.clone(),
         // SPEC-085: Entity type configuration (read from workspace metadata)
         entity_types: workspace
             .metadata

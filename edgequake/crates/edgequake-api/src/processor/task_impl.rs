@@ -58,6 +58,30 @@ impl TaskProcessor for DocumentTaskProcessor {
 
                 self.process_pdf_processing(task, data, cancel_token).await
             }
+            TaskType::AlgorithmExtraction => {
+                let data: edgequake_tasks::AlgorithmExtractionData =
+                    serde_json::from_value(task.task_data.clone()).map_err(|e| {
+                        edgequake_tasks::TaskError::InvalidPayload(format!(
+                            "Invalid AlgorithmExtractionData: {}",
+                            e
+                        ))
+                    })?;
+
+                self.process_algorithm_extraction(task, data, cancel_token)
+                    .await
+            }
+            TaskType::AlgorithmEmbedding => {
+                let data: edgequake_tasks::AlgorithmEmbeddingData =
+                    serde_json::from_value(task.task_data.clone()).map_err(|e| {
+                        edgequake_tasks::TaskError::InvalidPayload(format!(
+                            "Invalid AlgorithmEmbeddingData: {}",
+                            e
+                        ))
+                    })?;
+
+                self.process_algorithm_embedding(task, data, cancel_token)
+                    .await
+            }
         }
     }
 
@@ -80,6 +104,12 @@ impl TaskProcessor for DocumentTaskProcessor {
                     .and_then(|m| m.get("document_id"))
                     .and_then(|v| v.as_str())
             })
+            // AlgorithmExtractionData / AlgorithmEmbeddingData use top-level document_id
+            .or_else(|| {
+                task.task_data
+                    .get("document_id")
+                    .and_then(|v| v.as_str())
+            })
             .map(|s| s.to_string());
 
         error!(
@@ -91,14 +121,31 @@ impl TaskProcessor for DocumentTaskProcessor {
             "Permanent task failure — updating document status to 'failed'"
         );
 
-        // Update document metadata to "failed" with the actual error message
+        // For algorithm tasks, restore document to "completed" (the document itself is fine).
+        // For other tasks, mark document as "failed".
+        let is_algorithm_task = task.task_type == TaskType::AlgorithmExtraction
+            || task.task_type == TaskType::AlgorithmEmbedding;
+
         if let Some(ref doc_id) = document_id {
-            let failure_msg = format!(
-                "Processing failed permanently after {} attempts. {}",
-                task.retry_count, error_msg
-            );
+            let (status, failure_msg) = if is_algorithm_task {
+                (
+                    "completed",
+                    format!(
+                        "Algorithm processing failed after {} attempts: {}",
+                        task.retry_count, error_msg
+                    ),
+                )
+            } else {
+                (
+                    "failed",
+                    format!(
+                        "Processing failed permanently after {} attempts. {}",
+                        task.retry_count, error_msg
+                    ),
+                )
+            };
             if let Err(e) = self
-                .update_document_status(doc_id, "failed", Some(&failure_msg))
+                .update_document_status(doc_id, status, if is_algorithm_task { None } else { Some(&failure_msg) })
                 .await
             {
                 error!(

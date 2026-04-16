@@ -1615,6 +1615,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "edgequake-algorithms"
+version = "0.10.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "edgequake-llm",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "edgequake-api"
 version = "0.10.1"
 dependencies = [
@@ -1624,6 +1640,7 @@ dependencies = [
  "axum-extra",
  "bytes",
  "chrono",
+ "edgequake-algorithms",
  "edgequake-audit",
  "edgequake-auth",
  "edgequake-core",

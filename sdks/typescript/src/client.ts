@@ -38,6 +38,7 @@ import { TasksResource } from "./resources/tasks.js";
 import { TenantsResource } from "./resources/tenants.js";
 import { UsersResource } from "./resources/users.js";
 import { WorkspacesResource } from "./resources/workspaces.js";
+import { AlgorithmsResource } from "./resources/algorithms.js";
 
 /**
  * EdgeQuake SDK client.
@@ -146,6 +147,9 @@ export class EdgeQuake {
   /** Ollama-compatible API. */
   readonly ollama: OllamaResource;
 
+  /** Algorithm extraction and management. */
+  readonly algorithms: AlgorithmsResource;
+
   constructor(config?: EdgeQuakeConfig) {
     this._config = resolveConfig(config);
     // WHY: Allow test code to inject a mock transport via config._transport
@@ -173,6 +177,7 @@ export class EdgeQuake {
     this.settings = new SettingsResource(this._transport);
     this.models = new ModelsResource(this._transport);
     this.ollama = new OllamaResource(this._transport);
+    this.algorithms = new AlgorithmsResource(this._transport);
   }
 
   // ──────────────────────────── Top-Level Convenience ────────────────────────────

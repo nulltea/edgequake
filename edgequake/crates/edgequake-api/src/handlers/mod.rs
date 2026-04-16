@@ -52,6 +52,7 @@
 //! ```
 
 pub mod admin;
+pub mod algorithms;
 pub mod auth;
 pub mod auth_types;
 pub mod chat;
@@ -99,6 +100,7 @@ pub mod workspaces_types;
 // Note: Each handler module already re-exports its *_types module contents,
 // so we only need to re-export the handler modules themselves.
 pub use admin::*;
+pub use algorithms::algorithm_routes;
 pub use auth::*;
 pub use chat::*;
 pub use conversations::*;

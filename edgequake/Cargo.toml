@@ -11,6 +11,7 @@ members = [
     "crates/edgequake-rate-limiter",
     "crates/edgequake-storage",
     "crates/edgequake-tasks",
+    "crates/edgequake-algorithms",
 ]
 
 [package]
@@ -153,6 +154,7 @@ edgequake-pipeline = { path = "crates/edgequake-pipeline" }
 edgequake-query = { path = "crates/edgequake-query" }
 edgequake-storage = { path = "crates/edgequake-storage" }
 edgequake-tasks = { path = "crates/edgequake-tasks" }
+edgequake-algorithms = { path = "crates/edgequake-algorithms" }
 edgeparse-core = "0.2.3"
 
 # CPU utilities

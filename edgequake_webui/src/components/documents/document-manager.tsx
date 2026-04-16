@@ -108,6 +108,11 @@ export function DocumentManager() {
     onReprocessSuccess: () => setPipelineDialogOpen(true),
   });
 
+  // Navigate to document's algorithms tab
+  const handleViewAlgorithms = (doc: Document) => {
+    router.push(`/documents/${doc.id}?tab=algorithms`);
+  };
+
   // OODA-29: Document queries extracted to useDocumentQueries hook
   const { data, isLoading, isError, error, refetch, pipelineStatus, queryClient } = useDocumentQueries({
     tenantId: selectedTenantId,
@@ -120,6 +125,33 @@ export function DocumentManager() {
   // OODA-05: WebSocket subscription for real-time document status updates
   // WHY: Extracted to useDocumentWebSocket hook for SRP compliance
   useDocumentWebSocket(data?.items, queryClient);
+
+  // Algorithm extraction handler — checks for existing algorithms and confirms re-extraction
+  const handleExtractAlgorithms = async (documentId: string) => {
+    try {
+      const { extractAlgorithms, getAlgorithms, deleteAlgorithms } = await import('@/lib/api/edgequake');
+      const { toast } = await import('sonner');
+
+      // Check if document already has algorithms
+      const existing = await getAlgorithms(documentId).catch(() => null);
+      if (existing && existing.algorithms.length > 0) {
+        const confirmed = window.confirm(
+          `This document has ${existing.algorithms.length} extracted algorithm(s). ` +
+          `Re-extracting will delete them and start fresh. Continue?`
+        );
+        if (!confirmed) return;
+        await deleteAlgorithms(documentId);
+      }
+
+      await extractAlgorithms(documentId);
+      toast.success('Algorithm extraction started');
+      // Refetch documents list so the algo extraction status shows immediately
+      refetch();
+    } catch {
+      const { toast } = await import('sonner');
+      toast.error('Failed to start algorithm extraction');
+    }
+  };
 
   // OODA-04: Detect stuck documents using extracted hook
   useStuckDetection(data?.items, {
@@ -278,6 +310,8 @@ export function DocumentManager() {
         onRetry={(id) => reprocessMutation.mutate(id)}
         onCancel={(trackId) => cancelMutation.mutate(trackId)}
         onDelete={(id) => deleteMutation.mutate(id)}
+        onExtractAlgorithms={handleExtractAlgorithms}
+        onViewAlgorithms={handleViewAlgorithms}
         isRetrying={reprocessMutation.isPending}
         isCancelling={cancelMutation.isPending}
         onUploadClick={openFileDialog}

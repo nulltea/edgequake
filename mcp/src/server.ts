@@ -9,6 +9,7 @@ import { registerGraphTools } from "./tools/graph.js";
 import { registerHealthTools } from "./tools/health.js";
 import { registerQueryTools } from "./tools/query.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
+import { registerAlgorithmTools } from "./tools/algorithm.js";
 
 export function createServer(): McpServer {
   const server = new McpServer({
@@ -21,6 +22,7 @@ export function createServer(): McpServer {
   registerDocumentTools(server);
   registerQueryTools(server);
   registerGraphTools(server);
+  registerAlgorithmTools(server);
   registerResources(server);
   registerPrompts(server);
 

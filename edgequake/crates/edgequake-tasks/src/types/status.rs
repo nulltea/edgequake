@@ -38,6 +38,8 @@ pub enum TaskType {
     Scan,
     Reindex,
     PdfProcessing,
+    AlgorithmExtraction,
+    AlgorithmEmbedding,
 }
 
 impl fmt::Display for TaskType {
@@ -48,6 +50,8 @@ impl fmt::Display for TaskType {
             Self::Scan => write!(f, "scan"),
             Self::Reindex => write!(f, "reindex"),
             Self::PdfProcessing => write!(f, "pdf_processing"),
+            Self::AlgorithmExtraction => write!(f, "algorithm_extraction"),
+            Self::AlgorithmEmbedding => write!(f, "algorithm_embedding"),
         }
     }
 }

@@ -136,6 +136,18 @@ pub struct Workspace {
     /// Default PDF parser backend for this workspace.
     /// None falls back to the environment and then Vision.
     pub pdf_parser_backend: Option<PdfParserBackend>,
+
+    // === Algorithm LLM Configuration ===
+    /// LLM provider for algorithm analysis (inventory + verification passes).
+    pub algorithm_analysis_llm_provider: Option<String>,
+    /// LLM model for algorithm analysis (inventory + verification passes).
+    pub algorithm_analysis_llm_model: Option<String>,
+    /// LLM provider for algorithm extraction (detailed extraction pass).
+    pub algorithm_extraction_llm_provider: Option<String>,
+    /// LLM model for algorithm extraction (detailed extraction pass).
+    pub algorithm_extraction_llm_model: Option<String>,
+    /// Algorithm review mode: "auto" (auto-approve + embed after extraction) or "manual" (default).
+    pub algorithm_review_mode: Option<String>,
 }
 
 impl Workspace {
@@ -171,6 +183,11 @@ impl Workspace {
             vision_llm_provider: None,
             vision_llm_model: None,
             pdf_parser_backend: None,
+            algorithm_analysis_llm_provider: None,
+            algorithm_analysis_llm_model: None,
+            algorithm_extraction_llm_provider: None,
+            algorithm_extraction_llm_model: None,
+            algorithm_review_mode: None,
         }
     }
 

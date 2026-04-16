@@ -28,3 +28,4 @@ export { TasksResource } from "./tasks.js";
 export { TenantsResource } from "./tenants.js";
 export { UsersResource } from "./users.js";
 export { WorkspacesResource } from "./workspaces.js";
+export { AlgorithmsResource } from "./algorithms.js";

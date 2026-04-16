@@ -71,6 +71,10 @@ export interface DocumentTableSectionProps {
   onCancel: (trackId: string) => void;
   /** Handler for delete action */
   onDelete: (id: string) => void;
+  /** Handler for extract algorithms action */
+  onExtractAlgorithms?: (id: string) => void;
+  /** Handler for view algorithms action */
+  onViewAlgorithms?: (doc: Document) => void;
   /** Whether retrying is in progress */
   isRetrying: boolean;
   /** Whether cancelling is in progress */
@@ -115,6 +119,8 @@ export const DocumentTableSection = memo(function DocumentTableSection({
   onRetry,
   onCancel,
   onDelete,
+  onExtractAlgorithms,
+  onViewAlgorithms,
   isRetrying,
   isCancelling,
   onUploadClick,
@@ -189,6 +195,8 @@ export const DocumentTableSection = memo(function DocumentTableSection({
                       onRetry={onRetry}
                       onCancel={onCancel}
                       onDelete={onDelete}
+                      onExtractAlgorithms={onExtractAlgorithms}
+                      onViewAlgorithms={onViewAlgorithms}
                       isRetrying={isRetrying}
                       isCancelling={isCancelling}
                     />

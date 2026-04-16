@@ -281,6 +281,16 @@ export interface UpdateWorkspaceRequest {
   vision_llm_model?: string;
   /** Default PDF parser backend for this workspace. */
   pdf_parser_backend?: WorkspacePdfParserBackendUpdate;
+  /** Algorithm analysis LLM provider (stages 1 and 3). */
+  algorithm_analysis_llm_provider?: string;
+  /** Algorithm analysis LLM model (stages 1 and 3). */
+  algorithm_analysis_llm_model?: string;
+  /** Algorithm extraction LLM provider (stage 2). */
+  algorithm_extraction_llm_provider?: string;
+  /** Algorithm extraction LLM model (stage 2). */
+  algorithm_extraction_llm_model?: string;
+  /** Algorithm review mode: "auto" or "manual". */
+  algorithm_review_mode?: string;
 }
 
 /**
@@ -1899,6 +1909,130 @@ export async function putInjectionFile(
 }
 
 // ============================================================================
+// Algorithms (Algorithm Extraction Feature)
+// ============================================================================
+
+/**
+ * Extract algorithms from a document.
+ * Triggers the algorithm extraction pipeline for the given document.
+ *
+ * @param documentId - The document to extract algorithms from
+ * @returns Extraction status with document_id, status, and message
+ */
+export async function extractAlgorithms(
+  documentId: string,
+): Promise<import("@/types/algorithms").AlgorithmExtractionResponse> {
+  return api.post<import("@/types/algorithms").AlgorithmExtractionResponse>(
+    "/algorithms/extract",
+    { document_id: documentId },
+  );
+}
+
+/**
+ * Get algorithms extracted from a specific document.
+ *
+ * @param documentId - The document to list algorithms for
+ * @param status - Optional status filter (pending, approved, rejected)
+ * @returns List of algorithms and total count
+ */
+export async function getAlgorithms(
+  documentId: string,
+  status?: string,
+): Promise<import("@/types/algorithms").AlgorithmListResponse> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  const query = params.toString();
+  return api.get<import("@/types/algorithms").AlgorithmListResponse>(
+    `/algorithms/by-document/${documentId}${query ? `?${query}` : ""}`,
+  );
+}
+
+/**
+ * Search algorithms across the workspace.
+ *
+ * @param params - Search parameters
+ * @returns Paginated search results
+ */
+export async function searchAlgorithms(params?: {
+  query?: string;
+  status?: string;
+  document_id?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<import("@/types/algorithms").AlgorithmSearchResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.query) searchParams.set("query", params.query);
+  if (params?.status) searchParams.set("status", params.status);
+  if (params?.document_id) searchParams.set("document_id", params.document_id);
+  if (params?.limit != null) searchParams.set("limit", String(params.limit));
+  if (params?.offset != null) searchParams.set("offset", String(params.offset));
+  const query = searchParams.toString();
+  return api.get<import("@/types/algorithms").AlgorithmSearchResponse>(
+    `/algorithms/search${query ? `?${query}` : ""}`,
+  );
+}
+
+/**
+ * Approve or reject an extracted algorithm.
+ *
+ * @param algorithmId - The algorithm to review
+ * @param status - The review decision: "approved" or "rejected"
+ * @returns Updated algorithm id and status
+ */
+export async function reviewAlgorithm(
+  algorithmId: string,
+  status: "approved" | "rejected",
+): Promise<import("@/types/algorithms").AlgorithmReviewResponse> {
+  return api.post<import("@/types/algorithms").AlgorithmReviewResponse>(
+    `/algorithms/${algorithmId}/review`,
+    { status },
+  );
+}
+
+/**
+ * Submit reviewed algorithms — queue embedding for approved algorithms.
+ *
+ * @param documentId - The document whose algorithms to submit
+ * @returns Submit result with counts
+ */
+export async function submitAlgorithms(
+  documentId: string,
+): Promise<import("@/types/algorithms").AlgorithmSubmitResponse> {
+  return api.post<import("@/types/algorithms").AlgorithmSubmitResponse>(
+    `/algorithms/by-document/${documentId}/submit`,
+    {},
+  );
+}
+
+/**
+ * Delete all algorithms extracted from a document.
+ *
+ * @param documentId - The document whose algorithms should be deleted
+ * @returns Number of algorithms deleted
+ */
+export async function deleteAlgorithms(
+  documentId: string,
+): Promise<import("@/types/algorithms").AlgorithmDeleteResponse> {
+  return api.delete<import("@/types/algorithms").AlgorithmDeleteResponse>(
+    `/algorithms/by-document/${documentId}`,
+  );
+}
+
+/**
+ * Delete a single algorithm by ID.
+ *
+ * @param algorithmId - The algorithm to delete
+ * @returns Number of algorithms deleted (1)
+ */
+export async function deleteAlgorithm(
+  algorithmId: string,
+): Promise<import("@/types/algorithms").AlgorithmDeleteResponse> {
+  return api.delete<import("@/types/algorithms").AlgorithmDeleteResponse>(
+    `/algorithms/${algorithmId}`,
+  );
+}
+
+// ============================================================================
 // Export default API object
 // ============================================================================
 
@@ -2006,6 +2140,14 @@ export const edgequakeApi = {
   getInjection,
   updateInjection,
   deleteInjection,
+
+  // Algorithms
+  extractAlgorithms,
+  getAlgorithms,
+  searchAlgorithms,
+  reviewAlgorithm,
+  deleteAlgorithms,
+  deleteAlgorithm,
 };
 
 export default edgequakeApi;

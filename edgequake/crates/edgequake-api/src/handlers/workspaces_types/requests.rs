@@ -237,4 +237,22 @@ pub struct UpdateWorkspaceApiRequest {
     /// Default PDF parser backend for this workspace ("vision" or "edgeparse").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pdf_parser_backend: Option<String>,
+
+    // === Algorithm LLM Configuration ===
+    /// LLM provider for algorithm analysis passes (inventory + verification).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_analysis_llm_provider: Option<String>,
+    /// LLM model for algorithm analysis passes (inventory + verification).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_analysis_llm_model: Option<String>,
+    /// LLM provider for algorithm extraction pass (detailed definitions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_extraction_llm_provider: Option<String>,
+    /// LLM model for algorithm extraction pass (detailed definitions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_extraction_llm_model: Option<String>,
+
+    /// Algorithm review mode: "auto" (auto-approve + embed) or "manual" (default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_review_mode: Option<String>,
 }

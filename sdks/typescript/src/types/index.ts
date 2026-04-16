@@ -16,3 +16,4 @@ export type * from "./lineage.js";
 export type * from "./query.js";
 export type * from "./tasks.js";
 export type * from "./workspaces.js";
+export type * from "./algorithms.js";

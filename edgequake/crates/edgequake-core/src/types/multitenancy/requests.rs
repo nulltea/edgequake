@@ -282,6 +282,16 @@ pub struct UpdateWorkspaceRequest {
     /// New PDF parser backend for PDF extraction (optional).
     /// Set to Some("") or Some("none") to clear the workspace override.
     pub pdf_parser_backend: Option<String>,
+    /// Algorithm analysis LLM provider (stages 1 and 3).
+    pub algorithm_analysis_llm_provider: Option<String>,
+    /// Algorithm analysis LLM model (stages 1 and 3).
+    pub algorithm_analysis_llm_model: Option<String>,
+    /// Algorithm extraction LLM provider (stage 2).
+    pub algorithm_extraction_llm_provider: Option<String>,
+    /// Algorithm extraction LLM model (stage 2).
+    pub algorithm_extraction_llm_model: Option<String>,
+    /// Algorithm review mode: "auto" or "manual".
+    pub algorithm_review_mode: Option<String>,
 }
 
 /// Statistics for a workspace.

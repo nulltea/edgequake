@@ -32,6 +32,9 @@ export * from "./cost";
 // Lineage types for document provenance tracking
 export * from "./lineage";
 
+// Algorithm extraction types
+export * from "./algorithms";
+
 // ============================================================================
 // Graph types
 // ============================================================================
@@ -706,6 +709,16 @@ export interface Workspace {
    * @implements Mission 03: Configurable PDF parser backend
    */
   pdf_parser_backend?: PdfParserBackend;
+  /** Algorithm analysis LLM provider (stages 1 and 3). */
+  algorithm_analysis_llm_provider?: string;
+  /** Algorithm analysis LLM model (stages 1 and 3). */
+  algorithm_analysis_llm_model?: string;
+  /** Algorithm extraction LLM provider (stage 2). */
+  algorithm_extraction_llm_provider?: string;
+  /** Algorithm extraction LLM model (stage 2). */
+  algorithm_extraction_llm_model?: string;
+  /** Algorithm review mode: "auto" or "manual" (default). */
+  algorithm_review_mode?: string;
   /**
    * Custom entity types for the extraction pipeline.
    * If absent, the server uses the default types (PERSON, ORGANIZATION, etc.).

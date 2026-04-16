@@ -141,6 +141,25 @@ impl WorkspaceServiceImpl {
         }
     }
 
+    /// Update an optional string field in both the workspace metadata JSONB and the struct field.
+    /// Empty or "none" clears the field; otherwise sets it.
+    fn update_optional_metadata_field(
+        metadata: &mut std::collections::HashMap<String, serde_json::Value>,
+        field: &mut Option<String>,
+        key: &str,
+        value: Option<String>,
+    ) {
+        if let Some(v) = value {
+            if v.is_empty() || v == "none" {
+                *field = None;
+                metadata.remove(key);
+            } else {
+                metadata.insert(key.to_string(), serde_json::json!(v));
+                *field = Some(v);
+            }
+        }
+    }
+
     /// Build metadata JSON with tenant configuration.
     ///
     /// Stores all tenant configuration fields in the metadata JSONB column,
@@ -684,6 +703,37 @@ impl WorkspaceService for WorkspaceServiceImpl {
                 )));
             }
         }
+        // Algorithm LLM configuration updates
+        Self::update_optional_metadata_field(
+            &mut workspace.metadata,
+            &mut workspace.algorithm_analysis_llm_provider,
+            "algorithm_analysis_llm_provider",
+            request.algorithm_analysis_llm_provider,
+        );
+        Self::update_optional_metadata_field(
+            &mut workspace.metadata,
+            &mut workspace.algorithm_analysis_llm_model,
+            "algorithm_analysis_llm_model",
+            request.algorithm_analysis_llm_model,
+        );
+        Self::update_optional_metadata_field(
+            &mut workspace.metadata,
+            &mut workspace.algorithm_extraction_llm_provider,
+            "algorithm_extraction_llm_provider",
+            request.algorithm_extraction_llm_provider,
+        );
+        Self::update_optional_metadata_field(
+            &mut workspace.metadata,
+            &mut workspace.algorithm_extraction_llm_model,
+            "algorithm_extraction_llm_model",
+            request.algorithm_extraction_llm_model,
+        );
+        Self::update_optional_metadata_field(
+            &mut workspace.metadata,
+            &mut workspace.algorithm_review_mode,
+            "algorithm_review_mode",
+            request.algorithm_review_mode,
+        );
         workspace.updated_at = chrono::Utc::now();
 
         // Store all config in metadata JSONB column (database schema uses metadata, not separate columns)
@@ -1479,6 +1529,33 @@ impl WorkspaceRow {
             .and_then(|v| v.as_str())
             .and_then(PdfParserBackend::from_env_str);
 
+        // Algorithm LLM config from metadata
+        let algorithm_analysis_llm_provider = metadata
+            .get("algorithm_analysis_llm_provider")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let algorithm_analysis_llm_model = metadata
+            .get("algorithm_analysis_llm_model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let algorithm_extraction_llm_provider = metadata
+            .get("algorithm_extraction_llm_provider")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let algorithm_extraction_llm_model = metadata
+            .get("algorithm_extraction_llm_model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let algorithm_review_mode = metadata
+            .get("algorithm_review_mode")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         Workspace {
             workspace_id: self.workspace_id,
             tenant_id: self.tenant_id,
@@ -1497,6 +1574,11 @@ impl WorkspaceRow {
             vision_llm_provider,
             vision_llm_model,
             pdf_parser_backend,
+            algorithm_analysis_llm_provider,
+            algorithm_analysis_llm_model,
+            algorithm_extraction_llm_provider,
+            algorithm_extraction_llm_model,
+            algorithm_review_mode,
         }
     }
 }

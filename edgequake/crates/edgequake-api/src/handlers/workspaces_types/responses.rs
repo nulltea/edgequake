@@ -105,6 +105,18 @@ pub struct WorkspaceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pdf_parser_backend: Option<String>,
 
+    // === Algorithm LLM Configuration ===
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_analysis_llm_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_analysis_llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_extraction_llm_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_extraction_llm_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm_review_mode: Option<String>,
+
     // === Entity Type Configuration (SPEC-085) ===
     /// Custom entity types configured for this workspace.
     /// None means the workspace uses server default_entity_types.
