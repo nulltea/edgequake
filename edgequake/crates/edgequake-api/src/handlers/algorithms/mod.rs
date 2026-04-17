@@ -155,38 +155,52 @@ async fn extract_algorithms_impl(
         )));
     }
 
-    // Fetch FULL markdown content (not KV chunks). Algorithm extraction uses its own
-    // context-aware, non-overlapping chunker tuned for LLM extraction windows.
-    //
-    // Why not KV chunks:
-    // - KV chunks have 100-token overlap which amplifies duplicates when fed into
-    //   Pass 1's sliding-window extraction.
-    // - KV chunks are sized (800 tokens) for the embedding model, not the extraction LLM.
+    // Determine source type and build task data.
+    // PDF documents: pass pdf_id so the processor uses layout detection + VLM (Pass 1).
+    // Text documents: fetch content and chunk it (fallback path).
     let source_type = metadata
         .get("source_type")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let pdf_id = metadata.get("pdf_id").and_then(|v| v.as_str());
 
-    let source_text = if source_type == "pdf" {
+    // Resolve vision provider/model from workspace settings for VLM recognition.
+    let (vision_provider, vision_model) = {
+        let ws = state
+            .workspace_service
+            .get_workspace(workspace_id)
+            .await
+            .ok()
+            .flatten();
+        (
+            ws.as_ref().and_then(|w| w.vision_llm_provider.clone()),
+            ws.as_ref().and_then(|w| w.vision_llm_model.clone()),
+        )
+    };
+
+    let task_data = if source_type == "pdf" {
+        // PDF path: processor will use layout detection + VLM to find algorithm blocks.
         let pdf_id_str = pdf_id
             .ok_or_else(|| ApiError::Internal("PDF document missing pdf_id".to_string()))?;
-        let pdf_uuid = uuid::Uuid::parse_str(pdf_id_str)
-            .map_err(|e| ApiError::Internal(format!("Invalid pdf_id: {e}")))?;
-        let pdf_storage = state
-            .pdf_storage
-            .as_ref()
-            .ok_or_else(|| ApiError::Internal("PDF storage not available".to_string()))?;
-        let pdf = pdf_storage
-            .get_pdf(&pdf_uuid)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to fetch PDF: {e}")))?
-            .ok_or_else(|| ApiError::NotFound("PDF document not found".to_string()))?;
-        pdf.markdown_content
-            .ok_or_else(|| ApiError::BadRequest("PDF has no extracted markdown content yet".to_string()))?
+
+        info!(
+            document_id = %request.document_id,
+            pdf_id = %pdf_id_str,
+            vision_provider = ?vision_provider,
+            vision_model = ?vision_model,
+            "Algorithm extraction: PDF document, will use layout detection + VLM"
+        );
+
+        AlgorithmExtractionData {
+            document_id: request.document_id.clone(),
+            workspace_id: workspace_id.to_string(),
+            chunks: vec![],
+            pdf_id: Some(pdf_id_str.to_string()),
+            vision_provider,
+            vision_model,
+        }
     } else {
-        // Text / markdown documents: stitch KV chunks together as a fallback full-text.
-        // (We'd ideally fetch a {doc_id}-content key but that isn't written today.)
+        // Text/markdown documents: fetch content and chunk with context-aware strategy.
         let mut stitched = String::new();
         let mut idx = 0;
         loop {
@@ -219,67 +233,55 @@ async fn extract_algorithms_impl(
                 "Document has no content; reprocess the document first".to_string(),
             ));
         }
-        stitched
-    };
 
-    if source_text.trim().is_empty() {
-        return Err(ApiError::BadRequest(
-            "Document content is empty".to_string(),
-        ));
-    }
+        let max_tokens = std::env::var("EDGEQUAKE_ALGO_CHUNK_MAX_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(4096);
+        let min_tokens = std::env::var("EDGEQUAKE_ALGO_CHUNK_MIN_TOKENS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(max_tokens / 4);
 
-    // Re-chunk with context-aware (markdown-aware) strategy, NO overlap.
-    // - No overlap fixes sliding-window Pass 1 duplicate amplification
-    // - Larger windows (configurable via EDGEQUAKE_ALGO_CHUNK_MAX_TOKENS) fit the
-    //   extraction LLM's context window rather than the embedding model's.
-    let max_tokens = std::env::var("EDGEQUAKE_ALGO_CHUNK_MAX_TOKENS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(4096);
-    let min_tokens = std::env::var("EDGEQUAKE_ALGO_CHUNK_MIN_TOKENS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(max_tokens / 4);
+        let algo_chunker_config = edgequake_pipeline::chunker::ChunkerConfig {
+            chunk_size: max_tokens,
+            chunk_overlap: 0,
+            min_chunk_size: min_tokens,
+            ..Default::default()
+        };
 
-    let algo_chunker_config = edgequake_pipeline::chunker::ChunkerConfig {
-        chunk_size: max_tokens,
-        chunk_overlap: 0, // KEY: no overlap
-        min_chunk_size: min_tokens,
-        ..Default::default()
-    };
+        let chunker_strategy = edgequake_pipeline::chunker::ContextAwareChunking;
+        let chunks: Vec<String> = {
+            use edgequake_pipeline::chunker::ChunkingStrategy;
+            chunker_strategy
+                .chunk(&stitched, &algo_chunker_config)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Algorithm chunking failed: {e}")))?
+                .into_iter()
+                .map(|c| c.content)
+                .collect()
+        };
 
-    let chunker_strategy = edgequake_pipeline::chunker::ContextAwareChunking;
-    let chunks: Vec<String> = {
-        use edgequake_pipeline::chunker::ChunkingStrategy;
-        chunker_strategy
-            .chunk(&source_text, &algo_chunker_config)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Algorithm chunking failed: {e}")))?
-            .into_iter()
-            .map(|c| c.content)
-            .collect()
-    };
+        if chunks.is_empty() {
+            return Err(ApiError::BadRequest(
+                "Context-aware chunker produced no chunks".to_string(),
+            ));
+        }
 
-    if chunks.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Context-aware chunker produced no chunks".to_string(),
-        ));
-    }
+        info!(
+            document_id = %request.document_id,
+            chunk_count = chunks.len(),
+            "Algorithm extraction: text document, chunked with context-aware strategy"
+        );
 
-    info!(
-        document_id = %request.document_id,
-        chunk_count = chunks.len(),
-        source_len = source_text.len(),
-        max_tokens = max_tokens,
-        min_tokens = min_tokens,
-        "Algorithm extraction: re-chunked with context-aware strategy (no overlap)"
-    );
-
-    // Create task for background processing via the task queue
-    let task_data = AlgorithmExtractionData {
-        document_id: request.document_id.clone(),
-        workspace_id: workspace_id.to_string(),
-        chunks,
+        AlgorithmExtractionData {
+            document_id: request.document_id.clone(),
+            workspace_id: workspace_id.to_string(),
+            chunks,
+            pdf_id: None,
+            vision_provider: None,
+            vision_model: None,
+        }
     };
 
     let task = Task::new(

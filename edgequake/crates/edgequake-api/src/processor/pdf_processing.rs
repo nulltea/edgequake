@@ -313,6 +313,24 @@ impl DocumentTaskProcessor {
             dir.push("edgequake-checkpoints");
             dir.to_string_lossy().to_string()
         });
+        // VLM-OCR: resolve provider base URL and model from vision settings.
+        let (vlm_base_url, vlm_model) = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
+            let provider = &data.vision_provider;
+            let base_url = match provider.as_str() {
+                "openai-compatible" => std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok(),
+                "openai" => std::env::var("OPENAI_BASE_URL").ok(),
+                "ollama" => std::env::var("OLLAMA_HOST").ok(),
+                _ => std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok(),
+            };
+            let model = data
+                .vision_model
+                .clone()
+                .filter(|s| !s.is_empty());
+            (base_url, model)
+        } else {
+            (None, None)
+        };
+
         let conversion_config = edgequake_pdf::PdfConversionConfig {
             page_count_hint: pdf.page_count.map(|count| count as usize),
             table_method: None,
@@ -327,6 +345,8 @@ impl DocumentTaskProcessor {
                     no_resume: is_reprocess,
                     progress_callback: Some(progress_callback),
                 }),
+            vlm_base_url,
+            vlm_model,
         };
 
         let markdown = match backend {

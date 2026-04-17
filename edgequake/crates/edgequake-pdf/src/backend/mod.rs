@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::PdfConversionError;
 
 pub use edgeparse::EdgeParsePdfConverter;
-pub use vlm_ocr::VlmOcrConverter;
+pub use vlm_ocr::{AlgorithmBlock, VlmOcrConverter, detect_algorithm_blocks};
 pub use vision::VisionPdfConverter;
 
 /// Runtime-selectable PDF parser backend.
@@ -92,6 +92,10 @@ pub struct PdfConversionConfig {
     pub table_method: Option<String>,
     pub filename: Option<String>,
     pub vision: Option<VisionConversionConfig>,
+    /// VLM-OCR: base URL of the OpenAI-compatible VLM server.
+    pub vlm_base_url: Option<String>,
+    /// VLM-OCR: model name to send in the API request.
+    pub vlm_model: Option<String>,
 }
 
 #[async_trait]

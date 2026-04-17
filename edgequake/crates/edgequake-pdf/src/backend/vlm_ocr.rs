@@ -33,9 +33,11 @@ impl PdfConverter for VlmOcrConverter {
     async fn convert(
         &self,
         pdf_bytes: &[u8],
-        _config: &PdfConversionConfig,
+        config: &PdfConversionConfig,
     ) -> Result<String, PdfConversionError> {
         let pdf_bytes = pdf_bytes.to_vec();
+        let vlm_base_url = config.vlm_base_url.clone();
+        let vlm_model = config.vlm_model.clone();
 
         tokio::task::spawn_blocking(move || {
             // 1. Resolve layout model directory.
@@ -65,8 +67,15 @@ impl PdfConverter for VlmOcrConverter {
                     PdfConversionError::Backend(format!("VLM-OCR: layout predictor failed: {e}"))
                 })?;
 
-            // 4. Create VLM client backend from env vars.
-            let vlm_config = VlmClientConfig::from_env();
+            // 4. Create VLM client backend.
+            // Priority: config fields (from workspace vision settings) → env vars.
+            let mut vlm_config = VlmClientConfig::from_env();
+            if let Some(url) = vlm_base_url {
+                vlm_config.base_url = url;
+            }
+            if let Some(model) = vlm_model {
+                vlm_config.model = Some(model);
+            }
             info!(
                 base_url = %vlm_config.base_url,
                 model = ?vlm_config.model,
@@ -115,6 +124,114 @@ impl PdfConverter for VlmOcrConverter {
     fn backend_name(&self) -> &'static str {
         "vlmocr"
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Algorithm block detection (used by algorithm extraction pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A detected algorithm block from layout detection + VLM recognition.
+#[derive(Debug, Clone)]
+pub struct AlgorithmBlock {
+    /// 1-based page number.
+    pub page: usize,
+    /// VLM-recognized markdown content of the algorithm block.
+    pub markdown: String,
+}
+
+/// Detect algorithm blocks in a PDF using layout detection + VLM recognition.
+///
+/// 1. Renders PDF pages to images
+/// 2. Runs PP-DocLayoutV2 layout detection
+/// 3. Filters for `Algorithm` elements
+/// 4. Recognizes each algorithm block via VLM (DocParser)
+/// 5. Returns clean markdown per algorithm block
+pub fn detect_algorithm_blocks(
+    pdf_bytes: &[u8],
+    vlm_config: VlmClientConfig,
+) -> Result<Vec<AlgorithmBlock>, PdfConversionError> {
+    use oar_ocr_core::domain::structure::LayoutElementType;
+
+    // 1. Resolve layout model
+    let model_dir = model_cache_dir()?;
+    let layout_path = model_dir.join(LAYOUT_MODEL);
+    if !layout_path.exists() {
+        return Err(PdfConversionError::Backend(format!(
+            "Algorithm detection: layout model not found at {}",
+            layout_path.display()
+        )));
+    }
+
+    // 2. Render PDF pages
+    let images = render_pdf_to_images(pdf_bytes)?;
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+    info!(pages = images.len(), "Algorithm detection: rendered PDF pages");
+
+    // 3. Build layout predictor
+    let layout_predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
+        .model_name(LAYOUT_MODEL_NAME)
+        .build(&layout_path)
+        .map_err(|e| {
+            PdfConversionError::Backend(format!("Algorithm detection: layout predictor failed: {e}"))
+        })?;
+
+    // 4. Build VLM backend + DocParser
+    info!(
+        base_url = %vlm_config.base_url,
+        model = ?vlm_config.model,
+        "Algorithm detection: using VLM server"
+    );
+    let backend = VlmClientBackend::new(vlm_config);
+    let parser = oar_ocr_vl::doc_parser::DocParser::new(&backend);
+
+    // 5. Process each page: detect layout → filter algorithms → recognize
+    let mut blocks = Vec::new();
+    for (page_idx, image) in images.into_iter().enumerate() {
+        let page_num = page_idx + 1;
+
+        let result = match parser.parse(&layout_predictor, image) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(page = page_num, error = %e, "Algorithm detection: page failed, skipping");
+                continue;
+            }
+        };
+
+        // Filter for algorithm elements only
+        let algo_elements: Vec<_> = result
+            .layout_elements
+            .iter()
+            .filter(|e| e.element_type == LayoutElementType::Algorithm)
+            .cloned()
+            .collect();
+
+        if algo_elements.is_empty() {
+            continue;
+        }
+
+        info!(
+            page = page_num,
+            count = algo_elements.len(),
+            "Algorithm detection: found algorithm blocks"
+        );
+
+        // Convert each algorithm element to markdown
+        let md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
+        if !md.trim().is_empty() {
+            blocks.push(AlgorithmBlock {
+                page: page_num,
+                markdown: md,
+            });
+        }
+    }
+
+    info!(
+        total_blocks = blocks.len(),
+        "Algorithm detection: completed"
+    );
+    Ok(blocks)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

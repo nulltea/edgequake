@@ -86,9 +86,19 @@ pub struct DirectoryScanData {
 pub struct AlgorithmExtractionData {
     pub document_id: String,
     pub workspace_id: String,
-    /// Document chunks (already chunked by the ingestion pipeline).
-    /// Algorithm extraction processes sliding pairs of chunks to fit within model context.
+    /// Document chunks (text documents only, fallback path).
+    /// For PDFs, `pdf_id` is set and layout detection is used instead.
     pub chunks: Vec<String>,
+    /// If set, the processor uses layout detection + VLM to find algorithm blocks
+    /// directly from the PDF pages instead of scanning text chunks.
+    #[serde(default)]
+    pub pdf_id: Option<String>,
+    /// Vision provider name for VLM recognition (e.g. "openai-compatible").
+    #[serde(default)]
+    pub vision_provider: Option<String>,
+    /// Vision model name for VLM recognition (e.g. "GLM-OCR").
+    #[serde(default)]
+    pub vision_model: Option<String>,
 }
 
 /// Algorithm embedding task payload — generates vector embeddings for approved algorithms.
