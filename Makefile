@@ -1217,6 +1217,12 @@ logs: ## Show recent logs from all services
 	@echo "$(BOLD)Docker Container Status:$(RESET)"
 	@cd $(DOCKER_DIR) && docker compose ps 2>/dev/null || echo "Docker not running"
 
+db-backup: ## Create a timestamped pg_dump backup in ~/.edgequake/backups
+	@bash scripts/backup-db.sh
+
+db-restore: ## Restore DB from backup. Usage: make db-restore [FILE=path/to/backup.sql.gz] (defaults to latest)
+	@bash scripts/restore-db.sh $(FILE)
+
 status: ## Show status of all services
 	@echo ""
 	@echo "$(BOLD)EdgeQuake Service Status$(RESET)"

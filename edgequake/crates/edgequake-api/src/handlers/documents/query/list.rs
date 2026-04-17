@@ -419,7 +419,12 @@ pub async fn list_documents(
         );
     }
 
-    // Calculate status counts for all documents
+    // Calculate status counts for all documents.
+    //
+    // The raw `status` field persists pipeline sub-stages (chunking, extracting, etc.)
+    // as first-class values — see `processor/status_updates.rs`. Treat every sub-stage
+    // as `processing` here so the UI's status filter and the "pipeline idle" banner
+    // don't hide documents that are actively being processed.
     let status_counts = StatusCounts {
         pending: documents
             .iter()
@@ -427,7 +432,25 @@ pub async fn list_documents(
             .count(),
         processing: documents
             .iter()
-            .filter(|d| d.status.as_deref() == Some("processing"))
+            .filter(|d| {
+                matches!(
+                    d.status.as_deref(),
+                    Some(
+                        "processing"
+                            | "preprocessing"
+                            | "converting"
+                            | "chunking"
+                            | "extracting"
+                            | "embedding"
+                            | "indexing"
+                            | "storing"
+                            | "algo_identifying"
+                            | "algo_extracting"
+                            | "algo_verifying"
+                            | "algo_embedding"
+                    )
+                )
+            })
             .count(),
         completed: documents
             .iter()

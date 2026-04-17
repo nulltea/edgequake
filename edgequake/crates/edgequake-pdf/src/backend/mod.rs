@@ -1,4 +1,6 @@
 mod edgeparse;
+mod kreuzberg;
+mod oar_ocr;
 mod vision;
 
 use std::sync::Arc;
@@ -9,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::PdfConversionError;
 
 pub use edgeparse::EdgeParsePdfConverter;
+pub use kreuzberg::KreuzbergConverter;
+pub use oar_ocr::OarOcrConverter;
 pub use vision::VisionPdfConverter;
 
 /// Runtime-selectable PDF parser backend.
@@ -18,6 +22,12 @@ pub enum PdfParserBackend {
     #[default]
     Vision,
     EdgeParse,
+    /// Kreuzberg-based backend (PDFium + RT-DETR v2 layout + TATR tables).
+    /// Was previously named "PdfExtract".
+    Kreuzberg,
+    /// OAR-OCR backend (PP-DocLayout_plus-L with dedicated `algorithm` class).
+    /// Best for academic papers with boxed protocols/algorithms.
+    OarOcr,
 }
 
 impl PdfParserBackend {
@@ -25,6 +35,9 @@ impl PdfParserBackend {
         match value.trim().to_ascii_lowercase().as_str() {
             "vision" | "llm" => Some(Self::Vision),
             "edgeparse" | "edge-parse" | "edge_parse" => Some(Self::EdgeParse),
+            // Accept both new "kreuzberg" and legacy "pdfextract" names for backward compat.
+            "kreuzberg" | "pdfextract" | "pdf-extract" | "pdf_extract" => Some(Self::Kreuzberg),
+            "oarocr" | "oar-ocr" | "oar_ocr" => Some(Self::OarOcr),
             _ => None,
         }
     }
@@ -40,6 +53,8 @@ impl PdfParserBackend {
         match self {
             Self::Vision => "vision",
             Self::EdgeParse => "edgeparse",
+            Self::Kreuzberg => "kreuzberg",
+            Self::OarOcr => "oarocr",
         }
     }
 }
@@ -98,6 +113,8 @@ pub fn create_pdf_converter(
     match backend {
         PdfParserBackend::Vision => Arc::new(VisionPdfConverter::new(llm_provider)),
         PdfParserBackend::EdgeParse => Arc::new(EdgeParsePdfConverter),
+        PdfParserBackend::Kreuzberg => Arc::new(KreuzbergConverter),
+        PdfParserBackend::OarOcr => Arc::new(OarOcrConverter),
     }
 }
 
@@ -117,5 +134,20 @@ mod tests {
         );
         assert_eq!(PdfParserBackend::Vision.as_str(), "vision");
         assert_eq!(PdfParserBackend::EdgeParse.as_str(), "edgeparse");
+        assert_eq!(PdfParserBackend::Kreuzberg.as_str(), "kreuzberg");
+        assert_eq!(PdfParserBackend::OarOcr.as_str(), "oarocr");
+        // Legacy "pdfextract" parses as Kreuzberg
+        assert_eq!(
+            PdfParserBackend::from_env_str("pdfextract"),
+            Some(PdfParserBackend::Kreuzberg)
+        );
+        assert_eq!(
+            PdfParserBackend::from_env_str("kreuzberg"),
+            Some(PdfParserBackend::Kreuzberg)
+        );
+        assert_eq!(
+            PdfParserBackend::from_env_str("oar-ocr"),
+            Some(PdfParserBackend::OarOcr)
+        );
     }
 }

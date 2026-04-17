@@ -54,7 +54,8 @@ pub use text_utils::calculate_line_numbers;
 
 // Re-export strategies
 pub use strategies::{
-    CharacterBasedChunking, ParagraphBoundaryChunking, SentenceBoundaryChunking, TokenBasedChunking,
+    CharacterBasedChunking, ContextAwareChunking, ParagraphBoundaryChunking,
+    SentenceBoundaryChunking, TokenBasedChunking,
 };
 
 /// Text chunker for splitting documents.

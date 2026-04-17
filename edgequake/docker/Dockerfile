@@ -20,14 +20,20 @@
 # keeps cross-compilation working via buildx without extra flags.
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
-FROM rust:bookworm AS builder
+FROM rust:trixie AS builder
 
 WORKDIR /app
 
 # Install build dependencies
+# cmake + build-essential are required by kreuzberg-tesseract (pulled in transitively by
+# kreuzberg's paddle-ocr feature, which we enable for layout-detection).
+# Tesseract + Leptonica are built from source by kreuzberg-tesseract via cmake — no need
+# for libtesseract-dev system package. Binary is statically linked.
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    cmake \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
@@ -51,7 +57,7 @@ RUN cargo build --release --locked
 # Stage 2: Runtime
 # ============================================
 # See builder-stage comment above for why --platform is omitted.
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 WORKDIR /app
 
@@ -64,14 +70,21 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -r -s /bin/false edgequake \
+    && useradd -r -m -d /home/edgequake -s /bin/false edgequake \
     && mkdir -p /tmp/edgequake-pdfium-cache \
-    && chmod 1777 /tmp/edgequake-pdfium-cache
+    && chmod 1777 /tmp/edgequake-pdfium-cache \
+    && mkdir -p /home/edgequake/.cache/kreuzberg \
+    && chown -R edgequake:edgequake /home/edgequake
 
 # Tell pdfium-auto where to write its extracted shared library.  /tmp is always
 # writable by all users; the sticky-bit above prevents other processes from
 # removing files they do not own.  Users may override via PDFIUM_AUTO_CACHE_DIR.
 ENV PDFIUM_AUTO_CACHE_DIR=/tmp/edgequake-pdfium-cache
+
+# Kreuzberg downloads RT-DETR v2 + TATR models from HuggingFace on first use.
+# Cache is stored in ~/.cache/kreuzberg — requires a writable home directory.
+ENV HOME=/home/edgequake
+ENV XDG_CACHE_HOME=/home/edgequake/.cache
 
 # Copy binary from builder
 COPY --from=builder /app/target/release/edgequake /usr/local/bin/

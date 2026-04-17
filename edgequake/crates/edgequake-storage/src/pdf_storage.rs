@@ -155,6 +155,10 @@ pub enum ExtractionMethod {
     Hybrid,
     /// EdgeParse CPU-only extraction.
     EdgeParse,
+    /// Kreuzberg-based extraction (PDFium + RT-DETR v2 layout + TATR tables).
+    Kreuzberg,
+    /// OAR-OCR extraction (PP-DocLayout_plus-L + PP-OCRv5).
+    OarOcr,
 }
 
 impl ExtractionMethod {
@@ -165,6 +169,8 @@ impl ExtractionMethod {
             Self::Vision => "vision",
             Self::Hybrid => "hybrid",
             Self::EdgeParse => "edgeparse",
+            Self::Kreuzberg => "kreuzberg",
+            Self::OarOcr => "oarocr",
         }
     }
 }
@@ -179,6 +185,9 @@ impl std::str::FromStr for ExtractionMethod {
             "vision" => Ok(Self::Vision),
             "hybrid" => Ok(Self::Hybrid),
             "edgeparse" => Ok(Self::EdgeParse),
+            // Accept legacy "pdfextract" as Kreuzberg for backward compat.
+            "kreuzberg" | "pdfextract" => Ok(Self::Kreuzberg),
+            "oarocr" => Ok(Self::OarOcr),
             _ => Err(StorageError::InvalidData(format!(
                 "Invalid extraction method: {}",
                 s

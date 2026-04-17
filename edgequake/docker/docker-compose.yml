@@ -33,6 +33,7 @@ services:
             EDGEQUAKE_EXTRACTION_CONCURRENCY: "${EDGEQUAKE_EXTRACTION_CONCURRENCY:-4}"
             MAX_TASKS_PER_TENANT: "${MAX_TASKS_PER_TENANT:-1}"
             PDFIUM_AUTO_CACHE_DIR: "${PDFIUM_AUTO_CACHE_DIR:-/tmp/edgequake-pdfium-cache}"
+            EDGEQUAKE_OAR_OCR_MODEL_DIR: /var/cache/edgequake/oar-ocr-models
             RUST_LOG: "info,edgequake=debug"
         extra_hosts:
             - "host.docker.internal:host-gateway"
@@ -43,6 +44,7 @@ services:
             - edgequake-network
         volumes:
             - ${HOME}/.edgequake/models.toml:/config/models.toml:ro
+            - ${HOME}/.edgequake/oar-ocr-models:/var/cache/edgequake/oar-ocr-models
         healthcheck:
             test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
             interval: 30s

@@ -38,7 +38,15 @@ export function LineageTree({ lineage }: LineageTreeProps) {
         <>
           <LineageNode
             icon={<FileSearch className="h-3.5 w-3.5" />}
-            label={`PDF → Markdown (${lineage.pdf_extraction_method === 'edgeparse' ? 'EdgeParse' : 'Vision'})`}
+            label={`PDF → Markdown (${
+              lineage.pdf_extraction_method === 'edgeparse'
+                ? 'EdgeParse'
+                : lineage.pdf_extraction_method === 'kreuzberg'
+                  ? 'Kreuzberg'
+                  : lineage.pdf_extraction_method === 'oarocr'
+                    ? 'OAR-OCR'
+                    : 'Vision'
+            })`}
             details={[
               lineage.pdf_extraction_method,
               lineage.pdf_vision_model,

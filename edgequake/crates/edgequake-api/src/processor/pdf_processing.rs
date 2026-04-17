@@ -221,6 +221,8 @@ impl DocumentTaskProcessor {
         let extraction_method = match backend {
             edgequake_pdf::PdfParserBackend::Vision => ExtractionMethod::Vision,
             edgequake_pdf::PdfParserBackend::EdgeParse => ExtractionMethod::EdgeParse,
+            edgequake_pdf::PdfParserBackend::Kreuzberg => ExtractionMethod::Kreuzberg,
+            edgequake_pdf::PdfParserBackend::OarOcr => ExtractionMethod::OarOcr,
         };
 
         let default_vision_model = || {
@@ -234,6 +236,8 @@ impl DocumentTaskProcessor {
         let vision_model = match backend {
             edgequake_pdf::PdfParserBackend::Vision => Some(default_vision_model()),
             edgequake_pdf::PdfParserBackend::EdgeParse => None,
+            edgequake_pdf::PdfParserBackend::Kreuzberg => None,
+            edgequake_pdf::PdfParserBackend::OarOcr => None,
         };
 
         let converter = match backend {
@@ -271,7 +275,9 @@ impl DocumentTaskProcessor {
                     ));
                 }
             }
-            edgequake_pdf::PdfParserBackend::EdgeParse => {
+            edgequake_pdf::PdfParserBackend::EdgeParse
+            | edgequake_pdf::PdfParserBackend::Kreuzberg
+            | edgequake_pdf::PdfParserBackend::OarOcr => {
                 edgequake_pdf::create_pdf_converter(backend, None)
             }
         };
@@ -409,17 +415,56 @@ impl DocumentTaskProcessor {
                         ))
                     })?
             }
+            edgequake_pdf::PdfParserBackend::Kreuzberg => {
+                info!(
+                    pdf_id = %data.pdf_id,
+                    page_count = page_count,
+                    "Starting Kreuzberg PDF conversion (deterministic, no LLM)"
+                );
+                converter
+                    .convert(&pdf.pdf_data, &conversion_config)
+                    .await
+                    .map_err(|e| {
+                        edgequake_tasks::TaskError::Processing(format!(
+                            "PDF conversion failed: {e}"
+                        ))
+                    })?
+            }
+            edgequake_pdf::PdfParserBackend::OarOcr => {
+                info!(
+                    pdf_id = %data.pdf_id,
+                    page_count = page_count,
+                    "Starting OAR-OCR PDF conversion (PP-DocLayout + PP-OCRv5)"
+                );
+                converter
+                    .convert(&pdf.pdf_data, &conversion_config)
+                    .await
+                    .map_err(|e| {
+                        edgequake_tasks::TaskError::Processing(format!(
+                            "PDF conversion failed: {e}"
+                        ))
+                    })?
+            }
         };
 
         let markdown = strip_nul_bytes(markdown);
 
-        let extraction_errors = if backend == edgequake_pdf::PdfParserBackend::EdgeParse {
+        // Low-content warning for deterministic (no-LLM) backends that may fail silently
+        // on scanned / image-only PDFs.
+        let is_deterministic = matches!(
+            backend,
+            edgequake_pdf::PdfParserBackend::EdgeParse
+                | edgequake_pdf::PdfParserBackend::Kreuzberg
+                | edgequake_pdf::PdfParserBackend::OarOcr
+        );
+        let extraction_errors = if is_deterministic {
             let avg_chars_per_page = markdown.len() / page_count.max(1);
             if avg_chars_per_page < 50 {
                 warn!(
                     pdf_id = %data.pdf_id,
+                    backend = backend.as_str(),
                     avg_chars_per_page,
-                    "Low text content from EdgeParse — PDF may be scanned/image-only"
+                    "Low text content — PDF may be scanned/image-only"
                 );
                 Some(json!({
                     "low_content_warning": {

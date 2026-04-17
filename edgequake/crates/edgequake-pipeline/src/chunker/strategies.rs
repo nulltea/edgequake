@@ -364,3 +364,76 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
 
     Ok(chunks)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Context-Aware Chunking
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Markdown-aware chunking that respects heading hierarchy and structure.
+///
+/// Uses the `text-splitter` crate's `MarkdownSplitter` which understands markdown
+/// syntax (headings, lists, code fences, paragraphs) and splits at natural
+/// structural boundaries. Token counts use char estimation (4 chars ≈ 1 token).
+///
+/// Unlike `TokenBasedChunking`, this strategy:
+/// - Never splits mid-heading-section when possible
+/// - Respects markdown list / code block boundaries
+/// - Is intended for LLM extraction contexts (not embedding)
+///
+/// Ported from RAGSearcher's `context_aware.rs`. Used by algorithm extraction.
+pub struct ContextAwareChunking;
+
+#[async_trait]
+impl ChunkingStrategy for ContextAwareChunking {
+    async fn chunk(&self, content: &str, config: &ChunkerConfig) -> Result<Vec<ChunkResult>> {
+        use text_splitter::{ChunkConfig, MarkdownSplitter};
+
+        if content.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Convert token-based config to chars (4 chars ≈ 1 token, EdgeQuake's
+        // existing heuristic). text-splitter's default sizer counts chars.
+        let min_chars = config.min_chunk_size.saturating_mul(4);
+        let max_chars = config.chunk_size.saturating_mul(4);
+        let overlap_chars = config.chunk_overlap.saturating_mul(4);
+
+        // text-splitter requires max > 0 and overlap < max
+        let max_chars = max_chars.max(256);
+        let min_chars = min_chars.min(max_chars.saturating_sub(1));
+        let overlap_chars = overlap_chars.min(max_chars.saturating_sub(1));
+
+        let range = if min_chars > 0 && min_chars < max_chars {
+            min_chars..max_chars
+        } else {
+            0..max_chars
+        };
+
+        let splitter_config = ChunkConfig::new(range)
+            .with_overlap(overlap_chars)
+            .map_err(|e| {
+                crate::error::PipelineError::ChunkingError(format!(
+                    "Invalid context-aware chunk config (overlap >= capacity): {e}"
+                ))
+            })?
+            .with_trim(true);
+
+        let splitter = MarkdownSplitter::new(splitter_config);
+        let text_chunks: Vec<&str> = splitter.chunks(content).collect();
+
+        Ok(text_chunks
+            .into_iter()
+            .filter(|c| c.trim().len() >= 50)
+            .enumerate()
+            .map(|(idx, c)| ChunkResult {
+                content: c.to_string(),
+                tokens: estimate_tokens(c),
+                chunk_order_index: idx,
+            })
+            .collect())
+    }
+
+    fn name(&self) -> &str {
+        "context_aware"
+    }
+}

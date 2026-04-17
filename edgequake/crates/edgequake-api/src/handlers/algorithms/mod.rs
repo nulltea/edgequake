@@ -155,78 +155,124 @@ async fn extract_algorithms_impl(
         )));
     }
 
-    // Fetch document chunks from KV (stored as {doc_id}-chunk-0, {doc_id}-chunk-1, ...)
-    let mut chunks: Vec<String> = Vec::new();
-    let mut i = 0;
-    loop {
-        let chunk_key = format!("{}-chunk-{}", request.document_id, i);
-        let chunk_value = state
-            .kv_storage
-            .get_by_id(&chunk_key)
+    // Fetch FULL markdown content (not KV chunks). Algorithm extraction uses its own
+    // context-aware, non-overlapping chunker tuned for LLM extraction windows.
+    //
+    // Why not KV chunks:
+    // - KV chunks have 100-token overlap which amplifies duplicates when fed into
+    //   Pass 1's sliding-window extraction.
+    // - KV chunks are sized (800 tokens) for the embedding model, not the extraction LLM.
+    let source_type = metadata
+        .get("source_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let pdf_id = metadata.get("pdf_id").and_then(|v| v.as_str());
+
+    let source_text = if source_type == "pdf" {
+        let pdf_id_str = pdf_id
+            .ok_or_else(|| ApiError::Internal("PDF document missing pdf_id".to_string()))?;
+        let pdf_uuid = uuid::Uuid::parse_str(pdf_id_str)
+            .map_err(|e| ApiError::Internal(format!("Invalid pdf_id: {e}")))?;
+        let pdf_storage = state
+            .pdf_storage
+            .as_ref()
+            .ok_or_else(|| ApiError::Internal("PDF storage not available".to_string()))?;
+        let pdf = pdf_storage
+            .get_pdf(&pdf_uuid)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to fetch chunk {i}: {e}")))?;
-        match chunk_value {
-            Some(v) => {
-                let text = match v.as_str() {
-                    Some(s) => s.to_string(),
-                    None => {
-                        // Chunks are sometimes stored as JSON objects with a content field
-                        v.get("content")
-                            .and_then(|c| c.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| v.to_string())
+            .map_err(|e| ApiError::Internal(format!("Failed to fetch PDF: {e}")))?
+            .ok_or_else(|| ApiError::NotFound("PDF document not found".to_string()))?;
+        pdf.markdown_content
+            .ok_or_else(|| ApiError::BadRequest("PDF has no extracted markdown content yet".to_string()))?
+    } else {
+        // Text / markdown documents: stitch KV chunks together as a fallback full-text.
+        // (We'd ideally fetch a {doc_id}-content key but that isn't written today.)
+        let mut stitched = String::new();
+        let mut idx = 0;
+        loop {
+            let key = format!("{}-chunk-{}", request.document_id, idx);
+            match state
+                .kv_storage
+                .get_by_id(&key)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch chunk {idx}: {e}")))?
+            {
+                Some(v) => {
+                    let text = v
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| v.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_else(|| v.to_string());
+                    if !text.is_empty() {
+                        if !stitched.is_empty() {
+                            stitched.push_str("\n\n");
+                        }
+                        stitched.push_str(&text);
                     }
-                };
-                if !text.is_empty() {
-                    chunks.push(text);
+                    idx += 1;
                 }
-                i += 1;
+                None => break,
             }
-            None => break,
         }
+        if stitched.is_empty() {
+            return Err(ApiError::BadRequest(
+                "Document has no content; reprocess the document first".to_string(),
+            ));
+        }
+        stitched
+    };
+
+    if source_text.trim().is_empty() {
+        return Err(ApiError::BadRequest(
+            "Document content is empty".to_string(),
+        ));
     }
 
+    // Re-chunk with context-aware (markdown-aware) strategy, NO overlap.
+    // - No overlap fixes sliding-window Pass 1 duplicate amplification
+    // - Larger windows (configurable via EDGEQUAKE_ALGO_CHUNK_MAX_TOKENS) fit the
+    //   extraction LLM's context window rather than the embedding model's.
+    let max_tokens = std::env::var("EDGEQUAKE_ALGO_CHUNK_MAX_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(4096);
+    let min_tokens = std::env::var("EDGEQUAKE_ALGO_CHUNK_MIN_TOKENS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(max_tokens / 4);
+
+    let algo_chunker_config = edgequake_pipeline::chunker::ChunkerConfig {
+        chunk_size: max_tokens,
+        chunk_overlap: 0, // KEY: no overlap
+        min_chunk_size: min_tokens,
+        ..Default::default()
+    };
+
+    let chunker_strategy = edgequake_pipeline::chunker::ContextAwareChunking;
+    let chunks: Vec<String> = {
+        use edgequake_pipeline::chunker::ChunkingStrategy;
+        chunker_strategy
+            .chunk(&source_text, &algo_chunker_config)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Algorithm chunking failed: {e}")))?
+            .into_iter()
+            .map(|c| c.content)
+            .collect()
+    };
+
     if chunks.is_empty() {
-        // Fallback: fetch full content if no chunks exist (e.g., legacy documents)
-        let source_type = metadata
-            .get("source_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let pdf_id = metadata.get("pdf_id").and_then(|v| v.as_str());
-
-        let source_text = if source_type == "pdf" {
-            let pdf_id_str = pdf_id.ok_or_else(|| {
-                ApiError::Internal("PDF document missing pdf_id".to_string())
-            })?;
-            let pdf_uuid = uuid::Uuid::parse_str(pdf_id_str)
-                .map_err(|e| ApiError::Internal(format!("Invalid pdf_id: {e}")))?;
-            let pdf_storage = state.pdf_storage.as_ref().ok_or_else(|| {
-                ApiError::Internal("PDF storage not available".to_string())
-            })?;
-            let pdf = pdf_storage
-                .get_pdf(&pdf_uuid)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to fetch PDF: {e}")))?
-                .ok_or_else(|| ApiError::NotFound("PDF document not found".to_string()))?;
-            pdf.markdown_content.ok_or_else(|| {
-                ApiError::BadRequest("PDF has no extracted markdown content yet".to_string())
-            })?
-        } else {
-            return Err(ApiError::BadRequest(
-                "Document has no chunks; reprocess the document first".to_string(),
-            ));
-        };
-
-        if source_text.is_empty() {
-            return Err(ApiError::BadRequest("Document content is empty".to_string()));
-        }
-        chunks.push(source_text);
+        return Err(ApiError::BadRequest(
+            "Context-aware chunker produced no chunks".to_string(),
+        ));
     }
 
     info!(
         document_id = %request.document_id,
         chunk_count = chunks.len(),
-        "Algorithm extraction: fetched document chunks"
+        source_len = source_text.len(),
+        max_tokens = max_tokens,
+        min_tokens = min_tokens,
+        "Algorithm extraction: re-chunked with context-aware strategy (no overlap)"
     );
 
     // Create task for background processing via the task queue

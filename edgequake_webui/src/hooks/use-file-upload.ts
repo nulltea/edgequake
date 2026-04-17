@@ -34,7 +34,7 @@ export interface UseFileUploadOptions {
   /** Callback when upload starts (e.g., to switch filter) */
   onUploadStart?: () => void;
   /** Optional per-upload PDF parser backend override. */
-  pdfParserBackend?: "vision" | "edgeparse";
+  pdfParserBackend?: "vision" | "edgeparse" | "kreuzberg" | "oarocr";
 }
 
 export interface UseFileUploadReturn {
