@@ -201,6 +201,16 @@ impl PipelineProgressCallback {
                 match kv.get_by_id(&metadata_key).await {
                     Ok(Some(existing)) => {
                         if let Some(mut obj) = existing.as_object().cloned() {
+                            // Only update if still in the converting stage — avoid
+                            // overwriting later stages (chunking, embedding) with
+                            // stale progress from async page callbacks.
+                            let current_stage = obj.get("current_stage")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if current_stage != "converting" && current_stage != "processing" {
+                                return;
+                            }
+
                             obj.insert(
                                 "stage_message".to_string(),
                                 serde_json::json!(stage_message),

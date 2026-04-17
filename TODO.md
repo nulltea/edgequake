@@ -24,3 +24,5 @@
 - `edgequake/crates/edgequake-api/src/processor/status_updates.rs` — `update_document_status()` creates new metadata without workspace_id if existing metadata is missing
 - Server startup auto-recovery code (grep for "Auto-recovered after server restart")
 - `edgequake/crates/edgequake-api/src/processor/algorithm_extraction.rs` — calls `update_document_status()` which modifies document metadata during algo extraction
+
+## Switch to context aware chunker

@@ -2127,6 +2127,7 @@ dependencies = [
  "image",
  "oar-ocr-core",
  "oar-ocr-vl",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",

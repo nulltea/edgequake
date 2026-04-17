@@ -33,9 +33,6 @@ services:
             EDGEQUAKE_EXTRACTION_CONCURRENCY: "${EDGEQUAKE_EXTRACTION_CONCURRENCY:-4}"
             MAX_TASKS_PER_TENANT: "${MAX_TASKS_PER_TENANT:-1}"
             EDGEQUAKE_OAR_OCR_MODEL_DIR: /var/cache/edgequake/oar-ocr-models
-            EDGEQUAKE_LLAMACPP_URL: "${EDGEQUAKE_LLAMACPP_URL:-http://glm-ocr:8081}"
-            EDGEQUAKE_LLAMACPP_MODEL: "${EDGEQUAKE_LLAMACPP_MODEL:-}"
-            EDGEQUAKE_LLAMACPP_TIMEOUT: "${EDGEQUAKE_LLAMACPP_TIMEOUT:-120}"
             RUST_LOG: "info,edgequake=debug"
         extra_hosts:
             - "host.docker.internal:host-gateway"

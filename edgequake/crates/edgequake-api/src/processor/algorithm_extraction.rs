@@ -77,19 +77,11 @@ impl DocumentTaskProcessor {
                 .map_err(|e| TaskError::Process(format!("Failed to fetch PDF: {e}")))?
                 .ok_or_else(|| TaskError::Process("PDF not found".to_string()))?;
 
-            // Resolve VLM config: workspace vision settings → env var fallback.
+            // Resolve VLM config: always use aperture, model from workspace settings.
             let vlm_config = {
                 let mut cfg = edgequake_pdf::backend::vlm_client::VlmClientConfig::from_env();
-                if let Some(ref provider) = data.vision_provider {
-                    let base_url = match provider.as_str() {
-                        "openai-compatible" => std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok(),
-                        "openai" => std::env::var("OPENAI_BASE_URL").ok(),
-                        "ollama" => std::env::var("OLLAMA_HOST").ok(),
-                        _ => std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok(),
-                    };
-                    if let Some(url) = base_url {
-                        cfg.base_url = url;
-                    }
+                if let Ok(url) = std::env::var("OPENAI_COMPATIBLE_BASE_URL") {
+                    cfg.base_url = url;
                 }
                 if let Some(ref model) = data.vision_model {
                     if !model.is_empty() {

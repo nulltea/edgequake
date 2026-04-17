@@ -313,15 +313,12 @@ impl DocumentTaskProcessor {
             dir.push("edgequake-checkpoints");
             dir.to_string_lossy().to_string()
         });
-        // VLM-OCR: resolve provider base URL and model from vision settings.
+        // VLM-OCR: resolve base URL and model from vision settings.
+        // Always use OPENAI_COMPATIBLE_BASE_URL (aperture) — OCR models are served
+        // through aperture and routed by model name. The vision_model from workspace
+        // settings (e.g. "GLM-OCR") selects the backend.
         let (vlm_base_url, vlm_model) = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
-            let provider = &data.vision_provider;
-            let base_url = match provider.as_str() {
-                "openai-compatible" => std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok(),
-                "openai" => std::env::var("OPENAI_BASE_URL").ok(),
-                "ollama" => std::env::var("OLLAMA_HOST").ok(),
-                _ => std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok(),
-            };
+            let base_url = std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok();
             let model = data
                 .vision_model
                 .clone()
@@ -331,20 +328,22 @@ impl DocumentTaskProcessor {
             (None, None)
         };
 
+        // VisionConversionConfig carries the progress callback + concurrency.
+        // Both Vision and VLM-OCR backends read from it.
+        let vision_config = edgequake_pdf::VisionConversionConfig {
+            model: vision_model.clone(),
+            concurrency: Some(concurrency),
+            dpi: Some(dpi),
+            checkpoint_dir: Some(checkpoint_dir),
+            no_resume: is_reprocess,
+            progress_callback: Some(progress_callback),
+        };
+
         let conversion_config = edgequake_pdf::PdfConversionConfig {
             page_count_hint: pdf.page_count.map(|count| count as usize),
             table_method: None,
             filename: Some(pdf.filename.clone()),
-            vision: vision_model
-                .clone()
-                .map(|model| edgequake_pdf::VisionConversionConfig {
-                    model: Some(model),
-                    concurrency: Some(concurrency),
-                    dpi: Some(dpi),
-                    checkpoint_dir: Some(checkpoint_dir),
-                    no_resume: is_reprocess,
-                    progress_callback: Some(progress_callback),
-                }),
+            vision: Some(vision_config),
             vlm_base_url,
             vlm_model,
         };

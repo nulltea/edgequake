@@ -40,23 +40,15 @@ impl Default for VlmClientConfig {
 }
 
 impl VlmClientConfig {
-    /// Build config from environment variables.
+    /// Build config from environment variables (fallback only).
     ///
-    /// - `EDGEQUAKE_LLAMACPP_URL` — base URL (required, falls back to `http://localhost:8081`)
-    /// - `EDGEQUAKE_LLAMACPP_MODEL` — model name (optional)
-    /// - `EDGEQUAKE_LLAMACPP_TIMEOUT` — timeout in seconds (default 120)
+    /// Prefer passing base_url and model explicitly from workspace vision settings.
     pub fn from_env() -> Self {
-        let base_url = std::env::var("EDGEQUAKE_LLAMACPP_URL")
+        let base_url = std::env::var("OPENAI_COMPATIBLE_BASE_URL")
+            .or_else(|_| std::env::var("OPENAI_BASE_URL"))
             .unwrap_or_else(|_| "http://localhost:8081".into());
-        let model = std::env::var("EDGEQUAKE_LLAMACPP_MODEL").ok().filter(|s| !s.is_empty());
-        let timeout_secs = std::env::var("EDGEQUAKE_LLAMACPP_TIMEOUT")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(120);
         Self {
             base_url,
-            model,
-            timeout_secs,
             ..Default::default()
         }
     }
@@ -102,7 +94,13 @@ impl VlmClientBackend {
     ) -> Result<String, OCRError> {
         let data_uri = self.encode_image(image)?;
 
-        let url = format!("{}/v1/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let base = self.config.base_url.trim_end_matches('/');
+        // If the base_url already ends with /v1 (e.g. aperture), don't double it.
+        let url = if base.ends_with("/v1") {
+            format!("{}/chat/completions", base)
+        } else {
+            format!("{}/v1/chat/completions", base)
+        };
 
         let mut body = json!({
             "max_tokens": max_tokens,

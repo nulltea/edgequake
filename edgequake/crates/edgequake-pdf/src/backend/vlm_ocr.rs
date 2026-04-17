@@ -12,6 +12,7 @@
 //!   - Timeout: `$EDGEQUAKE_LLAMACPP_TIMEOUT` (default 120s)
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -38,8 +39,24 @@ impl PdfConverter for VlmOcrConverter {
         let pdf_bytes = pdf_bytes.to_vec();
         let vlm_base_url = config.vlm_base_url.clone();
         let vlm_model = config.vlm_model.clone();
+        let concurrency = config
+            .vision
+            .as_ref()
+            .and_then(|v| v.concurrency)
+            .unwrap_or_else(|| {
+                std::env::var("EDGEQUAKE_PDF_CONCURRENCY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(4)
+            });
+        let progress_cb = config
+            .vision
+            .as_ref()
+            .and_then(|v| v.progress_callback.clone());
 
         tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+
             // 1. Resolve layout model directory.
             let model_dir = model_cache_dir()?;
             let layout_path = model_dir.join(LAYOUT_MODEL);
@@ -59,6 +76,10 @@ impl PdfConverter for VlmOcrConverter {
             let page_count = images.len();
             info!(pages = page_count, "VLM-OCR: rendered PDF pages");
 
+            if let Some(ref cb) = progress_cb {
+                cb.on_conversion_start(page_count);
+            }
+
             // 3. Build layout predictor (ONNX, fast).
             let layout_predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
                 .model_name(LAYOUT_MODEL_NAME)
@@ -68,7 +89,6 @@ impl PdfConverter for VlmOcrConverter {
                 })?;
 
             // 4. Create VLM client backend.
-            // Priority: config fields (from workspace vision settings) → env vars.
             let mut vlm_config = VlmClientConfig::from_env();
             if let Some(url) = vlm_base_url {
                 vlm_config.base_url = url;
@@ -79,33 +99,77 @@ impl PdfConverter for VlmOcrConverter {
             info!(
                 base_url = %vlm_config.base_url,
                 model = ?vlm_config.model,
+                concurrency = concurrency,
                 "VLM-OCR: connecting to VLM server"
             );
             let backend = VlmClientBackend::new(vlm_config);
-
-            // 5. Create document parser.
             let parser = oar_ocr_vl::doc_parser::DocParser::new(&backend);
 
-            // 6. Process each page.
+            // 5. Process pages concurrently with rayon.
+            let completed = Arc::new(AtomicUsize::new(0));
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(concurrency)
+                .build()
+                .map_err(|e| PdfConversionError::Internal(format!("rayon pool: {e}")))?;
+
+            let results: Vec<(usize, Option<String>)> = pool.install(|| {
+                images
+                    .into_par_iter()
+                    .enumerate()
+                    .map(|(i, image)| {
+                        let page_num = i + 1;
+
+                        if let Some(ref cb) = progress_cb {
+                            cb.on_page_start(page_num, page_count);
+                        }
+
+                        let md = match parser.parse(&layout_predictor, image) {
+                            Ok(result) => {
+                                let md = result.to_markdown();
+                                if md.trim().is_empty() { None } else { Some(md) }
+                            }
+                            Err(e) => {
+                                warn!(page = page_num, error = %e, "VLM-OCR: page failed");
+                                if let Some(ref cb) = progress_cb {
+                                    cb.on_page_error(page_num, page_count, e.to_string());
+                                }
+                                None
+                            }
+                        };
+
+                        let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                        if let Some(ref cb) = progress_cb {
+                            cb.on_page_complete(page_num, page_count, md.as_ref().map_or(0, |s| s.len()));
+                        }
+                        info!(page = page_num, done = done, total = page_count, "VLM-OCR: page completed");
+
+                        (i, md)
+                    })
+                    .collect()
+            });
+
+            // 6. Assemble markdown in page order.
+            let mut sorted = results;
+            sorted.sort_by_key(|(i, _)| *i);
+
             let mut markdown = String::new();
             let mut succeeded = 0usize;
-            for (i, image) in images.into_iter().enumerate() {
-                match parser.parse(&layout_predictor, image) {
-                    Ok(result) => {
-                        if !markdown.is_empty() {
-                            markdown.push_str("\n\n");
-                        }
-                        markdown.push_str(&result.to_markdown());
-                        succeeded += 1;
+            for (_, md) in sorted {
+                if let Some(page_md) = md {
+                    if !markdown.is_empty() {
+                        markdown.push_str("\n\n");
                     }
-                    Err(e) => {
-                        warn!(page = i + 1, error = %e, "VLM-OCR: page failed, skipping");
-                    }
+                    markdown.push_str(&page_md);
+                    succeeded += 1;
                 }
             }
 
             if markdown.trim().is_empty() {
                 return Err(PdfConversionError::EmptyOutput("VLM-OCR returned no text"));
+            }
+
+            if let Some(ref cb) = progress_cb {
+                cb.on_conversion_complete(page_count, succeeded);
             }
 
             info!(
