@@ -159,6 +159,8 @@ pub enum ExtractionMethod {
     Kreuzberg,
     /// OAR-OCR extraction (PP-DocLayout_plus-L + PP-OCRv5).
     OarOcr,
+    /// OAR-OCR-VL extraction (PP-DocLayoutV2 + UniRec VLM).
+    OarOcrVl,
 }
 
 impl ExtractionMethod {
@@ -171,6 +173,7 @@ impl ExtractionMethod {
             Self::EdgeParse => "edgeparse",
             Self::Kreuzberg => "kreuzberg",
             Self::OarOcr => "oarocr",
+            Self::OarOcrVl => "oarocrvl",
         }
     }
 }
@@ -188,6 +191,7 @@ impl std::str::FromStr for ExtractionMethod {
             // Accept legacy "pdfextract" as Kreuzberg for backward compat.
             "kreuzberg" | "pdfextract" => Ok(Self::Kreuzberg),
             "oarocr" => Ok(Self::OarOcr),
+            "oarocrvl" => Ok(Self::OarOcrVl),
             _ => Err(StorageError::InvalidData(format!(
                 "Invalid extraction method: {}",
                 s

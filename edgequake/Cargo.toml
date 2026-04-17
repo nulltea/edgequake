@@ -188,3 +188,4 @@ opt-level = 3
 oar-ocr = { path = "vendor/oar-ocr" }
 oar-ocr-core = { path = "vendor/oar-ocr/oar-ocr-core" }
 oar-ocr-derive = { path = "vendor/oar-ocr/oar-ocr-derive" }
+oar-ocr-vl = { path = "vendor/oar-ocr/oar-ocr-vl" }

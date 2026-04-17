@@ -1,6 +1,7 @@
 mod edgeparse;
 mod kreuzberg;
 mod oar_ocr;
+mod oar_ocr_vl;
 mod vision;
 
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use crate::error::PdfConversionError;
 pub use edgeparse::EdgeParsePdfConverter;
 pub use kreuzberg::KreuzbergConverter;
 pub use oar_ocr::OarOcrConverter;
+pub use oar_ocr_vl::OarOcrVlConverter;
 pub use vision::VisionPdfConverter;
 
 /// Runtime-selectable PDF parser backend.
@@ -25,9 +27,11 @@ pub enum PdfParserBackend {
     /// Kreuzberg-based backend (PDFium + RT-DETR v2 layout + TATR tables).
     /// Was previously named "PdfExtract".
     Kreuzberg,
-    /// OAR-OCR backend (PP-DocLayout_plus-L with dedicated `algorithm` class).
-    /// Best for academic papers with boxed protocols/algorithms.
+    /// OAR-OCR backend (PP-DocLayoutV2 + PP-OCRv5 + PP-FormulaNet + tables).
     OarOcr,
+    /// OAR-OCR-VL backend (PP-DocLayoutV2 + UniRec 0.1B VLM).
+    /// Slower but better LaTeX output for inline math.
+    OarOcrVl,
 }
 
 impl PdfParserBackend {
@@ -38,6 +42,7 @@ impl PdfParserBackend {
             // Accept both new "kreuzberg" and legacy "pdfextract" names for backward compat.
             "kreuzberg" | "pdfextract" | "pdf-extract" | "pdf_extract" => Some(Self::Kreuzberg),
             "oarocr" | "oar-ocr" | "oar_ocr" => Some(Self::OarOcr),
+            "oarocrvl" | "oar-ocr-vl" | "oar_ocr_vl" => Some(Self::OarOcrVl),
             _ => None,
         }
     }
@@ -55,6 +60,7 @@ impl PdfParserBackend {
             Self::EdgeParse => "edgeparse",
             Self::Kreuzberg => "kreuzberg",
             Self::OarOcr => "oarocr",
+            Self::OarOcrVl => "oarocrvl",
         }
     }
 }
@@ -115,6 +121,7 @@ pub fn create_pdf_converter(
         PdfParserBackend::EdgeParse => Arc::new(EdgeParsePdfConverter),
         PdfParserBackend::Kreuzberg => Arc::new(KreuzbergConverter),
         PdfParserBackend::OarOcr => Arc::new(OarOcrConverter),
+        PdfParserBackend::OarOcrVl => Arc::new(OarOcrVlConverter),
     }
 }
 

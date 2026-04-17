@@ -38,7 +38,9 @@ export function ProcessingDetails({ lineage }: ProcessingDetailsProps) {
                   ? 'Kreuzberg'
                   : lineage.pdf_extraction_method === 'oarocr'
                     ? 'OAR-OCR'
-                    : lineage.pdf_extraction_method,
+                    : lineage.pdf_extraction_method === 'oarocrvl'
+                      ? 'OAR-OCR-VL'
+                      : lineage.pdf_extraction_method,
               lineage.pdf_vision_model,
             ]
               .filter(Boolean)

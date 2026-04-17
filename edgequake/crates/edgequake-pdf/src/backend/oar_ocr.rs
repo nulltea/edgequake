@@ -187,7 +187,7 @@ impl PdfConverter for OarOcrConverter {
 // Model management
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn model_cache_dir() -> Result<PathBuf, PdfConversionError> {
+pub(crate) fn model_cache_dir() -> Result<PathBuf, PdfConversionError> {
     if let Ok(dir) = std::env::var("EDGEQUAKE_OAR_OCR_MODEL_DIR") {
         if !dir.is_empty() {
             let p = PathBuf::from(dir);
@@ -274,7 +274,7 @@ fn download_file(url: &str, dest: &Path) -> Result<(), PdfConversionError> {
 // Port of oar-ocr's example code in examples/utils/pdf.rs
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn render_pdf_to_images(
+pub(crate) fn render_pdf_to_images(
     pdf_bytes: &[u8],
 ) -> Result<Vec<image::RgbImage>, PdfConversionError> {
     use hayro::hayro_syntax::Pdf;

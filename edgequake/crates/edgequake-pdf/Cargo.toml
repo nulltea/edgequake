@@ -40,6 +40,11 @@ kreuzberg = { version = "4.8", default-features = false, features = [
 # layout model which has a dedicated "algorithm" class — best for academic papers
 # with boxed protocols/functionalities.
 oar-ocr = { version = "0.6", default-features = false }
+# OAR-OCR-VL backend: PP-DocLayoutV2 + UniRec VLM (0.1B) for unified text/formula/table
+# recognition. Runs on CPU via Candle (pure Rust, no CUDA required).
+oar-ocr-vl = { version = "0.6", default-features = false }
+oar-ocr-core = { version = "0.6" }
+candle-core = "0.10"
 # Pure-Rust PDF rendering (used by OAR-OCR backend to rasterize pages).
 hayro = "0.5"
 # HTTP client for downloading OAR-OCR models on first use (ONNX weights ~125 MB each).

@@ -79,7 +79,7 @@ export interface KnowledgeGraph {
   total_edges?: number;
 }
 
-export type PdfParserBackend = "vision" | "edgeparse" | "kreuzberg" | "oarocr";
+export type PdfParserBackend = "vision" | "edgeparse" | "kreuzberg" | "oarocr" | "oarocrvl";
 export type WorkspacePdfParserBackendUpdate = PdfParserBackend | "none";
 
 // Document types
