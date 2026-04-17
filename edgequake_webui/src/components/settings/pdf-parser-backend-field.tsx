@@ -17,7 +17,7 @@ export type PdfParserBackendChoice =
   | 'edgeparse'
   | 'kreuzberg'
   | 'oarocr'
-  | 'oarocrvl';
+  | 'vlmocr';
 
 function backendLabel(
   value: PdfParserBackendChoice,
@@ -32,8 +32,8 @@ function backendLabel(
       return t('settings.pdfParser.kreuzberg', 'Kreuzberg');
     case 'oarocr':
       return t('settings.pdfParser.oarocr', 'OAR-OCR');
-    case 'oarocrvl':
-      return t('settings.pdfParser.oarocrvl', 'OAR-OCR-VL');
+    case 'vlmocr':
+      return t('settings.pdfParser.vlmocr', 'VLM-OCR');
     default:
       return t('settings.pdfParser.serverDefault', 'Server Default');
   }
@@ -74,8 +74,8 @@ export function PdfParserBackendField({
           <SelectItem value="oarocr">
             {t('settings.pdfParser.oarocr', 'OAR-OCR')}
           </SelectItem>
-          <SelectItem value="oarocrvl">
-            {t('settings.pdfParser.oarocrvl', 'OAR-OCR-VL')}
+          <SelectItem value="vlmocr">
+            {t('settings.pdfParser.vlmocr', 'VLM-OCR')}
           </SelectItem>
         </SelectContent>
       </Select>
@@ -88,7 +88,7 @@ export function PdfParserBackendField({
         <Eye className="h-4 w-4 text-orange-600" />
       ) : value === 'kreuzberg' ? (
         <FileText className="h-4 w-4 text-sky-600" />
-      ) : value === 'oarocr' || value === 'oarocrvl' ? (
+      ) : value === 'oarocr' || value === 'vlmocr' ? (
         <ScanText className="h-4 w-4 text-violet-600" />
       ) : (
         <Gauge className="h-4 w-4 text-amber-600" />
@@ -116,10 +116,10 @@ export function PdfParserBackendField({
                       'settings.pdfParser.oarocrHint',
                       'PP-DocLayoutV2 + PP-OCRv5 — best for academic papers with boxed algorithms',
                     )
-                  : value === 'oarocrvl'
+                  : value === 'vlmocr'
                     ? t(
-                        'settings.pdfParser.oarocrvlHint',
-                        'PP-DocLayoutV2 + UniRec VLM — better LaTeX but slower (CPU inference)',
+                        'settings.pdfParser.vlmocrHint',
+                        'PP-DocLayoutV2 + remote VLM — GPU-accelerated recognition via llama.cpp',
                       )
                     : t(
                       'settings.pdfParser.serverDefaultHint',

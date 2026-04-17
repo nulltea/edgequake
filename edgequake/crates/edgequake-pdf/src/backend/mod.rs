@@ -1,7 +1,8 @@
 mod edgeparse;
 mod kreuzberg;
 mod oar_ocr;
-mod oar_ocr_vl;
+pub mod vlm_client;
+mod vlm_ocr;
 mod vision;
 
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use crate::error::PdfConversionError;
 pub use edgeparse::EdgeParsePdfConverter;
 pub use kreuzberg::KreuzbergConverter;
 pub use oar_ocr::OarOcrConverter;
-pub use oar_ocr_vl::OarOcrVlConverter;
+pub use vlm_ocr::VlmOcrConverter;
 pub use vision::VisionPdfConverter;
 
 /// Runtime-selectable PDF parser backend.
@@ -29,9 +30,10 @@ pub enum PdfParserBackend {
     Kreuzberg,
     /// OAR-OCR backend (PP-DocLayoutV2 + PP-OCRv5 + PP-FormulaNet + tables).
     OarOcr,
-    /// OAR-OCR-VL backend (PP-DocLayoutV2 + UniRec 0.1B VLM).
-    /// Slower but better LaTeX output for inline math.
-    OarOcrVl,
+    /// VLM-OCR backend (PP-DocLayoutV2 layout + remote VLM recognition).
+    /// Uses an external VLM server (llama.cpp, vLLM, Ollama) for GPU-accelerated
+    /// text/formula/table recognition. Previously named "OarOcrVl".
+    VlmOcr,
 }
 
 impl PdfParserBackend {
@@ -42,7 +44,10 @@ impl PdfParserBackend {
             // Accept both new "kreuzberg" and legacy "pdfextract" names for backward compat.
             "kreuzberg" | "pdfextract" | "pdf-extract" | "pdf_extract" => Some(Self::Kreuzberg),
             "oarocr" | "oar-ocr" | "oar_ocr" => Some(Self::OarOcr),
-            "oarocrvl" | "oar-ocr-vl" | "oar_ocr_vl" => Some(Self::OarOcrVl),
+            // Accept new "vlmocr" and legacy "oarocrvl" names for backward compat.
+            "vlmocr" | "vlm-ocr" | "vlm_ocr" | "oarocrvl" | "oar-ocr-vl" | "oar_ocr_vl" => {
+                Some(Self::VlmOcr)
+            }
             _ => None,
         }
     }
@@ -60,7 +65,7 @@ impl PdfParserBackend {
             Self::EdgeParse => "edgeparse",
             Self::Kreuzberg => "kreuzberg",
             Self::OarOcr => "oarocr",
-            Self::OarOcrVl => "oarocrvl",
+            Self::VlmOcr => "vlmocr",
         }
     }
 }
@@ -121,7 +126,7 @@ pub fn create_pdf_converter(
         PdfParserBackend::EdgeParse => Arc::new(EdgeParsePdfConverter),
         PdfParserBackend::Kreuzberg => Arc::new(KreuzbergConverter),
         PdfParserBackend::OarOcr => Arc::new(OarOcrConverter),
-        PdfParserBackend::OarOcrVl => Arc::new(OarOcrVlConverter),
+        PdfParserBackend::VlmOcr => Arc::new(VlmOcrConverter),
     }
 }
 
@@ -143,6 +148,7 @@ mod tests {
         assert_eq!(PdfParserBackend::EdgeParse.as_str(), "edgeparse");
         assert_eq!(PdfParserBackend::Kreuzberg.as_str(), "kreuzberg");
         assert_eq!(PdfParserBackend::OarOcr.as_str(), "oarocr");
+        assert_eq!(PdfParserBackend::VlmOcr.as_str(), "vlmocr");
         // Legacy "pdfextract" parses as Kreuzberg
         assert_eq!(
             PdfParserBackend::from_env_str("pdfextract"),
@@ -155,6 +161,19 @@ mod tests {
         assert_eq!(
             PdfParserBackend::from_env_str("oar-ocr"),
             Some(PdfParserBackend::OarOcr)
+        );
+        // Legacy "oarocrvl" parses as VlmOcr
+        assert_eq!(
+            PdfParserBackend::from_env_str("oarocrvl"),
+            Some(PdfParserBackend::VlmOcr)
+        );
+        assert_eq!(
+            PdfParserBackend::from_env_str("vlmocr"),
+            Some(PdfParserBackend::VlmOcr)
+        );
+        assert_eq!(
+            PdfParserBackend::from_env_str("vlm-ocr"),
+            Some(PdfParserBackend::VlmOcr)
         );
     }
 }

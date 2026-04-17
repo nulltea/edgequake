@@ -45,8 +45,8 @@ export function LineageTree({ lineage }: LineageTreeProps) {
                   ? 'Kreuzberg'
                   : lineage.pdf_extraction_method === 'oarocr'
                     ? 'OAR-OCR'
-                    : lineage.pdf_extraction_method === 'oarocrvl'
-                      ? 'OAR-OCR-VL'
+                    : lineage.pdf_extraction_method === 'vlmocr'
+                      ? 'VLM-OCR'
                       : 'Vision'
             })`}
             details={[

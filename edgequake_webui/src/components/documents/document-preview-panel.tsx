@@ -464,8 +464,8 @@ export function DocumentPreviewPanel({
                               ? 'Kreuzberg'
                               : document.lineage.pdf_extraction_method === 'oarocr'
                                 ? 'OAR-OCR'
-                                : document.lineage.pdf_extraction_method === 'oarocrvl'
-                                  ? 'OAR-OCR-VL'
+                                : document.lineage.pdf_extraction_method === 'vlmocr'
+                                  ? 'VLM-OCR'
                                   : document.lineage.pdf_extraction_method}
                         </Badge>
                       </div>

@@ -42,8 +42,8 @@ export interface DocumentToolbarSectionProps {
   getInputProps: DocumentDropzoneProps['getInputProps'];
   isDragActive: boolean;
   openFileDialog: () => void;
-  pdfParserBackend: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'oarocrvl';
-  onPdfParserBackendChange: (value: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'oarocrvl') => void;
+  pdfParserBackend: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'vlmocr';
+  onPdfParserBackendChange: (value: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'vlmocr') => void;
   
   // Bulk actions
   selectedCount: number;

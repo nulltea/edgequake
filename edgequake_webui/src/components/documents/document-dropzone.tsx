@@ -26,9 +26,9 @@ export interface DocumentDropzoneProps {
   /** Function to programmatically open file dialog (explicit click handler) */
   openFileDialog: () => void;
   /** Per-upload PDF parser backend override. */
-  pdfParserBackend: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'oarocrvl';
+  pdfParserBackend: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'vlmocr';
   /** Change handler for the PDF parser override selector. */
-  onPdfParserBackendChange: (value: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'oarocrvl') => void;
+  onPdfParserBackendChange: (value: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'vlmocr') => void;
 }
 
 /**
@@ -111,7 +111,7 @@ export function DocumentDropzone({
         </span>
         <Select
           value={pdfParserBackend}
-          onValueChange={(value: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'oarocrvl') =>
+          onValueChange={(value: 'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'vlmocr') =>
             onPdfParserBackendChange(value)
           }
         >
@@ -134,8 +134,8 @@ export function DocumentDropzone({
             <SelectItem value="oarocr">
               {t('documents.upload.pdfParserOarOcr', 'OAR-OCR')}
             </SelectItem>
-            <SelectItem value="oarocrvl">
-              {t('documents.upload.pdfParserOarOcrVl', 'OAR-OCR-VL')}
+            <SelectItem value="vlmocr">
+              {t('documents.upload.pdfParserVlmOcr', 'VLM-OCR')}
             </SelectItem>
           </SelectContent>
         </Select>

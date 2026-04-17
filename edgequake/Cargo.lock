@@ -2348,6 +2348,7 @@ name = "edgequake-pdf"
 version = "0.10.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "candle-core",
  "edgeparse-core",
  "edgequake-llm",
@@ -2359,6 +2360,7 @@ dependencies = [
  "oar-ocr-core",
  "oar-ocr-vl",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5130,6 +5132,7 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 [[package]]
 name = "oar-ocr"
 version = "0.6.3"
+source = "git+https://github.com/nulltea/oar-ocr.git?branch=edgequake-patches#52a0168bd7129e84b0f7cd448a5bbc87e2568cea"
 dependencies = [
  "image",
  "imageproc",
@@ -5145,6 +5148,7 @@ dependencies = [
 [[package]]
 name = "oar-ocr-core"
 version = "0.6.3"
+source = "git+https://github.com/nulltea/oar-ocr.git?branch=edgequake-patches#52a0168bd7129e84b0f7cd448a5bbc87e2568cea"
 dependencies = [
  "clipper2",
  "html-escape",
@@ -5169,6 +5173,7 @@ dependencies = [
 [[package]]
 name = "oar-ocr-derive"
 version = "0.6.3"
+source = "git+https://github.com/nulltea/oar-ocr.git?branch=edgequake-patches#52a0168bd7129e84b0f7cd448a5bbc87e2568cea"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -5179,6 +5184,7 @@ dependencies = [
 [[package]]
 name = "oar-ocr-vl"
 version = "0.6.3"
+source = "git+https://github.com/nulltea/oar-ocr.git?branch=edgequake-patches#52a0168bd7129e84b0f7cd448a5bbc87e2568cea"
 dependencies = [
  "candle-core",
  "candle-nn",

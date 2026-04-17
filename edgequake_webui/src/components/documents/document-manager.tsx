@@ -65,7 +65,7 @@ export function DocumentManager() {
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
-  const [pdfParserBackend, setPdfParserBackend] = useState<'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'oarocrvl'>('default');
+  const [pdfParserBackend, setPdfParserBackend] = useState<'default' | 'vision' | 'edgeparse' | 'kreuzberg' | 'oarocr' | 'vlmocr'>('default');
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
