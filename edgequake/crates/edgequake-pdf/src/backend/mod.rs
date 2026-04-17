@@ -86,7 +86,7 @@ impl std::fmt::Debug for VisionConversionConfig {
 }
 
 /// Configuration shared by PDF conversion backends.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct PdfConversionConfig {
     pub page_count_hint: Option<usize>,
     pub table_method: Option<String>,
@@ -96,6 +96,22 @@ pub struct PdfConversionConfig {
     pub vlm_base_url: Option<String>,
     /// VLM-OCR: model name to send in the API request.
     pub vlm_model: Option<String>,
+    /// VLM-OCR: if set, algorithm blocks detected during conversion are collected here.
+    /// The processor reads this after conversion to trigger automatic algorithm extraction.
+    pub algorithm_block_sink: Option<Arc<std::sync::Mutex<Vec<AlgorithmBlock>>>>,
+}
+
+impl std::fmt::Debug for PdfConversionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PdfConversionConfig")
+            .field("page_count_hint", &self.page_count_hint)
+            .field("table_method", &self.table_method)
+            .field("filename", &self.filename)
+            .field("vlm_base_url", &self.vlm_base_url)
+            .field("vlm_model", &self.vlm_model)
+            .field("algorithm_block_sink", &self.algorithm_block_sink.as_ref().map(|_| "<sink>"))
+            .finish()
+    }
 }
 
 #[async_trait]

@@ -339,6 +339,15 @@ impl DocumentTaskProcessor {
             progress_callback: Some(progress_callback),
         };
 
+        // VLM-OCR: create a sink to capture algorithm blocks during conversion.
+        let algo_block_sink = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
+            Some(Arc::new(std::sync::Mutex::new(
+                Vec::<edgequake_pdf::AlgorithmBlock>::new(),
+            )))
+        } else {
+            None
+        };
+
         let conversion_config = edgequake_pdf::PdfConversionConfig {
             page_count_hint: pdf.page_count.map(|count| count as usize),
             table_method: None,
@@ -346,6 +355,7 @@ impl DocumentTaskProcessor {
             vision: Some(vision_config),
             vlm_base_url,
             vlm_model,
+            algorithm_block_sink: algo_block_sink.clone(),
         };
 
         let markdown = match backend {
@@ -608,7 +618,59 @@ impl DocumentTaskProcessor {
             }
         }
 
-        // 8. Status already set to Completed in step 5 via update_pdf_processing
+        // 8. Automatic algorithm extraction (VLM-OCR only).
+        // If algorithm blocks were detected during conversion, run Pass 2+3 inline.
+        if let Some(ref sink) = algo_block_sink {
+            let blocks = sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if !blocks.is_empty() {
+                info!(
+                    pdf_id = %data.pdf_id,
+                    block_count = blocks.len(),
+                    "Auto algorithm extraction: detected {} blocks during conversion, running Pass 2+3",
+                    blocks.len()
+                );
+
+                self.update_document_status(&early_doc_id, "algo_extracting", None)
+                    .await
+                    .ok();
+                task.update_progress("algo_extracting".to_string(), 6, 80);
+
+                let workspace_id_str = data.workspace_id.to_string();
+                let ws_id = if workspace_id_str != "default" && !workspace_id_str.is_empty() {
+                    Some(workspace_id_str.as_str())
+                } else {
+                    None
+                };
+
+                match self.run_algorithm_pass2_pass3(
+                    &early_doc_id,
+                    ws_id,
+                    &blocks,
+                    task,
+                ).await {
+                    Ok(count) => {
+                        info!(
+                            pdf_id = %data.pdf_id,
+                            algorithm_count = count,
+                            "Auto algorithm extraction completed"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            pdf_id = %data.pdf_id,
+                            error = %e,
+                            "Auto algorithm extraction failed (non-fatal)"
+                        );
+                    }
+                }
+
+                // Restore status to completed after algorithm extraction.
+                self.update_document_status(&early_doc_id, "completed", None)
+                    .await
+                    .ok();
+            }
+        }
+
         info!(
             pdf_id = %data.pdf_id,
             "PDF processing completed successfully"

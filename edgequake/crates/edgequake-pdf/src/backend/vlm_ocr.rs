@@ -53,6 +53,7 @@ impl PdfConverter for VlmOcrConverter {
             .vision
             .as_ref()
             .and_then(|v| v.progress_callback.clone());
+        let algo_sink = config.algorithm_block_sink.clone();
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -125,6 +126,28 @@ impl PdfConverter for VlmOcrConverter {
 
                         let md = match parser.parse(&layout_predictor, image) {
                             Ok(result) => {
+                                // Capture algorithm blocks if sink is provided.
+                                if let Some(ref sink) = algo_sink {
+                                    use oar_ocr_core::domain::structure::LayoutElementType;
+                                    let algo_elements: Vec<_> = result
+                                        .layout_elements
+                                        .iter()
+                                        .filter(|e| e.element_type == LayoutElementType::Algorithm)
+                                        .cloned()
+                                        .collect();
+                                    if !algo_elements.is_empty() {
+                                        let algo_md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
+                                        if !algo_md.trim().is_empty() {
+                                            if let Ok(mut blocks) = sink.lock() {
+                                                blocks.push(AlgorithmBlock {
+                                                    page: page_num,
+                                                    markdown: algo_md,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+
                                 let md = result.to_markdown();
                                 if md.trim().is_empty() { None } else { Some(md) }
                             }
@@ -250,46 +273,68 @@ pub fn detect_algorithm_blocks(
     let backend = VlmClientBackend::new(vlm_config);
     let parser = oar_ocr_vl::doc_parser::DocParser::new(&backend);
 
-    // 5. Process each page: detect layout → filter algorithms → recognize
-    let mut blocks = Vec::new();
-    for (page_idx, image) in images.into_iter().enumerate() {
-        let page_num = page_idx + 1;
+    // 5. Process pages concurrently: detect layout → filter algorithms → recognize
+    let concurrency = std::env::var("EDGEQUAKE_PDF_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
 
-        let result = match parser.parse(&layout_predictor, image) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(page = page_num, error = %e, "Algorithm detection: page failed, skipping");
-                continue;
-            }
-        };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(concurrency)
+        .build()
+        .map_err(|e| PdfConversionError::Internal(format!("rayon pool: {e}")))?;
 
-        // Filter for algorithm elements only
-        let algo_elements: Vec<_> = result
-            .layout_elements
-            .iter()
-            .filter(|e| e.element_type == LayoutElementType::Algorithm)
-            .cloned()
-            .collect();
+    let page_count = images.len();
+    let mut blocks: Vec<AlgorithmBlock> = pool.install(|| {
+        use rayon::prelude::*;
+        images
+            .into_par_iter()
+            .enumerate()
+            .flat_map(|(page_idx, image)| {
+                let page_num = page_idx + 1;
 
-        if algo_elements.is_empty() {
-            continue;
-        }
+                let result = match parser.parse(&layout_predictor, image) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        warn!(page = page_num, error = %e, "Algorithm detection: page failed, skipping");
+                        return Vec::new();
+                    }
+                };
 
-        info!(
-            page = page_num,
-            count = algo_elements.len(),
-            "Algorithm detection: found algorithm blocks"
-        );
+                let algo_elements: Vec<_> = result
+                    .layout_elements
+                    .iter()
+                    .filter(|e| e.element_type == LayoutElementType::Algorithm)
+                    .cloned()
+                    .collect();
 
-        // Convert each algorithm element to markdown
-        let md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
-        if !md.trim().is_empty() {
-            blocks.push(AlgorithmBlock {
-                page: page_num,
-                markdown: md,
-            });
-        }
-    }
+                if algo_elements.is_empty() {
+                    return Vec::new();
+                }
+
+                info!(
+                    page = page_num,
+                    count = algo_elements.len(),
+                    done = page_num,
+                    total = page_count,
+                    "Algorithm detection: found algorithm blocks"
+                );
+
+                let md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
+                if md.trim().is_empty() {
+                    return Vec::new();
+                }
+
+                vec![AlgorithmBlock {
+                    page: page_num,
+                    markdown: md,
+                }]
+            })
+            .collect()
+    });
+
+    // Sort by page order (rayon may return out of order)
+    blocks.sort_by_key(|b| b.page);
 
     info!(
         total_blocks = blocks.len(),

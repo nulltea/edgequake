@@ -624,4 +624,210 @@ impl DocumentTaskProcessor {
             .map(|m| m == "auto")
             .unwrap_or(false))
     }
+
+    /// Run algorithm extraction Pass 2+3 on pre-detected algorithm blocks.
+    ///
+    /// Called from PDF processing when VLM-OCR detects algorithm blocks during
+    /// conversion. Skips Pass 1 (already done via layout detection).
+    /// Returns the number of algorithms stored.
+    pub(super) async fn run_algorithm_pass2_pass3(
+        &self,
+        document_id: &str,
+        workspace_id: Option<&str>,
+        blocks: &[edgequake_pdf::AlgorithmBlock],
+        task: &mut Task,
+    ) -> TaskResult<usize> {
+        use futures::stream::{self, StreamExt};
+
+        let (analysis_provider, extraction_provider) = self
+            .resolve_algorithm_llm_providers(workspace_id)
+            .await
+            .map_err(|e| TaskError::Process(format!("LLM provider error: {e}")))?;
+
+        let analysis_extractor =
+            edgequake_algorithms::AlgorithmExtractor::new(analysis_provider);
+        let extraction_extractor =
+            edgequake_algorithms::AlgorithmExtractor::new(extraction_provider);
+
+        // Build chunks + synthetic inventories from detected blocks.
+        let chunks: Vec<String> = blocks.iter().map(|b| b.markdown.clone()).collect();
+        let inventories: Vec<(usize, edgequake_algorithms::AlgorithmInventory)> = blocks
+            .iter()
+            .enumerate()
+            .map(|(i, block)| {
+                let candidate = edgequake_algorithms::AlgorithmCandidate {
+                    id: format!("A{}", i + 1),
+                    name: format!("Algorithm block (page {})", block.page),
+                    description: "Detected by layout analysis".to_string(),
+                    location: format!("Page {}", block.page),
+                    algorithm_type: "Algorithm".to_string(),
+                };
+                (
+                    i,
+                    edgequake_algorithms::AlgorithmInventory {
+                        paper_title: String::new(),
+                        algorithms: vec![candidate],
+                        paper_type: String::new(),
+                    },
+                )
+            })
+            .collect();
+
+        // === Pass 2: Extraction ===
+        let pass2_concurrency = std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(8)
+            .max(1);
+
+        let block_count = inventories.len();
+        info!(
+            document_id = %document_id,
+            block_count = block_count,
+            concurrency = pass2_concurrency,
+            "Auto algorithm extraction: running Pass 2"
+        );
+
+        let pass2_futures: Vec<_> = inventories
+            .iter()
+            .cloned()
+            .map(|(idx, inventory)| {
+                let extractor = extraction_extractor.clone();
+                let chunk_a = chunks[idx].clone();
+                let chunk_b = chunks.get(idx + 1).cloned();
+                async move {
+                    let result = extractor
+                        .run_extraction_chunk_pair(&chunk_a, chunk_b.as_deref(), &inventory, idx)
+                        .await;
+                    (idx, result)
+                }
+            })
+            .collect();
+
+        let mut pass2_stream =
+            stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
+
+        let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
+        while let Some((idx, result)) = pass2_stream.next().await {
+            match result {
+                Ok(ext) => all_extracted.extend(ext.algorithms),
+                Err(e) => {
+                    warn!(
+                        document_id = %document_id,
+                        block = idx,
+                        error = %e,
+                        "Auto algo Pass 2 failed for block (skipping)"
+                    );
+                }
+            }
+        }
+
+        // Deduplicate
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut deduped: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
+        for algo in all_extracted {
+            let key = algo.name.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+            if seen.insert(key) {
+                deduped.push(algo);
+            }
+        }
+
+        let extraction = edgequake_algorithms::AlgorithmExtractionOutput { algorithms: deduped };
+
+        info!(
+            document_id = %document_id,
+            unique_algorithms = extraction.algorithms.len(),
+            "Auto algorithm extraction: Pass 2 complete"
+        );
+
+        if extraction.algorithms.is_empty() {
+            return Ok(0);
+        }
+
+        // === Pass 3: Verification ===
+        self.update_document_status(document_id, "algo_verifying", None)
+            .await
+            .ok();
+        task.update_progress("algo_verifying".to_string(), 6, 85);
+
+        let verification = analysis_extractor.run_verification(&extraction).await;
+
+        // === Store results ===
+        let count = extraction.algorithms.len();
+        let auto_approve = self
+            .resolve_algorithm_review_mode(workspace_id)
+            .await
+            .unwrap_or(false);
+
+        #[cfg(feature = "postgres")]
+        {
+            use edgequake_algorithms::{
+                Algorithm, AlgorithmStatus, AlgorithmStorage, PostgresAlgorithmStorage,
+            };
+
+            let database_url = std::env::var("DATABASE_URL").map_err(|_| {
+                TaskError::Process("DATABASE_URL not set for algorithm storage".to_string())
+            })?;
+            let pool = sqlx::PgPool::connect(&database_url).await.map_err(|e| {
+                TaskError::Process(format!("Failed to connect to database: {e}"))
+            })?;
+            let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool));
+
+            let tenant_id = task.tenant_id;
+            let workspace_id_uuid = task.workspace_id;
+
+            // Delete existing algorithms (re-extraction)
+            let _ = storage
+                .delete_algorithms_by_document(document_id, tenant_id, workspace_id_uuid)
+                .await;
+
+            let initial_status = if auto_approve {
+                AlgorithmStatus::Approved
+            } else {
+                AlgorithmStatus::Pending
+            };
+
+            let now = chrono::Utc::now();
+            let algorithms: Vec<Algorithm> = extraction
+                .algorithms
+                .into_iter()
+                .map(|ea| Algorithm {
+                    id: uuid::Uuid::new_v4(),
+                    tenant_id,
+                    workspace_id: workspace_id_uuid,
+                    document_id: document_id.to_string(),
+                    name: ea.name,
+                    description: if ea.description.is_empty() { None } else { Some(ea.description) },
+                    steps: ea.steps,
+                    inputs: ea.inputs,
+                    outputs: ea.outputs,
+                    preconditions: ea.preconditions,
+                    complexity: ea.complexity,
+                    mathematical_notation: ea.mathematical_notation,
+                    pseudocode: ea.pseudocode,
+                    tags: ea.tags,
+                    confidence: ea.confidence,
+                    status: initial_status,
+                    verification_status: verification.as_ref().map(|v| v.verification_status.clone()),
+                    verification_details: verification.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+                    created_at: now,
+                    updated_at: now,
+                })
+                .collect();
+
+            storage
+                .create_algorithms(&algorithms)
+                .await
+                .map_err(|e| TaskError::Process(format!("Failed to store algorithms: {e}")))?;
+
+            info!(
+                document_id = %document_id,
+                count = count,
+                auto_approve = auto_approve,
+                "Auto algorithm extraction stored in database"
+            );
+        }
+
+        Ok(count)
+    }
 }
