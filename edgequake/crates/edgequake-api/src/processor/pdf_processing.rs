@@ -221,8 +221,6 @@ impl DocumentTaskProcessor {
         let extraction_method = match backend {
             edgequake_pdf::PdfParserBackend::Vision => ExtractionMethod::Vision,
             edgequake_pdf::PdfParserBackend::EdgeParse => ExtractionMethod::EdgeParse,
-            edgequake_pdf::PdfParserBackend::Kreuzberg => ExtractionMethod::Kreuzberg,
-            edgequake_pdf::PdfParserBackend::OarOcr => ExtractionMethod::OarOcr,
             edgequake_pdf::PdfParserBackend::VlmOcr => ExtractionMethod::VlmOcr,
         };
 
@@ -236,10 +234,8 @@ impl DocumentTaskProcessor {
 
         let vision_model = match backend {
             edgequake_pdf::PdfParserBackend::Vision => Some(default_vision_model()),
-            edgequake_pdf::PdfParserBackend::EdgeParse => None,
-            edgequake_pdf::PdfParserBackend::Kreuzberg => None,
-            edgequake_pdf::PdfParserBackend::OarOcr => None,
-            edgequake_pdf::PdfParserBackend::VlmOcr => None,
+            edgequake_pdf::PdfParserBackend::EdgeParse
+            | edgequake_pdf::PdfParserBackend::VlmOcr => None,
         };
 
         let converter = match backend {
@@ -278,8 +274,6 @@ impl DocumentTaskProcessor {
                 }
             }
             edgequake_pdf::PdfParserBackend::EdgeParse
-            | edgequake_pdf::PdfParserBackend::Kreuzberg
-            | edgequake_pdf::PdfParserBackend::OarOcr
             | edgequake_pdf::PdfParserBackend::VlmOcr => {
                 edgequake_pdf::create_pdf_converter(backend, None)
             }
@@ -418,36 +412,6 @@ impl DocumentTaskProcessor {
                         ))
                     })?
             }
-            edgequake_pdf::PdfParserBackend::Kreuzberg => {
-                info!(
-                    pdf_id = %data.pdf_id,
-                    page_count = page_count,
-                    "Starting Kreuzberg PDF conversion (deterministic, no LLM)"
-                );
-                converter
-                    .convert(&pdf.pdf_data, &conversion_config)
-                    .await
-                    .map_err(|e| {
-                        edgequake_tasks::TaskError::Processing(format!(
-                            "PDF conversion failed: {e}"
-                        ))
-                    })?
-            }
-            edgequake_pdf::PdfParserBackend::OarOcr => {
-                info!(
-                    pdf_id = %data.pdf_id,
-                    page_count = page_count,
-                    "Starting OAR-OCR PDF conversion (PP-DocLayoutV2 + PP-OCRv5)"
-                );
-                converter
-                    .convert(&pdf.pdf_data, &conversion_config)
-                    .await
-                    .map_err(|e| {
-                        edgequake_tasks::TaskError::Processing(format!(
-                            "PDF conversion failed: {e}"
-                        ))
-                    })?
-            }
             edgequake_pdf::PdfParserBackend::VlmOcr => {
                 info!(
                     pdf_id = %data.pdf_id,
@@ -472,8 +436,6 @@ impl DocumentTaskProcessor {
         let is_deterministic = matches!(
             backend,
             edgequake_pdf::PdfParserBackend::EdgeParse
-                | edgequake_pdf::PdfParserBackend::Kreuzberg
-                | edgequake_pdf::PdfParserBackend::OarOcr
                 | edgequake_pdf::PdfParserBackend::VlmOcr
         );
         let extraction_errors = if is_deterministic {

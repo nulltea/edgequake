@@ -8,15 +8,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Eye, FileText, Gauge, ScanText } from 'lucide-react';
+import { Eye, Gauge, ScanText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 export type PdfParserBackendChoice =
   | 'none'
   | 'vision'
   | 'edgeparse'
-  | 'kreuzberg'
-  | 'oarocr'
   | 'vlmocr';
 
 function backendLabel(
@@ -28,10 +26,6 @@ function backendLabel(
       return t('settings.pdfParser.edgeparse', 'EdgeParse');
     case 'vision':
       return t('settings.pdfParser.vision', 'Vision');
-    case 'kreuzberg':
-      return t('settings.pdfParser.kreuzberg', 'Kreuzberg');
-    case 'oarocr':
-      return t('settings.pdfParser.oarocr', 'OAR-OCR');
     case 'vlmocr':
       return t('settings.pdfParser.vlmocr', 'VLM-OCR');
     default:
@@ -68,12 +62,6 @@ export function PdfParserBackendField({
           <SelectItem value="edgeparse">
             {t('settings.pdfParser.edgeparse', 'EdgeParse')}
           </SelectItem>
-          <SelectItem value="kreuzberg">
-            {t('settings.pdfParser.kreuzberg', 'Kreuzberg')}
-          </SelectItem>
-          <SelectItem value="oarocr">
-            {t('settings.pdfParser.oarocr', 'OAR-OCR')}
-          </SelectItem>
           <SelectItem value="vlmocr">
             {t('settings.pdfParser.vlmocr', 'VLM-OCR')}
           </SelectItem>
@@ -86,9 +74,7 @@ export function PdfParserBackendField({
     <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
       {value === 'vision' ? (
         <Eye className="h-4 w-4 text-orange-600" />
-      ) : value === 'kreuzberg' ? (
-        <FileText className="h-4 w-4 text-sky-600" />
-      ) : value === 'oarocr' || value === 'vlmocr' ? (
+      ) : value === 'vlmocr' ? (
         <ScanText className="h-4 w-4 text-violet-600" />
       ) : (
         <Gauge className="h-4 w-4 text-amber-600" />
@@ -106,25 +92,15 @@ export function PdfParserBackendField({
                   'settings.pdfParser.visionHint',
                   'Best for scanned and image-heavy PDFs',
                 )
-              : value === 'kreuzberg'
+              : value === 'vlmocr'
                 ? t(
-                    'settings.pdfParser.kreuzbergHint',
-                    'PDFium + RT-DETR layout + TATR tables (digital PDFs)',
+                    'settings.pdfParser.vlmocrHint',
+                    'PP-DocLayoutV2 + remote VLM — GPU-accelerated recognition via llama.cpp',
                   )
-                : value === 'oarocr'
-                  ? t(
-                      'settings.pdfParser.oarocrHint',
-                      'PP-DocLayoutV2 + PP-OCRv5 — best for academic papers with boxed algorithms',
-                    )
-                  : value === 'vlmocr'
-                    ? t(
-                        'settings.pdfParser.vlmocrHint',
-                        'PP-DocLayoutV2 + remote VLM — GPU-accelerated recognition via llama.cpp',
-                      )
-                    : t(
-                      'settings.pdfParser.serverDefaultHint',
-                      'Uses the server fallback when no workspace override is set',
-                    )}
+                : t(
+                    'settings.pdfParser.serverDefaultHint',
+                    'Uses the server fallback when no workspace override is set',
+                  )}
         </div>
       </div>
       <Badge variant="outline" className="ml-auto">

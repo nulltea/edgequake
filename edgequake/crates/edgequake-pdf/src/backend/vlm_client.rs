@@ -134,35 +134,38 @@ impl VlmClientBackend {
             "VlmClient: calling completions"
         );
 
+        let body_str = serde_json::to_string(&body).map_err(|e| OCRError::InvalidInput {
+            message: format!("VlmClient: failed to serialize request: {e}"),
+        })?;
+
         let mut response = self
             .agent
             .post(&url)
-            .header("Content-Type", "application/json")
-            .send_json(&body)
+            .content_type("application/json")
+            .send(body_str.as_bytes())
             .map_err(|e| OCRError::Inference {
                 model_name: "VlmClient".into(),
                 context: format!("POST {url}"),
                 source: Box::new(e),
             })?;
 
-        let status = response.status();
+        let response_str = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| OCRError::Inference {
+                model_name: "VlmClient".into(),
+                context: "read response body".into(),
+                source: Box::new(e),
+            })?;
+
         let response_body: Value =
-            response
-                .body_mut()
-                .read_json()
-                .map_err(|e| OCRError::Inference {
-                    model_name: "VlmClient".into(),
-                    context: format!("parse response (status {status})"),
-                    source: Box::new(e),
-                })?;
+            serde_json::from_str(&response_str).map_err(|e| OCRError::InvalidInput {
+                message: format!("VlmClient: invalid JSON response: {e}"),
+            })?;
 
         // Extract choices[0].message.content
-        let content = response_body
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
+        let content = response_body["choices"][0]["message"]["content"]
+            .as_str()
             .ok_or_else(|| OCRError::InvalidInput {
                 message: format!(
                     "VlmClient: unexpected response structure: {}",

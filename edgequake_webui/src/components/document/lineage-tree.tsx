@@ -41,13 +41,9 @@ export function LineageTree({ lineage }: LineageTreeProps) {
             label={`PDF → Markdown (${
               lineage.pdf_extraction_method === 'edgeparse'
                 ? 'EdgeParse'
-                : lineage.pdf_extraction_method === 'kreuzberg'
-                  ? 'Kreuzberg'
-                  : lineage.pdf_extraction_method === 'oarocr'
-                    ? 'OAR-OCR'
-                    : lineage.pdf_extraction_method === 'vlmocr'
-                      ? 'VLM-OCR'
-                      : 'Vision'
+                : lineage.pdf_extraction_method === 'vlmocr'
+                  ? 'VLM-OCR'
+                  : 'Vision'
             })`}
             details={[
               lineage.pdf_extraction_method,

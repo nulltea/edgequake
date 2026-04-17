@@ -178,10 +178,3 @@ debug = true
 [profile.dev.package.sqlx-macros]
 opt-level = 3
 
-# Patched fork of oar-ocr 0.6.3: PP-DocLayoutV2/V3 support, reading order,
-# formula overlap fix, UniRec HF checkpoint compat.
-[patch.crates-io]
-oar-ocr = { git = "https://github.com/nulltea/oar-ocr.git", branch = "edgequake-patches" }
-oar-ocr-core = { git = "https://github.com/nulltea/oar-ocr.git", branch = "edgequake-patches" }
-oar-ocr-derive = { git = "https://github.com/nulltea/oar-ocr.git", branch = "edgequake-patches" }
-oar-ocr-vl = { git = "https://github.com/nulltea/oar-ocr.git", branch = "edgequake-patches" }

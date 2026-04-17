@@ -460,13 +460,9 @@ export function DocumentPreviewPanel({
                         <Badge variant="outline" className="text-[10px] h-4 capitalize">
                           {document.lineage.pdf_extraction_method === 'edgeparse'
                             ? 'EdgeParse'
-                            : document.lineage.pdf_extraction_method === 'kreuzberg'
-                              ? 'Kreuzberg'
-                              : document.lineage.pdf_extraction_method === 'oarocr'
-                                ? 'OAR-OCR'
-                                : document.lineage.pdf_extraction_method === 'vlmocr'
-                                  ? 'VLM-OCR'
-                                  : document.lineage.pdf_extraction_method}
+                            : document.lineage.pdf_extraction_method === 'vlmocr'
+                              ? 'VLM-OCR'
+                              : document.lineage.pdf_extraction_method}
                         </Badge>
                       </div>
                     )}

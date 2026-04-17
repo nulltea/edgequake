@@ -17,37 +17,12 @@ tracing.workspace = true
 edgequake-llm = { workspace = true }
 edgequake-pdf2md = "=0.8.0"
 edgeparse-core = { workspace = true }
-# PdfExtract backend: high-fidelity PDF → Markdown via Kreuzberg.
-# - pdf + bundled-pdfium: PDFium text extraction
-# - layout-detection: RT-DETR v2 visual region classification (SectionHeader/Formula/Table/Text)
-#   + TATR table structure reconstruction. THE single biggest quality lever for academic PDFs.
-# - paddle-ocr: enables SLANet table-cell structure model (bundled ONNX, no C deps).
-#   OCR itself is disabled via ExtractionConfig::disable_ocr — only used for table structure.
-# - quality: Unicode NFC normalization + mojibake fixup
-# - html: markdown converter's internal HTML paths
-# We deliberately skip the `ocr` feature — it pulls in kreuzberg-tesseract which requires
-# libtesseract-dev system library. Vision backend handles scanned PDFs separately.
-kreuzberg = { version = "4.8", default-features = false, features = [
-    "tokio-runtime",
-    "pdf",
-    "bundled-pdfium",
-    "layout-detection",
-    "paddle-ocr",
-    "quality",
-    "html",
-] }
-# OAR-OCR backend: pure-Rust PaddleOCR implementation with PP-DocLayout_plus-L
-# layout model which has a dedicated "algorithm" class — best for academic papers
-# with boxed protocols/functionalities.
-oar-ocr = { version = "0.6", default-features = false }
-# OAR-OCR-VL backend: PP-DocLayoutV2 + UniRec VLM (0.1B) for unified text/formula/table
-# recognition. Runs on CPU via Candle (pure Rust, no CUDA required).
+# VLM-OCR backend: layout detection (oar-ocr-core) + DocParser (oar-ocr-vl)
 oar-ocr-vl = { version = "0.6", default-features = false }
 oar-ocr-core = { version = "0.6" }
-candle-core = "0.10"
-# Pure-Rust PDF rendering (used by OAR-OCR backend to rasterize pages).
+# Pure-Rust PDF rendering for VLM-OCR page rasterization.
 hayro = "0.5"
-# HTTP client for downloading OAR-OCR models on first use (ONNX weights ~125 MB each).
+# HTTP client for VlmClientBackend (OpenAI-compatible VLM server calls).
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 image = "0.25"
 base64 = "0.22"
