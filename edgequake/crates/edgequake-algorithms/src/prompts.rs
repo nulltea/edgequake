@@ -7,11 +7,13 @@
 ///
 /// The document text should be prepended to this prompt by the caller.
 pub fn algorithm_inventory_prompt() -> String {
-    r#"You are identifying algorithms, protocols, and schemes in a research paper provided in the system prompt.
+    r#"You are identifying algorithms, protocols, and schemes in an excerpt from a research paper.
 
 ## Your Task
-Find 1-5 distinct algorithms, protocols, schemes, or procedures described in the paper.
-Only include items that have procedural/step-by-step content — skip vague mentions.
+Find distinct algorithms, protocols, schemes, or procedures described **within this excerpt only**.
+The excerpt may be a section, page, or chunk — not the whole paper.
+Only include items that have procedural/step-by-step content VISIBLE in the excerpt — skip vague mentions or things only referenced.
+If no algorithms are present in this excerpt, return an empty `algorithms` array.
 
 ## What Counts as an Algorithm
 - Named algorithms with defined steps (e.g., "Algorithm 1: FedAvg")
@@ -62,7 +64,7 @@ Every mathematical formula, threshold, hyperparameter, and decision rule must be
 
 ## Your Task
 For each algorithm in the inventory below, produce a complete structured definition.
-The full paper text is available in the system prompt — use it to extract precise details.
+The paper excerpt is provided above — use it to extract precise details.
 
 ## Step Format Rules
 - Each step is an **imperative action** ("Compute X", "Initialize Y", "For each Z, do W")

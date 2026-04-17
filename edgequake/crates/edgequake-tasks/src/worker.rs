@@ -397,6 +397,26 @@ impl WorkerPool {
                                         Ok(Err(e)) => {
                                             // HeartbeatGuard aborts heartbeat on drop at end of scope
                                             let error_msg = format!("{}", e);
+
+                                            // Handle cancellation separately — no retry, no "failed" status.
+                                            // WHY: When user clicks cancel, the task token is signalled.
+                                            // Retrying would re-run the work. Task is marked Cancelled and
+                                            // on_permanent_failure is called (which for algorithm tasks
+                                            // restores the document to "completed").
+                                            if matches!(e, crate::TaskError::Cancelled(_)) {
+                                                task.mark_cancelled();
+                                                warn!(
+                                                    worker_id = worker_id,
+                                                    task_id = %task.track_id,
+                                                    tenant_id = %task.tenant_id,
+                                                    "Task cancelled — skipping retry, running on_permanent_failure for cleanup"
+                                                );
+                                                processor.on_permanent_failure(&task, &error_msg).await;
+                                                // Continue to task storage update at end of outer scope
+                                                // (the existing flow handles status persistence)
+                                                ()
+                                            }
+                                            else {
                                             task.mark_failed(error_msg.clone());
 
                                             // Log circuit breaker status
@@ -480,6 +500,7 @@ impl WorkerPool {
                                                 );
                                                 processor.on_permanent_failure(&task, &reason).await;
                                             }
+                                            } // close else block (non-cancellation path)
                                         }
                                         Err(_elapsed) => {
                                             // TIMEOUT: Task processing exceeded the configured

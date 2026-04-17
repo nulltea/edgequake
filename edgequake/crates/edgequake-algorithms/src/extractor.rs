@@ -24,6 +24,7 @@ pub enum AlgorithmExtractionError {
 }
 
 /// Extracts structured algorithm definitions from document text using a 3-pass LLM pipeline.
+#[derive(Clone)]
 pub struct AlgorithmExtractor {
     llm_provider: Arc<dyn edgequake_llm::traits::LLMProvider>,
 }
@@ -66,17 +67,40 @@ impl AlgorithmExtractor {
         })
     }
 
-    /// Pass 1: Identify algorithms in the document.
+    /// Pass 1: Identify algorithms in a single contiguous text block.
     pub async fn run_inventory(
         &self,
         source_text: &str,
     ) -> Result<AlgorithmInventory, AlgorithmExtractionError> {
-        tracing::info!("Pass 1/3: Identifying algorithms...");
+        self.run_inventory_on_text(source_text, "Pass 1").await
+    }
+
+    /// Pass 1 over a chunk pair. Returns algorithms identified in the concatenated chunk pair.
+    pub async fn run_inventory_chunk_pair(
+        &self,
+        chunk_a: &str,
+        chunk_b: Option<&str>,
+        pair_index: usize,
+    ) -> Result<AlgorithmInventory, AlgorithmExtractionError> {
+        let combined = match chunk_b {
+            Some(b) => format!("{}\n\n{}", chunk_a, b),
+            None => chunk_a.to_string(),
+        };
+        self.run_inventory_on_text(&combined, &format!("Pass 1 [pair {pair_index}]"))
+            .await
+    }
+
+    async fn run_inventory_on_text(
+        &self,
+        source_text: &str,
+        label: &str,
+    ) -> Result<AlgorithmInventory, AlgorithmExtractionError> {
+        tracing::info!("{label}: Identifying algorithms...");
         let start = Instant::now();
 
         let inventory_prompt = prompts::algorithm_inventory_prompt();
         let full_prompt = format!(
-            "## Paper Text\n{}\n\n## Instructions\n{}",
+            "## Paper Excerpt\n{}\n\n## Instructions\n{}",
             source_text, inventory_prompt
         );
 
@@ -91,15 +115,15 @@ impl AlgorithmExtractor {
             .llm_provider
             .complete_with_options(&full_prompt, &options)
             .await
-            .map_err(|e| AlgorithmExtractionError::LlmError(format!("Pass 1 failed: {e}")))?;
+            .map_err(|e| AlgorithmExtractionError::LlmError(format!("{label} failed: {e}")))?;
 
         let inventory: AlgorithmInventory = parse_json_response(&response.content)
             .map_err(|e| {
-                AlgorithmExtractionError::ParseError(format!("Pass 1 parse error: {e}"))
+                AlgorithmExtractionError::ParseError(format!("{label} parse error: {e}"))
             })?;
 
         tracing::info!(
-            "Pass 1 complete in {:.1}s: {} algorithms identified",
+            "{label} complete in {:.1}s: {} algorithms identified",
             start.elapsed().as_secs_f64(),
             inventory.algorithms.len(),
         );
@@ -107,13 +131,39 @@ impl AlgorithmExtractor {
         Ok(inventory)
     }
 
-    /// Pass 2: Extract detailed algorithm definitions.
+    /// Pass 2: Extract detailed algorithm definitions from a single text block.
     pub async fn run_extraction(
         &self,
         source_text: &str,
         inventory: &AlgorithmInventory,
     ) -> Result<AlgorithmExtractionOutput, AlgorithmExtractionError> {
-        tracing::info!("Pass 2/3: Extracting algorithm definitions...");
+        self.run_extraction_on_text(source_text, inventory, "Pass 2")
+            .await
+    }
+
+    /// Pass 2 over a chunk pair with an inventory scoped to that pair.
+    pub async fn run_extraction_chunk_pair(
+        &self,
+        chunk_a: &str,
+        chunk_b: Option<&str>,
+        inventory: &AlgorithmInventory,
+        pair_index: usize,
+    ) -> Result<AlgorithmExtractionOutput, AlgorithmExtractionError> {
+        let combined = match chunk_b {
+            Some(b) => format!("{}\n\n{}", chunk_a, b),
+            None => chunk_a.to_string(),
+        };
+        self.run_extraction_on_text(&combined, inventory, &format!("Pass 2 [pair {pair_index}]"))
+            .await
+    }
+
+    async fn run_extraction_on_text(
+        &self,
+        source_text: &str,
+        inventory: &AlgorithmInventory,
+        label: &str,
+    ) -> Result<AlgorithmExtractionOutput, AlgorithmExtractionError> {
+        tracing::info!("{label}: Extracting algorithm definitions...");
         let start = Instant::now();
 
         let inventory_json = serde_json::to_string_pretty(inventory).map_err(|e| {
@@ -121,14 +171,14 @@ impl AlgorithmExtractor {
         })?;
         let extraction_prompt = prompts::algorithm_extraction_prompt(&inventory_json);
         let full_prompt = format!(
-            "## Paper Text\n{}\n\n## Instructions\n{}",
+            "## Paper Excerpt\n{}\n\n## Instructions\n{}",
             source_text, extraction_prompt
         );
 
+        // Reasoning kept on for Pass 2. Large max_tokens to accommodate reasoning + output.
         let options = edgequake_llm::traits::CompletionOptions {
-            max_tokens: Some(16384),
+            max_tokens: Some(32768),
             temperature: Some(0.0),
-            reasoning_effort: Some("none".to_string()),
             ..Default::default()
         };
 
@@ -136,15 +186,15 @@ impl AlgorithmExtractor {
             .llm_provider
             .complete_with_options(&full_prompt, &options)
             .await
-            .map_err(|e| AlgorithmExtractionError::LlmError(format!("Pass 2 failed: {e}")))?;
+            .map_err(|e| AlgorithmExtractionError::LlmError(format!("{label} failed: {e}")))?;
 
         let extraction: AlgorithmExtractionOutput = parse_json_response(&response.content)
             .map_err(|e| {
-                AlgorithmExtractionError::ParseError(format!("Pass 2 parse error: {e}"))
+                AlgorithmExtractionError::ParseError(format!("{label} parse error: {e}"))
             })?;
 
         tracing::info!(
-            "Pass 2 complete in {:.1}s: {} algorithms extracted",
+            "{label} complete in {:.1}s: {} algorithms extracted",
             start.elapsed().as_secs_f64(),
             extraction.algorithms.len(),
         );

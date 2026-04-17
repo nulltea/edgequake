@@ -72,6 +72,11 @@ impl DocumentTaskProcessor {
                 if let Some(msg) = error_message {
                     updated.insert("error_message".to_string(), json!(msg));
                     updated.insert("stage_message".to_string(), json!(msg));
+                } else {
+                    // Clear stale error_message when transitioning to a non-failed state.
+                    // WHY: without this, UI shows "failed" indefinitely due to error_message
+                    // remaining from a previous failure/cancellation.
+                    updated.remove("error_message");
                 }
 
                 json!(updated)
@@ -106,6 +111,53 @@ impl DocumentTaskProcessor {
 
         self.kv_storage
             .upsert(&[(metadata_key, updated_json)])
+            .await
+            .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Update document metadata with a custom stage message and progress value.
+    ///
+    /// Unlike `update_document_status`, this preserves the existing status/current_stage
+    /// and only updates `stage_message` + `stage_progress` + `updated_at`. Used by
+    /// processors that want to report fine-grained T/N progress within a stage
+    /// (e.g., "Identifying algorithms: pair 3/7").
+    ///
+    /// `progress` is 0.0–1.0 and represents progress within the current stage.
+    pub(super) async fn update_stage_detail(
+        &self,
+        document_id: &str,
+        stage: &str,
+        message: &str,
+        progress: f64,
+    ) -> TaskResult<()> {
+        let metadata_key = format!("{}-metadata", document_id);
+        let existing = self
+            .kv_storage
+            .get_by_id(&metadata_key)
+            .await
+            .ok()
+            .flatten();
+
+        let Some(existing_val) = existing else {
+            return Ok(());
+        };
+        let Some(obj) = existing_val.as_object() else {
+            return Ok(());
+        };
+
+        let mut updated = obj.clone();
+        updated.insert("current_stage".to_string(), json!(stage));
+        updated.insert("stage_message".to_string(), json!(message));
+        updated.insert("stage_progress".to_string(), json!(progress.clamp(0.0, 1.0)));
+        updated.insert(
+            "updated_at".to_string(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
+
+        self.kv_storage
+            .upsert(&[(metadata_key, json!(updated))])
             .await
             .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
 

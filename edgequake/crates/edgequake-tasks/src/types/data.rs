@@ -86,8 +86,9 @@ pub struct DirectoryScanData {
 pub struct AlgorithmExtractionData {
     pub document_id: String,
     pub workspace_id: String,
-    /// Source text to extract algorithms from (document content or PDF markdown).
-    pub source_text: String,
+    /// Document chunks (already chunked by the ingestion pipeline).
+    /// Algorithm extraction processes sliding pairs of chunks to fit within model context.
+    pub chunks: Vec<String>,
 }
 
 /// Algorithm embedding task payload — generates vector embeddings for approved algorithms.

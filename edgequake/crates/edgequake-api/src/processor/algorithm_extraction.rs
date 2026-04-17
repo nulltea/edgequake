@@ -6,6 +6,7 @@
 //! analysis (passes 1,3) and extraction (pass 2).
 
 use super::*;
+use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 impl DocumentTaskProcessor {
@@ -21,7 +22,7 @@ impl DocumentTaskProcessor {
         info!(
             document_id = %document_id,
             workspace_id = %data.workspace_id,
-            source_text_len = data.source_text.len(),
+            chunk_count = data.chunks.len(),
             "Processing algorithm extraction task"
         );
 
@@ -50,13 +51,100 @@ impl DocumentTaskProcessor {
             .ok();
         task.update_progress("algo_identifying".to_string(), 3, 15);
 
-        let inventory = analysis_extractor
-            .run_inventory(&data.source_text)
-            .await
-            .map_err(|e| TaskError::Process(format!("Algorithm extraction failed: {e}")))?;
+        // Build sliding pairs of chunks: [0,1], [1,2], [2,3], ...
+        // Single chunk is treated as a pair with no second chunk.
+        let chunks = &data.chunks;
+        if chunks.is_empty() {
+            return Err(TaskError::Process("No chunks provided".to_string()));
+        }
+        let pair_count = if chunks.len() == 1 { 1 } else { chunks.len() - 1 };
 
-        if inventory.algorithms.is_empty() {
-            info!(document_id = %document_id, "No algorithms found in document");
+        info!(
+            document_id = %document_id,
+            chunk_count = chunks.len(),
+            pair_count = pair_count,
+            "Running Pass 1 over sliding chunk pairs"
+        );
+
+        // Pass 1 concurrency — uses EDGEQUAKE_PDF_CONCURRENCY (same as PDF vision processing)
+        let pass1_concurrency = std::env::var("EDGEQUAKE_PDF_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(4)
+            .max(1);
+
+        info!(
+            document_id = %document_id,
+            concurrency = pass1_concurrency,
+            "Pass 1: running chunk pairs concurrently"
+        );
+
+        // Spawn one future per pair; each returns (pair_idx, result)
+        let pass1_futures: Vec<_> = (0..pair_count)
+            .map(|pair_idx| {
+                let extractor = analysis_extractor.clone();
+                let chunk_a = chunks[pair_idx].clone();
+                let chunk_b = chunks.get(pair_idx + 1).cloned();
+                async move {
+                    let result = extractor
+                        .run_inventory_chunk_pair(&chunk_a, chunk_b.as_deref(), pair_idx)
+                        .await;
+                    (pair_idx, result)
+                }
+            })
+            .collect();
+
+        let mut pass1_stream =
+            stream::iter(pass1_futures).buffer_unordered(pass1_concurrency);
+
+        let mut flagged_pairs: Vec<(usize, edgequake_algorithms::AlgorithmInventory)> = Vec::new();
+        let mut pass1_completed: usize = 0;
+
+        while let Some((pair_idx, result)) = pass1_stream.next().await {
+            self.check_cancelled(&cancel_token, "algo_identifying", document_id)
+                .await?;
+            pass1_completed += 1;
+
+            // Progress + T/N stage message (based on completion count, not start order)
+            let progress = 10 + (pass1_completed * 30 / pair_count.max(1)) as u8;
+            task.update_progress("algo_identifying".to_string(), 3, progress.min(40));
+
+            let stage_message = format!(
+                "Identifying algorithms: chunks {}/{}",
+                pass1_completed, pair_count
+            );
+            let stage_progress = pass1_completed as f64 / pair_count as f64;
+            self.update_stage_detail(
+                document_id,
+                "algo_identifying",
+                &stage_message,
+                stage_progress,
+            )
+            .await
+            .ok();
+
+            match result {
+                Ok(inv) => {
+                    if !inv.algorithms.is_empty() {
+                        flagged_pairs.push((pair_idx, inv));
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        document_id = %document_id,
+                        pair_index = pair_idx,
+                        error = %e,
+                        "Pass 1 failed for chunk pair (skipping)"
+                    );
+                }
+            }
+        }
+
+        // Sort by pair_idx for deterministic ordering downstream
+        flagged_pairs.sort_by_key(|(idx, _)| *idx);
+
+        if flagged_pairs.is_empty() {
+            info!(document_id = %document_id, "No algorithms found across any chunk pair");
             self.update_document_status(document_id, "completed", None)
                 .await
                 .ok();
@@ -64,12 +152,13 @@ impl DocumentTaskProcessor {
             return Ok(json!({
                 "document_id": document_id,
                 "algorithm_count": 0,
+                "pairs_scanned": pair_count,
             }));
         }
 
-        let algo_count = inventory.algorithms.len();
+        let algo_count: usize = flagged_pairs.iter().map(|(_, inv)| inv.algorithms.len()).sum();
 
-        // === Pass 2: Extraction (uses extraction LLM) ===
+        // === Pass 2: Extraction over flagged chunk pairs (uses extraction LLM) ===
         self.check_cancelled(&cancel_token, "algo_extracting", document_id)
             .await?;
         self.update_document_status(document_id, "algo_extracting", None)
@@ -77,10 +166,103 @@ impl DocumentTaskProcessor {
             .ok();
         task.update_progress("algo_extracting".to_string(), 3, 40);
 
-        let extraction = extraction_extractor
-            .run_extraction(&data.source_text, &inventory)
+        // Pass 2 concurrency — uses EDGEQUAKE_EXTRACTION_CONCURRENCY (same as entity extraction)
+        let pass2_concurrency = std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(16)
+            .max(1);
+
+        let flagged_count = flagged_pairs.len();
+        info!(
+            document_id = %document_id,
+            concurrency = pass2_concurrency,
+            flagged_pairs = flagged_count,
+            "Pass 2: running flagged chunk pairs concurrently"
+        );
+
+        let pass2_futures: Vec<_> = flagged_pairs
+            .iter()
+            .cloned()
+            .map(|(pair_idx, inventory)| {
+                let extractor = extraction_extractor.clone();
+                let chunk_a = chunks[pair_idx].clone();
+                let chunk_b = chunks.get(pair_idx + 1).cloned();
+                async move {
+                    let result = extractor
+                        .run_extraction_chunk_pair(
+                            &chunk_a,
+                            chunk_b.as_deref(),
+                            &inventory,
+                            pair_idx,
+                        )
+                        .await;
+                    (pair_idx, result)
+                }
+            })
+            .collect();
+
+        let mut pass2_stream =
+            stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
+
+        let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
+        let mut pass2_completed: usize = 0;
+
+        while let Some((pair_idx, result)) = pass2_stream.next().await {
+            self.check_cancelled(&cancel_token, "algo_extracting", document_id)
+                .await?;
+            pass2_completed += 1;
+
+            let progress = 40 + (pass2_completed * 30 / flagged_count.max(1)) as u8;
+            task.update_progress("algo_extracting".to_string(), 3, progress.min(70));
+
+            let stage_message = format!(
+                "Extracting algorithms: chunks {}/{}",
+                pass2_completed, flagged_count
+            );
+            let stage_progress = pass2_completed as f64 / flagged_count as f64;
+            self.update_stage_detail(
+                document_id,
+                "algo_extracting",
+                &stage_message,
+                stage_progress,
+            )
             .await
-            .map_err(|e| TaskError::Process(format!("Algorithm extraction failed: {e}")))?;
+            .ok();
+
+            match result {
+                Ok(ext) => all_extracted.extend(ext.algorithms),
+                Err(e) => {
+                    warn!(
+                        document_id = %document_id,
+                        pair_index = pair_idx,
+                        error = %e,
+                        "Pass 2 failed for chunk pair (skipping)"
+                    );
+                }
+            }
+        }
+
+        // Deduplicate by normalized algorithm name (case-insensitive, whitespace-normalized)
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut deduped: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
+        for algo in all_extracted {
+            let key = algo.name.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+            if seen.insert(key) {
+                deduped.push(algo);
+            }
+        }
+
+        let extraction = edgequake_algorithms::AlgorithmExtractionOutput {
+            algorithms: deduped,
+        };
+
+        info!(
+            document_id = %document_id,
+            flagged_pairs = flagged_count,
+            unique_algorithms = extraction.algorithms.len(),
+            "Pass 2 complete after deduplication"
+        );
 
         // === Pass 3: Verification (uses analysis LLM) ===
         self.check_cancelled(&cancel_token, "algo_verifying", document_id)

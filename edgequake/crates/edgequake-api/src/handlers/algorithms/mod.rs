@@ -155,60 +155,85 @@ async fn extract_algorithms_impl(
         )));
     }
 
-    // Fetch document content — PDFs from pdf_documents table, text from KV
-    let source_type = metadata
-        .get("source_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let pdf_id = metadata.get("pdf_id").and_then(|v| v.as_str());
-
-    let source_text = if source_type == "pdf" {
-        let pdf_id_str = pdf_id.ok_or_else(|| {
-            ApiError::Internal("PDF document missing pdf_id".to_string())
-        })?;
-        let pdf_uuid = uuid::Uuid::parse_str(pdf_id_str)
-            .map_err(|e| ApiError::Internal(format!("Invalid pdf_id: {e}")))?;
-        let pdf_storage = state.pdf_storage.as_ref().ok_or_else(|| {
-            ApiError::Internal("PDF storage not available".to_string())
-        })?;
-        let pdf = pdf_storage
-            .get_pdf(&pdf_uuid)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to fetch PDF: {e}")))?
-            .ok_or_else(|| ApiError::NotFound("PDF document not found".to_string()))?;
-        pdf.markdown_content.ok_or_else(|| {
-            ApiError::BadRequest("PDF has no extracted markdown content yet".to_string())
-        })?
-    } else {
-        let content_key = format!("{}-content", request.document_id);
-        let content = state
+    // Fetch document chunks from KV (stored as {doc_id}-chunk-0, {doc_id}-chunk-1, ...)
+    let mut chunks: Vec<String> = Vec::new();
+    let mut i = 0;
+    loop {
+        let chunk_key = format!("{}-chunk-{}", request.document_id, i);
+        let chunk_value = state
             .kv_storage
-            .get_by_id(&content_key)
+            .get_by_id(&chunk_key)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to fetch document content: {e}")))?
-            .ok_or_else(|| {
-                ApiError::Internal(format!(
-                    "Document content not found: {}",
-                    request.document_id
-                ))
-            })?;
-        match content.as_str() {
-            Some(s) => s.to_string(),
-            None => content.to_string(),
+            .map_err(|e| ApiError::Internal(format!("Failed to fetch chunk {i}: {e}")))?;
+        match chunk_value {
+            Some(v) => {
+                let text = match v.as_str() {
+                    Some(s) => s.to_string(),
+                    None => {
+                        // Chunks are sometimes stored as JSON objects with a content field
+                        v.get("content")
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| v.to_string())
+                    }
+                };
+                if !text.is_empty() {
+                    chunks.push(text);
+                }
+                i += 1;
+            }
+            None => break,
         }
-    };
-
-    if source_text.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Document content is empty".to_string(),
-        ));
     }
+
+    if chunks.is_empty() {
+        // Fallback: fetch full content if no chunks exist (e.g., legacy documents)
+        let source_type = metadata
+            .get("source_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let pdf_id = metadata.get("pdf_id").and_then(|v| v.as_str());
+
+        let source_text = if source_type == "pdf" {
+            let pdf_id_str = pdf_id.ok_or_else(|| {
+                ApiError::Internal("PDF document missing pdf_id".to_string())
+            })?;
+            let pdf_uuid = uuid::Uuid::parse_str(pdf_id_str)
+                .map_err(|e| ApiError::Internal(format!("Invalid pdf_id: {e}")))?;
+            let pdf_storage = state.pdf_storage.as_ref().ok_or_else(|| {
+                ApiError::Internal("PDF storage not available".to_string())
+            })?;
+            let pdf = pdf_storage
+                .get_pdf(&pdf_uuid)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch PDF: {e}")))?
+                .ok_or_else(|| ApiError::NotFound("PDF document not found".to_string()))?;
+            pdf.markdown_content.ok_or_else(|| {
+                ApiError::BadRequest("PDF has no extracted markdown content yet".to_string())
+            })?
+        } else {
+            return Err(ApiError::BadRequest(
+                "Document has no chunks; reprocess the document first".to_string(),
+            ));
+        };
+
+        if source_text.is_empty() {
+            return Err(ApiError::BadRequest("Document content is empty".to_string()));
+        }
+        chunks.push(source_text);
+    }
+
+    info!(
+        document_id = %request.document_id,
+        chunk_count = chunks.len(),
+        "Algorithm extraction: fetched document chunks"
+    );
 
     // Create task for background processing via the task queue
     let task_data = AlgorithmExtractionData {
         document_id: request.document_id.clone(),
         workspace_id: workspace_id.to_string(),
-        source_text,
+        chunks,
     };
 
     let task = Task::new(
