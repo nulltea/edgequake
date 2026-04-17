@@ -1217,6 +1217,12 @@ logs: ## Show recent logs from all services
 	@echo "$(BOLD)Docker Container Status:$(RESET)"
 	@cd $(DOCKER_DIR) && docker compose ps 2>/dev/null || echo "Docker not running"
 
+sync-oar-ocr: ## Mirror ~/repos/oar-ocr fork into edgequake/vendor/oar-ocr for docker build
+	@test -d $(HOME)/repos/oar-ocr || { echo "ERROR: $(HOME)/repos/oar-ocr does not exist. Clone GreatV/oar-ocr there first."; exit 1; }
+	@mkdir -p edgequake/vendor
+	@rsync -a --delete --exclude='.git/' --exclude='target/' $(HOME)/repos/oar-ocr/ edgequake/vendor/oar-ocr/
+	@echo "Synced oar-ocr fork → edgequake/vendor/oar-ocr"
+
 db-backup: ## Create a timestamped pg_dump backup in ~/.edgequake/backups
 	@bash scripts/backup-db.sh
 

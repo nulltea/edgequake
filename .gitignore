@@ -7,6 +7,11 @@ sdks/**/.build/
 **/*.rs.bk
 *.pdb
 
+# Vendored oar-ocr fork (local patches), mirrored from ~/repos/oar-ocr via
+# `make sync-oar-ocr` before docker build. The fork is the source of truth;
+# the vendor copy is only needed because Docker's build context is edgequake/.
+edgequake/vendor/
+
 # IDE and editor files
  .idea/
 *.swp

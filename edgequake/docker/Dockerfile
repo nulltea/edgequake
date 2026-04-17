@@ -42,6 +42,9 @@ COPY crates/ crates/
 COPY src/ src/
 COPY migrations/ migrations/
 COPY .sqlx .sqlx/
+# Vendored oar-ocr fork — referenced by [patch.crates-io] in Cargo.toml.
+# Populate via `make sync-oar-ocr` before `docker build`. See Cargo.toml for rationale.
+COPY vendor/ vendor/
 # WHY: models.toml defines available LLM providers/models (gpt-5.4, claude-sonnet-4-6,
 # gemma4, etc.). The binary falls back to built-in defaults (edgequake-llm v0.5.1) which
 # only include gpt-4o and gpt-4o-mini — the new models are only in models.toml.

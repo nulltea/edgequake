@@ -177,3 +177,14 @@ debug = true
 
 [profile.dev.package.sqlx-macros]
 opt-level = 3
+
+# Local fork of oar-ocr 0.6.3 with a patch preserving nested formula bboxes inside
+# `algorithm`/`table` container regions during overlap suppression. Without this,
+# PP-DocLayout_plus-L's inner formula detections are dropped and PP-FormulaNet
+# never runs on them — math inside protocol/algorithm boxes is OCR'd as plain text
+# (Π → II etc.). Source of truth is ~/repos/oar-ocr; the `vendor/` mirror exists
+# because Docker's build context is limited to edgequake/. Sync with `make sync-oar-ocr`.
+[patch.crates-io]
+oar-ocr = { path = "vendor/oar-ocr" }
+oar-ocr-core = { path = "vendor/oar-ocr/oar-ocr-core" }
+oar-ocr-derive = { path = "vendor/oar-ocr/oar-ocr-derive" }

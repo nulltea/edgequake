@@ -42,8 +42,8 @@ use crate::error::PdfConversionError;
 #[derive(Debug, Default)]
 pub struct OarOcrConverter;
 
-const LAYOUT_MODEL: &str = "pp-doclayout_plus-l.onnx";
-const LAYOUT_MODEL_NAME: &str = "pp-doclayout_plus-l";
+const LAYOUT_MODEL: &str = "pp-doclayoutv2.onnx";
+const LAYOUT_MODEL_NAME: &str = "pp-doclayoutv2";
 const REGION_MODEL: &str = "pp-docblocklayout.onnx";
 const REGION_MODEL_NAME: &str = "pp-docblocklayout";
 const TEXT_DET_MODEL: &str = "pp-ocrv5_server_det.onnx";
@@ -59,7 +59,7 @@ const WIRELESS_CELL_MODEL: &str = "rt-detr-l_wireless_table_cell_det.onnx";
 const TABLE_STRUCTURE_DICT: &str = "table_structure_dict_ch.txt";
 
 const MODEL_URLS: &[(&str, &str)] = &[
-    (LAYOUT_MODEL, "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-doclayout_plus-l.onnx"),
+    (LAYOUT_MODEL, "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-doclayoutv2.onnx"),
     (REGION_MODEL, "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-docblocklayout.onnx"),
     (TEXT_DET_MODEL, "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_server_det.onnx"),
     (TEXT_REC_MODEL, "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_server_rec.onnx"),
@@ -112,6 +112,14 @@ impl PdfConverter for OarOcrConverter {
             let wired_cell_path = model_dir.join(WIRED_CELL_MODEL);
             let wireless_cell_path = model_dir.join(WIRELESS_CELL_MODEL);
             let table_dict_path = model_dir.join(TABLE_STRUCTURE_DICT);
+
+            info!(
+                formula_model = %formula_path.display(),
+                formula_tokenizer = %formula_tokenizer_path.display(),
+                formula_exists = formula_path.exists(),
+                tokenizer_exists = formula_tokenizer_path.exists(),
+                "OAR-OCR: building analyzer with formula recognition"
+            );
 
             let analyzer = OARStructureBuilder::new(&layout_path)
                 .layout_model_name(LAYOUT_MODEL_NAME)

@@ -12,8 +12,9 @@ DEST="${EDGEQUAKE_OAR_OCR_MODEL_DIR:-${HOME}/.edgequake/oar-ocr-models}"
 BASE="https://github.com/GreatV/oar-ocr/releases/download/v0.3.0"
 
 MODELS=(
-    # Layout detection (PP-DocLayout_plus-L: 20 classes incl. algorithm/formula/table)
-    "pp-doclayout_plus-l.onnx"
+    # Layout detection (PP-DocLayoutV2: 25 classes with inline_formula/display_formula
+    # + built-in reading order via 8-dim output. Requires patched oar-ocr builder.)
+    "pp-doclayoutv2.onnx"
     # Region detection (PP-DocBlockLayout: multi-column block grouping for reading order)
     "pp-docblocklayout.onnx"
     # Text detection + recognition (server variants, higher accuracy than mobile)
