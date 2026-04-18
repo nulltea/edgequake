@@ -277,6 +277,13 @@ fn build_algorithm_blocks(
             None => algo_md,
         };
 
+        // Repair known OCR-stage LaTeX corruption (GLM-OCR's \mathbb{S} for
+        // uniform-sampling `$`, orphan delimiters, unbalanced [[...]], bare
+        // super/sub-scripts) before handing the chunk to the LLM. JSON-escape
+        // reconstruction also runs, but is a no-op here because the text hasn't
+        // been JSON-round-tripped yet.
+        let markdown = crate::latex_repair::repair_latex(&markdown);
+
         blocks.push(AlgorithmBlock {
             page: page_num,
             markdown,

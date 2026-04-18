@@ -1,0 +1,64 @@
+{
+  "algorithms": [
+    {
+      "rank": 1,
+      "name": "Protocol 1 Bit2A protocol ($\\Pi_1$)",
+      "type": "Protocol",
+      "description": "Converts Boolean secret sharing $[[b]]^B$ into arithmetical secret sharing $[[b]]^A$ over $\\mathbb{Z}_{2^{\\ell}}$.",
+      "steps": [
+        {
+          "number": 1,
+          "action": "Sample random seeds $R_i$",
+          "details": "For each $i \\in [3]$, party $P_i$ samples $R_i \\in \\{0,1\\}^{\\lambda}$ and shares with $P_{i-1}$.",
+          "math": "$R_i \\in \\{0,1\\}^{\\lambda}$"
+        },
+        {
+          "number": 2,
+          "action": "Compute $\\alpha_1$ via PRG",
+          "details": "$P_0$ and $P_1$ compute $\\alpha_1 \\leftarrow \text{Prg}(R_1, \\ell)$",
+          "math": "$\\alpha_1 \\leftarrow \text{Prg}(R_1, \\ell)$"
+        },
+        {
+          "number": 3,
+          "action": "Sample $\\theta$ and set $[v]^A$",
+          "details": "$P_1, P_2$: $\\theta \\leftarrow \\mathbb{S} \\{0,1\\}$; $[v]^A := ((-1)^\\theta \\cdot \\alpha_1, (-1)^\\theta \\cdot \\alpha_2)$",
+          "math": "$(-1)^\\theta \\cdot \\alpha_i$"
+        },
+        {
+          "number": 4,
+          "action": "Online phase compute $\\beta$",
+          "details": "Both $P_1$ and $P_2$ sequentially compute $\u0008eta = m_0 \\oplus b_2 = b \\oplus \\gamma$ and $\\sigma = \u0008eta \\oplus \\theta$.",
+          "math": "$\u0008eta = m_0 \\oplus b_2$"
+        },
+        {
+          "number": 5,
+          "action": "Compute RSS shares",
+          "details": "$[[v^*]]^A \\leftarrow \text{RSS.sMul}((-1)^\\sigma, [v]]^A)$; $[[b]]^A \\leftarrow \text{RSS.add}([v^*]]^A, [[\\beta]]^A$",
+          "math": "$[v^*]]^A$"
+        }
+      ],
+      "inputs": [
+        {
+          "name": "boolean_sharing",
+          "type": "$[[b]]^B$",
+          "description": "Replicated Boolean secret sharing of $b \\in \\{0,1\\}$"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "arith_sharing",
+          "type": "$[[b]]^A$",
+          "description": "Arithmetical sharing in $\\mathbb{Z}_{2^{\\ell}}$"
+        }
+      ],
+      "preconditions": [
+        "Uses $\\mathbb{S}$ \\{0,1\\} for uniform sampling"
+      ],
+      "complexity": "online round: 1; bits per party: 3",
+      "mathematical_notation": "$[[b]]^A \\leftarrow \text{Bit2A}([[b]]^B, \\lambda)$",
+      "pseudocode": "for i in [3]: sample R_i; compute $\\alpha$; send $\\alpha_2$ to $P_2$",
+      "tags": ["secret-sharing", "arithmetization"],
+      "confidence": "high"
+    }
+  ]
+}

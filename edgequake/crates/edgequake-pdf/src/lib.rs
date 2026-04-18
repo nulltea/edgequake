@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod error;
+pub mod latex_repair;
 
 pub use backend::{
     create_pdf_converter, AlgorithmBlock, PdfConversionConfig, PdfConverter, PdfParserBackend,
