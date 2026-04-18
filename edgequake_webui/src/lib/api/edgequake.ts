@@ -2033,6 +2033,41 @@ export async function deleteAlgorithm(
 }
 
 // ============================================================================
+// Reference-repo detection (Phase 0 of Reference Code GraphRAG extension)
+// ============================================================================
+
+/** List detected reference-repo candidates for a document. */
+export async function getDocumentRepos(
+  documentId: string,
+): Promise<import("@/types/document-repos").RepoListResponse> {
+  return api.get<import("@/types/document-repos").RepoListResponse>(
+    `/repos/by-document/${documentId}`,
+  );
+}
+
+/** Approve or reject a detected reference repo. */
+export async function reviewRepo(
+  repoId: string,
+  status: "approved" | "rejected",
+): Promise<import("@/types/document-repos").RepoReviewResponse> {
+  return api.post<import("@/types/document-repos").RepoReviewResponse>(
+    `/repos/${repoId}/review`,
+    { status },
+  );
+}
+
+/** Trigger (or re-trigger) repo detection for a document. */
+export async function detectRepos(
+  documentId: string,
+  pdfId?: string,
+): Promise<import("@/types/document-repos").DetectReposResponse> {
+  return api.post<import("@/types/document-repos").DetectReposResponse>(
+    `/repos/detect/${documentId}`,
+    pdfId ? { pdf_id: pdfId } : {},
+  );
+}
+
+// ============================================================================
 // Export default API object
 // ============================================================================
 
@@ -2148,6 +2183,11 @@ export const edgequakeApi = {
   reviewAlgorithm,
   deleteAlgorithms,
   deleteAlgorithm,
+
+  // Reference-repo detection
+  getDocumentRepos,
+  reviewRepo,
+  detectRepos,
 };
 
 export default edgequakeApi;
