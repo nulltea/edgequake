@@ -1957,16 +1957,19 @@ name = "edgequake-agents"
 version = "0.10.1"
 dependencies = [
  "async-trait",
+ "chrono",
  "edgequake-llm",
  "edgequake-pdf",
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tokio-test",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
