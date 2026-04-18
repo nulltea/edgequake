@@ -12,6 +12,7 @@ members = [
     "crates/edgequake-storage",
     "crates/edgequake-tasks",
     "crates/edgequake-algorithms",
+    "crates/edgequake-agents",
 ]
 
 [package]
@@ -155,6 +156,7 @@ edgequake-query = { path = "crates/edgequake-query" }
 edgequake-storage = { path = "crates/edgequake-storage" }
 edgequake-tasks = { path = "crates/edgequake-tasks" }
 edgequake-algorithms = { path = "crates/edgequake-algorithms" }
+edgequake-agents = { path = "crates/edgequake-agents" }
 edgeparse-core = "0.2.3"
 
 # CPU utilities

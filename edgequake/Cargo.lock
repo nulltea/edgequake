@@ -1953,6 +1953,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "edgequake-agents"
+version = "0.10.1"
+dependencies = [
+ "async-trait",
+ "edgequake-llm",
+ "edgequake-pdf",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "edgequake-algorithms"
 version = "0.10.1"
 dependencies = [
@@ -7117,6 +7134,7 @@ dependencies = [
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
  "tokio",
