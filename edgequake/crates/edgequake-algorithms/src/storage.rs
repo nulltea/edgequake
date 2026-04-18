@@ -113,15 +113,15 @@ impl AlgorithmStorage for PostgresAlgorithmStorage {
             sqlx::query(
                 r#"
                 INSERT INTO algorithms (
-                    id, tenant_id, workspace_id, document_id, name, description,
-                    steps, inputs, outputs, preconditions, complexity,
+                    id, tenant_id, workspace_id, document_id, name, algorithm_type,
+                    description, steps, inputs, outputs, preconditions, complexity,
                     mathematical_notation, pseudocode, tags, confidence, status,
                     verification_status, verification_details, created_at, updated_at
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6,
-                    $7, $8, $9, $10, $11,
-                    $12, $13, $14, $15, $16,
-                    $17, $18, $19, $20
+                    $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17,
+                    $18, $19, $20, $21
                 )
                 "#,
             )
@@ -130,6 +130,7 @@ impl AlgorithmStorage for PostgresAlgorithmStorage {
             .bind(algo.workspace_id)
             .bind(&algo.document_id)
             .bind(&algo.name)
+            .bind(&algo.algorithm_type)
             .bind(&algo.description)
             .bind(&steps_json)
             .bind(&inputs_json)
@@ -373,6 +374,8 @@ struct AlgorithmRow {
     workspace_id: Uuid,
     document_id: String,
     name: String,
+    #[sqlx(default)]
+    algorithm_type: Option<String>,
     description: Option<String>,
     steps: serde_json::Value,
     inputs: serde_json::Value,
@@ -413,6 +416,7 @@ impl AlgorithmRow {
             workspace_id: self.workspace_id,
             document_id: self.document_id,
             name: self.name,
+            algorithm_type: self.algorithm_type.unwrap_or_else(|| "Algorithm".to_string()),
             description: self.description,
             steps,
             inputs,

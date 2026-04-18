@@ -266,10 +266,15 @@ impl DocumentTaskProcessor {
             .ok();
         task.update_progress("algo_extracting".to_string(), 3, 40);
 
-        let pass2_concurrency = std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+        // Algorithm Pass 2 is heavier per call than entity extraction: each
+        // block is a full algorithm definition (32k max_tokens, reasoning on).
+        // Heavy vision+extraction models like gemma 4 (26B A4B) saturate at
+        // ~2–4 concurrent requests and start timing out past that. Use a
+        // dedicated env var; defaults to 2.
+        let pass2_concurrency = std::env::var("EDGEQUAKE_ALGO_EXTRACTION_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(16)
+            .unwrap_or(2)
             .max(1);
 
         let flagged_count = flagged_inventories.len();
@@ -437,6 +442,7 @@ impl DocumentTaskProcessor {
                     workspace_id: workspace_id_uuid,
                     document_id: document_id.clone(),
                     name: ea.name,
+                    algorithm_type: ea.algorithm_type,
                     description: if ea.description.is_empty() {
                         None
                     } else {
@@ -689,10 +695,11 @@ impl DocumentTaskProcessor {
             .collect();
 
         // === Pass 2: Extraction ===
-        let pass2_concurrency = std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+        // Dedicated env var — see comment in the other pass2_concurrency site.
+        let pass2_concurrency = std::env::var("EDGEQUAKE_ALGO_EXTRACTION_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(8)
+            .unwrap_or(2)
             .max(1);
 
         let block_count = inventories.len();
@@ -829,6 +836,7 @@ impl DocumentTaskProcessor {
                     workspace_id: workspace_id_uuid,
                     document_id: document_id.to_string(),
                     name: ea.name,
+                    algorithm_type: ea.algorithm_type,
                     description: if ea.description.is_empty() { None } else { Some(ea.description) },
                     steps: ea.steps,
                     inputs: ea.inputs,

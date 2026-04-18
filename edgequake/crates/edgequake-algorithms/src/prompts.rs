@@ -56,15 +56,25 @@ The full paper text is available in the system prompt above."#
 /// The document text should be prepended to this prompt by the caller.
 pub fn algorithm_extraction_prompt(inventory_json: &str) -> String {
     format!(
-        r#"You are extracting algorithm definitions that a software engineer will use to implement them WITHOUT access to the original paper.
+        r#"You are extracting algorithm / protocol / functionality definitions that a software engineer will use to implement them WITHOUT access to the original paper.
 
-## CRITICAL REQUIREMENT
-Each definition must be **self-contained and implementable**. The reader has NO access to the paper.
-Every mathematical formula, threshold, hyperparameter, and decision rule must be explicit.
+## CRITICAL REQUIREMENTS
+1. Each definition must be **self-contained and implementable**. The reader has NO access to the paper. Every mathematical formula, threshold, hyperparameter, and decision rule must be explicit.
+2. **Mathematical precision above all.** Copy symbols from the source text VERBATIM. Do NOT paraphrase operators into English: keep `⊕` as `\oplus` (XOR), `⊗` as `\otimes`, `·` as `\cdot`, `⟨·,·⟩` as `\langle·,·\rangle`, `⊆` as `\subseteq`, etc. Never write "sum" when the source uses XOR (`⊕`). Never invent numeric values or ring moduli. If the source is ambiguous, say so in `description` rather than guessing.
+3. **Valid LaTeX always.** Every `$...$` and `$$...$$` you output must parse. If the paper excerpt you received has malformed LaTeX (unclosed braces, stray backslashes, missing `$` delimiters, `\mathsf` without `{{...}}`, etc.), FIX it in your output. Balance every `{{`, close every math environment, and make sure subscripts/superscripts have braces when they span more than one character (`x_{{i,j}}`, not `x_i,j`).
+4. **Exact step count.** If the source box is numbered 1..N, output exactly N steps with matching numbers and matching substance. Do not split a single numbered step into multiple imperatives; do not merge two steps into one.
 
 ## Your Task
 For each algorithm in the inventory below, produce a complete structured definition.
 The paper excerpt is provided above — use it to extract precise details.
+
+## `type` field (REQUIRED)
+Label each entry with the kind of construct it actually is in the paper, taken literally from the source heading/caption when present. Common values:
+- `"Protocol"` — a multi-party interactive protocol (e.g. "Protocol 1 Bit2A protocol (Π₁)")
+- `"Functionality"` — an idealised/ideal functionality box (e.g. "Fig. 2: FUNCTIONALITY F_Bit2A")
+- `"Algorithm"` — a generic algorithm block (default when nothing more specific fits)
+- `"Theorem"`, `"Definition"`, `"Lemma"`, `"Scheme"` — use when the source uses those words
+Custom values are allowed when the paper uses a specific term.
 
 ## Step Format Rules
 - Each step is an **imperative action** ("Compute X", "Initialize Y", "For each Z, do W")
@@ -78,6 +88,7 @@ The paper excerpt is provided above — use it to extract precise details.
 - Greek: `$\alpha, \beta, \theta, \nabla$`
 - Sets: `$\mathcal{{D}}, \mathbb{{R}}^d$`
 - Norms: `$\|x\|_2$`
+- XOR: `$\oplus$` (NEVER write "sum" for `\oplus`)
 
 ## Output Format
 Return ONLY a JSON object (no markdown fences):
@@ -86,6 +97,7 @@ Return ONLY a JSON object (no markdown fences):
         {{
             "rank": 1,
             "name": "Full Algorithm Name",
+            "type": "Protocol",
             "description": "2-3 sentence overview of purpose and approach",
             "steps": [
                 {{
@@ -122,19 +134,22 @@ Return ONLY a JSON object (no markdown fences):
     ]
 }}
 
-## Self-Containment Check
-Before finalizing each algorithm, verify:
+## Self-Containment + Precision Checklist
+Before finalizing each entry, verify:
 1. Could someone implement this from ONLY your definition?
 2. Are all variables defined before use?
-3. Are all hyperparameters/thresholds specified with values or ranges?
+3. Are all hyperparameters/thresholds/ring moduli specified with exact values?
 4. Are termination conditions explicit?
 5. Are edge cases mentioned in preconditions?
+6. Does every `$...$` and `$$...$$` parse as valid LaTeX (balanced braces, closed environments)?
+7. Are `\oplus`, `\otimes`, `\cdot`, `\langle`, `\rangle`, etc. preserved verbatim from the source (not paraphrased)?
+8. Does the step count match the numbered box in the source?
 
-If any answer is "no", add the missing information.
+If any answer is "no", fix before returning.
 
 ## Guidelines
 - Extract 1-5 algorithms, ranked by importance
-- Keep step count between 3-15 per algorithm
+- Keep step count faithful to the source — do not pad or merge
 - Pseudocode should be language-agnostic (no specific syntax)
 - Keep the total response under 6000 tokens
 
