@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use edgequake_llm::{
-    ChatMessage, CompletionOptions, ConfigProviderType, EmbeddingProvider, LLMProvider, LLMResponse,
-    LlmError, ProviderConfig, ProviderFactory, Result,
+    ChatMessage, CompletionOptions, ConfigProviderType, EmbeddingProvider, LLMProvider,
+    LLMResponse, LlmError, ProviderConfig, ProviderFactory, Result,
 };
 use futures::stream::BoxStream;
 
@@ -334,7 +334,10 @@ fn check_api_key(provider_name: &str) -> Result<()> {
 
 /// Create an LLM provider, using EDGEQUAKE_LLM_TIMEOUT to override the 120s default
 /// when the openai-compatible provider is used with local models.
-fn create_llm_provider_with_timeout(provider_name: &str, model: &str) -> Result<Arc<dyn LLMProvider>> {
+fn create_llm_provider_with_timeout(
+    provider_name: &str,
+    model: &str,
+) -> Result<Arc<dyn LLMProvider>> {
     let timeout: Option<u64> = std::env::var("EDGEQUAKE_LLM_TIMEOUT")
         .ok()
         .and_then(|v| v.parse().ok());

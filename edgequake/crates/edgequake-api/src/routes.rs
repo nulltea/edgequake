@@ -474,6 +474,8 @@ fn api_v1_routes() -> Router<AppState> {
         .route("/models/{provider}/{model}", get(handlers::get_model))
         // Algorithm extraction extension
         .nest("/algorithms", handlers::algorithm_routes())
+        // Reference-repo detection (Phase 0 of the Reference Code GraphRAG extension)
+        .nest("/repos", handlers::repo_routes())
 }
 
 #[cfg(test)]

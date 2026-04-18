@@ -204,7 +204,8 @@ impl PipelineProgressCallback {
                             // Only update if still in the converting stage — avoid
                             // overwriting later stages (chunking, embedding) with
                             // stale progress from async page callbacks.
-                            let current_stage = obj.get("current_stage")
+                            let current_stage = obj
+                                .get("current_stage")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             if current_stage != "converting" && current_stage != "processing" {

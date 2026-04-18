@@ -180,8 +180,8 @@ async fn extract_algorithms_impl(
 
     let task_data = if source_type == "pdf" {
         // PDF path: processor will use layout detection + VLM to find algorithm blocks.
-        let pdf_id_str = pdf_id
-            .ok_or_else(|| ApiError::Internal("PDF document missing pdf_id".to_string()))?;
+        let pdf_id_str =
+            pdf_id.ok_or_else(|| ApiError::Internal("PDF document missing pdf_id".to_string()))?;
 
         info!(
             document_id = %request.document_id,
@@ -215,7 +215,11 @@ async fn extract_algorithms_impl(
                     let text = v
                         .as_str()
                         .map(|s| s.to_string())
-                        .or_else(|| v.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()))
+                        .or_else(|| {
+                            v.get("content")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string())
+                        })
                         .unwrap_or_else(|| v.to_string());
                     if !text.is_empty() {
                         if !stitched.is_empty() {

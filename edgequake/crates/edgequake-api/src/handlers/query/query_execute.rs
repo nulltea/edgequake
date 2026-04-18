@@ -177,9 +177,9 @@ pub async fn execute_query(
             // Case 1: Explicit provider/model in request
             debug!(provider = %provider, model = %model, "Creating LLM provider override from request");
             Some(
-                crate::safety_limits::create_safe_llm_provider(provider, model).map_err(
-                    |e| ApiError::Internal(format!("Failed to create LLM provider: {}", e)),
-                )?,
+                crate::safety_limits::create_safe_llm_provider(provider, model).map_err(|e| {
+                    ApiError::Internal(format!("Failed to create LLM provider: {}", e))
+                })?,
             )
         } else if let Some(ref ws) = workspace {
             // Case 2: Use workspace LLM config (same as streaming endpoint)
@@ -189,7 +189,10 @@ pub async fn execute_query(
                     model = %ws.llm_model,
                     "Creating LLM provider override from workspace config"
                 );
-                match crate::safety_limits::create_safe_llm_provider(&ws.llm_provider, &ws.llm_model) {
+                match crate::safety_limits::create_safe_llm_provider(
+                    &ws.llm_provider,
+                    &ws.llm_model,
+                ) {
                     Ok(provider) => Some(provider),
                     Err(e) => {
                         warn!(
