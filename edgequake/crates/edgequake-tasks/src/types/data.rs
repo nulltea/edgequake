@@ -123,6 +123,18 @@ pub struct RepoDetectionData {
     pub pdf_id: Option<String>,
 }
 
+/// Reference-code analysis task payload (Phase 1 of the Reference Code
+/// GraphRAG extension). Kicked off when a user approves a `document_repos`
+/// row — edgequake will call the code-analyzer sidecar, locate approved
+/// algorithms inside the repo, and persist `code_artifacts` for review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeReferenceAnalysisData {
+    pub document_id: String,
+    pub workspace_id: String,
+    /// The approved document_repos row we're about to analyze.
+    pub document_repo_id: uuid::Uuid,
+}
+
 /// Reindex task payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexData {

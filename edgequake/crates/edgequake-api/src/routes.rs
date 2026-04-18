@@ -476,6 +476,8 @@ fn api_v1_routes() -> Router<AppState> {
         .nest("/algorithms", handlers::algorithm_routes())
         // Reference-repo detection (Phase 0 of the Reference Code GraphRAG extension)
         .nest("/repos", handlers::repo_routes())
+        // Reference-code analysis (Phase 1)
+        .nest("/code-reference", handlers::code_reference_routes())
 }
 
 #[cfg(test)]

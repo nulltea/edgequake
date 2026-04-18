@@ -157,10 +157,83 @@ async fn review_repo_impl(
         return Err(ApiError::NotFound(format!("repo {repo_id} not found")));
     }
 
+    // Auto-trigger Phase 1 analysis when a repo is newly approved. Best-effort:
+    // if enqueue fails, the review still succeeds — the user can retry via the
+    // explicit `POST /api/v1/code-reference/analyze/{repo_id}` endpoint.
+    if matches!(
+        request.status,
+        edgequake_agents::repo_detection::RepoStatus::Approved
+    ) {
+        if let Err(e) =
+            trigger_code_reference_analysis(&state, tenant_id, workspace_id, repo_id).await
+        {
+            tracing::warn!(
+                error = %e,
+                document_repo_id = %repo_id,
+                "auto-trigger of code-reference analysis failed (non-fatal)"
+            );
+        }
+    }
+
     Ok(Json(RepoReviewResponse {
         id: repo_id,
         status: types::status_str(request.status),
     }))
+}
+
+/// Look up the repo's document_id and enqueue a `CodeReferenceAnalysis` task.
+#[cfg(feature = "postgres")]
+async fn trigger_code_reference_analysis(
+    state: &AppState,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    document_repo_id: Uuid,
+) -> Result<(), String> {
+    use edgequake_tasks::{CodeReferenceAnalysisData, Task, TaskType};
+
+    let pool = state
+        .pg_pool
+        .as_ref()
+        .ok_or_else(|| "pg pool unavailable".to_string())?;
+    let document_id: Option<String> = sqlx::query_scalar(
+        r#"SELECT document_id FROM document_repos
+           WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3"#,
+    )
+    .bind(document_repo_id)
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("look up document_repo: {e}"))?;
+    let Some(document_id) = document_id else {
+        return Err("document_repo missing after status flip".into());
+    };
+    let task_data = CodeReferenceAnalysisData {
+        document_id,
+        workspace_id: workspace_id.to_string(),
+        document_repo_id,
+    };
+    let task = Task::new(
+        tenant_id,
+        workspace_id,
+        TaskType::CodeReferenceAnalysis,
+        serde_json::to_value(&task_data).map_err(|e| format!("serialize task data: {e}"))?,
+    );
+    state
+        .task_storage
+        .create_task(&task)
+        .await
+        .map_err(|e| format!("create task: {e}"))?;
+    state
+        .task_queue
+        .send(task)
+        .await
+        .map_err(|e| format!("queue task: {e}"))?;
+    tracing::info!(
+        %document_repo_id,
+        "auto-triggered CodeReferenceAnalysis after repo approval"
+    );
+    Ok(())
 }
 
 #[cfg(feature = "postgres")]

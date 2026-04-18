@@ -41,6 +41,7 @@ pub enum TaskType {
     AlgorithmExtraction,
     AlgorithmEmbedding,
     RepoDetection,
+    CodeReferenceAnalysis,
 }
 
 impl fmt::Display for TaskType {
@@ -54,6 +55,7 @@ impl fmt::Display for TaskType {
             Self::AlgorithmExtraction => write!(f, "algorithm_extraction"),
             Self::AlgorithmEmbedding => write!(f, "algorithm_embedding"),
             Self::RepoDetection => write!(f, "repo_detection"),
+            Self::CodeReferenceAnalysis => write!(f, "code_reference_analysis"),
         }
     }
 }

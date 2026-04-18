@@ -103,6 +103,28 @@ impl TaskProcessor for DocumentTaskProcessor {
                     ))
                 }
             }
+            TaskType::CodeReferenceAnalysis => {
+                let data: edgequake_tasks::CodeReferenceAnalysisData =
+                    serde_json::from_value(task.task_data.clone()).map_err(|e| {
+                        edgequake_tasks::TaskError::InvalidPayload(format!(
+                            "Invalid CodeReferenceAnalysisData: {}",
+                            e
+                        ))
+                    })?;
+                #[cfg(feature = "postgres")]
+                {
+                    self.process_code_reference_analysis(task, data, cancel_token)
+                        .await
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    let _ = data;
+                    let _ = cancel_token;
+                    Err(edgequake_tasks::TaskError::UnsupportedOperation(
+                        "Code-reference analysis requires postgres feature".to_string(),
+                    ))
+                }
+            }
         }
     }
 
