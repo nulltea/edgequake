@@ -110,6 +110,19 @@ pub struct AlgorithmEmbeddingData {
     pub algorithm_ids: Vec<String>,
 }
 
+/// Reference-repository detection task payload (Phase 0 of the Reference
+/// Code GraphRAG extension). Runs Layer A (PDF hyperlinks) and, if nothing
+/// is found, Layer B (SearXNG + Crawl4AI web-search fallback).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoDetectionData {
+    pub document_id: String,
+    pub workspace_id: String,
+    /// PDF id. Set when the document was ingested as a PDF — enables Layer A.
+    /// If None, only Layer B runs (assumes the markdown is stored and loadable).
+    #[serde(default)]
+    pub pdf_id: Option<String>,
+}
+
 /// Reindex task payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexData {

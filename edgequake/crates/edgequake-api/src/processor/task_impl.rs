@@ -82,6 +82,27 @@ impl TaskProcessor for DocumentTaskProcessor {
                 self.process_algorithm_embedding(task, data, cancel_token)
                     .await
             }
+            TaskType::RepoDetection => {
+                let data: edgequake_tasks::RepoDetectionData =
+                    serde_json::from_value(task.task_data.clone()).map_err(|e| {
+                        edgequake_tasks::TaskError::InvalidPayload(format!(
+                            "Invalid RepoDetectionData: {}",
+                            e
+                        ))
+                    })?;
+                #[cfg(feature = "postgres")]
+                {
+                    self.process_repo_detection(task, data, cancel_token).await
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    let _ = data;
+                    let _ = cancel_token;
+                    Err(edgequake_tasks::TaskError::UnsupportedOperation(
+                        "Repo detection requires postgres feature".to_string(),
+                    ))
+                }
+            }
         }
     }
 
@@ -105,11 +126,7 @@ impl TaskProcessor for DocumentTaskProcessor {
                     .and_then(|v| v.as_str())
             })
             // AlgorithmExtractionData / AlgorithmEmbeddingData use top-level document_id
-            .or_else(|| {
-                task.task_data
-                    .get("document_id")
-                    .and_then(|v| v.as_str())
-            })
+            .or_else(|| task.task_data.get("document_id").and_then(|v| v.as_str()))
             .map(|s| s.to_string());
 
         error!(
@@ -145,7 +162,15 @@ impl TaskProcessor for DocumentTaskProcessor {
                 )
             };
             if let Err(e) = self
-                .update_document_status(doc_id, status, if is_algorithm_task { None } else { Some(&failure_msg) })
+                .update_document_status(
+                    doc_id,
+                    status,
+                    if is_algorithm_task {
+                        None
+                    } else {
+                        Some(&failure_msg)
+                    },
+                )
                 .await
             {
                 error!(

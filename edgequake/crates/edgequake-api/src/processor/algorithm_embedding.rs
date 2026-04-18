@@ -36,12 +36,11 @@ impl DocumentTaskProcessor {
             use edgequake_algorithms::{AlgorithmStorage, PostgresAlgorithmStorage};
             use edgequake_storage::traits::WorkspaceVectorConfig;
 
-            let database_url = std::env::var("DATABASE_URL").map_err(|_| {
-                TaskError::Process("DATABASE_URL not set".to_string())
-            })?;
-            let pool = sqlx::PgPool::connect(&database_url).await.map_err(|e| {
-                TaskError::Process(format!("Failed to connect to database: {e}"))
-            })?;
+            let database_url = std::env::var("DATABASE_URL")
+                .map_err(|_| TaskError::Process("DATABASE_URL not set".to_string()))?;
+            let pool = sqlx::PgPool::connect(&database_url)
+                .await
+                .map_err(|e| TaskError::Process(format!("Failed to connect to database: {e}")))?;
             let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool));
 
             let tenant_id = task.tenant_id;
@@ -121,9 +120,7 @@ impl DocumentTaskProcessor {
                 let embeddings = embedding_provider
                     .embed(&[embedding_text])
                     .await
-                    .map_err(|e| {
-                        TaskError::Process(format!("Embedding generation failed: {e}"))
-                    })?;
+                    .map_err(|e| TaskError::Process(format!("Embedding generation failed: {e}")))?;
 
                 let embedding = match embeddings.into_iter().next() {
                     Some(e) => e,
@@ -149,9 +146,7 @@ impl DocumentTaskProcessor {
                 vector_storage
                     .upsert(&[(vector_id, embedding, metadata)])
                     .await
-                    .map_err(|e| {
-                        TaskError::Process(format!("Failed to store embedding: {e}"))
-                    })?;
+                    .map_err(|e| TaskError::Process(format!("Failed to store embedding: {e}")))?;
 
                 embedded_count += 1;
                 let pct = 10 + ((i + 1) * 80 / data.algorithm_ids.len().max(1));

@@ -1998,6 +1998,7 @@ dependencies = [
  "axum-extra",
  "bytes",
  "chrono",
+ "edgequake-agents",
  "edgequake-algorithms",
  "edgequake-audit",
  "edgequake-auth",

@@ -319,10 +319,7 @@ impl DocumentTaskProcessor {
         // settings (e.g. "GLM-OCR") selects the backend.
         let (vlm_base_url, vlm_model) = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
             let base_url = std::env::var("OPENAI_COMPATIBLE_BASE_URL").ok();
-            let model = data
-                .vision_model
-                .clone()
-                .filter(|s| !s.is_empty());
+            let model = data.vision_model.clone().filter(|s| !s.is_empty());
             (base_url, model)
         } else {
             (None, None)
@@ -341,9 +338,9 @@ impl DocumentTaskProcessor {
 
         // VLM-OCR: create a sink to capture algorithm blocks during conversion.
         let algo_block_sink = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
-            Some(Arc::new(std::sync::Mutex::new(
-                Vec::<edgequake_pdf::AlgorithmBlock>::new(),
-            )))
+            Some(Arc::new(std::sync::Mutex::new(Vec::<
+                edgequake_pdf::AlgorithmBlock,
+            >::new())))
         } else {
             None
         };
@@ -464,8 +461,7 @@ impl DocumentTaskProcessor {
         // on scanned / image-only PDFs.
         let is_deterministic = matches!(
             backend,
-            edgequake_pdf::PdfParserBackend::EdgeParse
-                | edgequake_pdf::PdfParserBackend::VlmOcr
+            edgequake_pdf::PdfParserBackend::EdgeParse | edgequake_pdf::PdfParserBackend::VlmOcr
         );
         let extraction_errors = if is_deterministic {
             let avg_chars_per_page = markdown.len() / page_count.max(1);
@@ -642,12 +638,10 @@ impl DocumentTaskProcessor {
                     None
                 };
 
-                match self.run_algorithm_pass2_pass3(
-                    &early_doc_id,
-                    ws_id,
-                    &blocks,
-                    task,
-                ).await {
+                match self
+                    .run_algorithm_pass2_pass3(&early_doc_id, ws_id, &blocks, task)
+                    .await
+                {
                     Ok(count) => {
                         info!(
                             pdf_id = %data.pdf_id,
@@ -669,6 +663,49 @@ impl DocumentTaskProcessor {
                     .await
                     .ok();
             }
+        }
+
+        // 9. Reference-repo detection (Phase 0 of the Reference Code GraphRAG
+        // extension). Layer A runs against the PDF bytes; if nothing is found,
+        // Layer B falls through to SearXNG + Crawl4AI when those env vars are
+        // set. Failures are swallowed — detection is opportunistic, not
+        // required for a successful ingest.
+        //
+        // We need the raw PDF bytes again plus the markdown. Re-fetching from
+        // storage (rather than holding onto the earlier `pdf.pdf_data` clone)
+        // keeps the hot path memory footprint small even when this step is a
+        // no-op.
+        let pdf_data_for_detection = pdf_storage
+            .get_pdf(&data.pdf_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|p| p.pdf_data)
+            .unwrap_or_default();
+        let content_key = format!("{}-content", early_doc_id);
+        let markdown_for_detection = self
+            .kv_storage
+            .get_by_id(&content_key)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        if let Err(e) = self
+            .run_repo_detection_inline(
+                task.tenant_id,
+                task.workspace_id,
+                &early_doc_id,
+                &pdf_data_for_detection,
+                &markdown_for_detection,
+            )
+            .await
+        {
+            warn!(
+                pdf_id = %data.pdf_id,
+                error = %e,
+                "Reference-repo detection failed (non-fatal)"
+            );
         }
 
         info!(

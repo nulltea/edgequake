@@ -80,6 +80,7 @@ mod algorithm_embedding;
 mod algorithm_extraction;
 mod pdf_processing;
 pub mod pipeline_checkpoint;
+mod repo_detection;
 mod status_updates;
 mod task_impl;
 mod text_insert;

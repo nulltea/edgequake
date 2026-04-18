@@ -39,8 +39,7 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| TaskError::Process(format!("LLM provider error: {e}")))?;
 
-        let analysis_extractor =
-            edgequake_algorithms::AlgorithmExtractor::new(analysis_provider);
+        let analysis_extractor = edgequake_algorithms::AlgorithmExtractor::new(analysis_provider);
         let extraction_extractor =
             edgequake_algorithms::AlgorithmExtractor::new(extraction_provider);
 
@@ -154,7 +153,11 @@ impl DocumentTaskProcessor {
             if chunks.is_empty() {
                 return Err(TaskError::Process("No chunks provided".to_string()));
             }
-            let pair_count = if chunks.len() == 1 { 1 } else { chunks.len() - 1 };
+            let pair_count = if chunks.len() == 1 {
+                1
+            } else {
+                chunks.len() - 1
+            };
 
             info!(
                 document_id = %document_id,
@@ -183,8 +186,7 @@ impl DocumentTaskProcessor {
                 })
                 .collect();
 
-            let mut pass1_stream =
-                stream::iter(pass1_futures).buffer_unordered(pass1_concurrency);
+            let mut pass1_stream = stream::iter(pass1_futures).buffer_unordered(pass1_concurrency);
 
             let mut flagged_pairs: Vec<(usize, edgequake_algorithms::AlgorithmInventory)> =
                 Vec::new();
@@ -295,8 +297,7 @@ impl DocumentTaskProcessor {
             })
             .collect();
 
-        let mut pass2_stream =
-            stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
+        let mut pass2_stream = stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
 
         let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
         let mut pass2_completed: usize = 0;
@@ -393,9 +394,9 @@ impl DocumentTaskProcessor {
             let database_url = std::env::var("DATABASE_URL").map_err(|_| {
                 TaskError::Process("DATABASE_URL not set for algorithm storage".to_string())
             })?;
-            let pool = sqlx::PgPool::connect(&database_url).await.map_err(|e| {
-                TaskError::Process(format!("Failed to connect to database: {e}"))
-            })?;
+            let pool = sqlx::PgPool::connect(&database_url)
+                .await
+                .map_err(|e| TaskError::Process(format!("Failed to connect to database: {e}")))?;
             let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool));
 
             let tenant_id = task.tenant_id;
@@ -449,8 +450,7 @@ impl DocumentTaskProcessor {
                 .collect();
 
             let stored_count = algorithms.len();
-            let algorithm_ids: Vec<String> =
-                algorithms.iter().map(|a| a.id.to_string()).collect();
+            let algorithm_ids: Vec<String> = algorithms.iter().map(|a| a.id.to_string()).collect();
 
             storage
                 .create_algorithms(&algorithms)
@@ -536,10 +536,13 @@ impl DocumentTaskProcessor {
     async fn resolve_algorithm_llm_providers(
         &self,
         workspace_id: Option<&str>,
-    ) -> Result<(
-        std::sync::Arc<dyn edgequake_llm::traits::LLMProvider>,
-        std::sync::Arc<dyn edgequake_llm::traits::LLMProvider>,
-    ), String> {
+    ) -> Result<
+        (
+            std::sync::Arc<dyn edgequake_llm::traits::LLMProvider>,
+            std::sync::Arc<dyn edgequake_llm::traits::LLMProvider>,
+        ),
+        String,
+    > {
         use crate::safety_limits::create_safe_llm_provider;
 
         let default_provider = std::sync::Arc::clone(&self.llm_provider);
@@ -644,8 +647,7 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| TaskError::Process(format!("LLM provider error: {e}")))?;
 
-        let analysis_extractor =
-            edgequake_algorithms::AlgorithmExtractor::new(analysis_provider);
+        let analysis_extractor = edgequake_algorithms::AlgorithmExtractor::new(analysis_provider);
         let extraction_extractor =
             edgequake_algorithms::AlgorithmExtractor::new(extraction_provider);
 
@@ -704,8 +706,7 @@ impl DocumentTaskProcessor {
             })
             .collect();
 
-        let mut pass2_stream =
-            stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
+        let mut pass2_stream = stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
 
         let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
         while let Some((idx, result)) = pass2_stream.next().await {
@@ -726,13 +727,21 @@ impl DocumentTaskProcessor {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut deduped: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
         for algo in all_extracted {
-            let key = algo.name.trim().to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+            let key = algo
+                .name
+                .trim()
+                .to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             if seen.insert(key) {
                 deduped.push(algo);
             }
         }
 
-        let extraction = edgequake_algorithms::AlgorithmExtractionOutput { algorithms: deduped };
+        let extraction = edgequake_algorithms::AlgorithmExtractionOutput {
+            algorithms: deduped,
+        };
 
         info!(
             document_id = %document_id,
@@ -768,9 +777,9 @@ impl DocumentTaskProcessor {
             let database_url = std::env::var("DATABASE_URL").map_err(|_| {
                 TaskError::Process("DATABASE_URL not set for algorithm storage".to_string())
             })?;
-            let pool = sqlx::PgPool::connect(&database_url).await.map_err(|e| {
-                TaskError::Process(format!("Failed to connect to database: {e}"))
-            })?;
+            let pool = sqlx::PgPool::connect(&database_url)
+                .await
+                .map_err(|e| TaskError::Process(format!("Failed to connect to database: {e}")))?;
             let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool));
 
             let tenant_id = task.tenant_id;
@@ -797,7 +806,11 @@ impl DocumentTaskProcessor {
                     workspace_id: workspace_id_uuid,
                     document_id: document_id.to_string(),
                     name: ea.name,
-                    description: if ea.description.is_empty() { None } else { Some(ea.description) },
+                    description: if ea.description.is_empty() {
+                        None
+                    } else {
+                        Some(ea.description)
+                    },
                     steps: ea.steps,
                     inputs: ea.inputs,
                     outputs: ea.outputs,
@@ -808,8 +821,12 @@ impl DocumentTaskProcessor {
                     tags: ea.tags,
                     confidence: ea.confidence,
                     status: initial_status,
-                    verification_status: verification.as_ref().map(|v| v.verification_status.clone()),
-                    verification_details: verification.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+                    verification_status: verification
+                        .as_ref()
+                        .map(|v| v.verification_status.clone()),
+                    verification_details: verification
+                        .as_ref()
+                        .and_then(|v| serde_json::to_value(v).ok()),
                     created_at: now,
                     updated_at: now,
                 })
