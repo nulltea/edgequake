@@ -160,10 +160,17 @@ impl TaskProcessor for DocumentTaskProcessor {
             "Permanent task failure — updating document status to 'failed'"
         );
 
-        // For algorithm tasks, restore document to "completed" (the document itself is fine).
-        // For other tasks, mark document as "failed".
-        let is_algorithm_task = task.task_type == TaskType::AlgorithmExtraction
-            || task.task_type == TaskType::AlgorithmEmbedding;
+        // For augmentative task types (algorithm extraction, repo detection,
+        // code-reference analysis), restore document to "completed" — the
+        // document itself is fine, only the augmentation failed. Core-ingest
+        // failures (Insert/Upload/PdfProcessing) still flip the doc to "failed".
+        let is_algorithm_task = matches!(
+            task.task_type,
+            TaskType::AlgorithmExtraction
+                | TaskType::AlgorithmEmbedding
+                | TaskType::RepoDetection
+                | TaskType::CodeReferenceAnalysis
+        );
 
         if let Some(ref doc_id) = document_id {
             let (status, failure_msg) = if is_algorithm_task {

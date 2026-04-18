@@ -115,9 +115,18 @@ def run_claude(
             raise ClaudeCliError(f"claude cli timed out after {timeout_s}s") from e
 
     if proc.returncode != 0:
+        # The CLI returns non-zero for auth errors (401/403), quota errors
+        # (429), and tool errors — but the actual reason lives in the JSON
+        # payload on stdout, not stderr. Parse stdout first so the caller
+        # sees the real message.
+        structured_err = _extract_error_from_stdout(proc.stdout)
+        if structured_err is not None:
+            raise ClaudeCliError(
+                f"claude cli exited {proc.returncode}: {structured_err}"
+            )
         stderr_tail = (proc.stderr or "")[-2000:]
         raise ClaudeCliError(
-            f"claude cli exited {proc.returncode}. stderr: {stderr_tail}"
+            f"claude cli exited {proc.returncode}. stderr: {stderr_tail} stdout: {proc.stdout[:500]}"
         )
 
     try:
@@ -145,6 +154,27 @@ def run_claude(
         num_turns=payload.get("num_turns"),
         raw_result_text=payload.get("result"),
     )
+
+
+def _extract_error_from_stdout(stdout: str) -> str | None:
+    """Pull the human-readable error out of a failing CLI run.
+
+    The CLI emits a JSON object like
+    `{"is_error": true, "api_error_status": 401, "result": "…"}` on stdout
+    even when returncode != 0. Surface that message; the CLI's stderr is
+    usually empty for auth/quota errors.
+    """
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("is_error"):
+        return None
+    api_status = payload.get("api_error_status")
+    result = payload.get("result") or payload.get("error")
+    if api_status and result:
+        return f"api_error_status={api_status}: {result}"
+    return str(result or payload)
 
 
 def _scrubbed_env() -> dict[str, str]:

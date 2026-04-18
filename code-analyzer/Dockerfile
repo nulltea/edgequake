@@ -35,7 +35,15 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install -e .
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN mkdir -p /workspace
+# Claude CLI refuses `--permission-mode bypassPermissions` under root/sudo
+# as a safety check. Run as a dedicated non-root user so the CLI accepts
+# the read-only Read/Grep/Glob tool allowlist we drive.
+RUN useradd -m -u 10001 analyzer \
+    && mkdir -p /workspace \
+    && chown -R analyzer:analyzer /workspace /app /opt/venv
+
+USER analyzer
+ENV HOME=/home/analyzer
 
 EXPOSE 9100
 
