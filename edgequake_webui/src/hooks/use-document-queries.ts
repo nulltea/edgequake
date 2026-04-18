@@ -46,13 +46,21 @@ type ListedDocument = DocumentsResult["items"][number];
 function isDocumentActivelyProcessing(doc: ListedDocument): boolean {
   return (
     doc.status === "processing" ||
+    doc.status === "algo_identifying" ||
+    doc.status === "algo_extracting" ||
+    doc.status === "algo_verifying" ||
+    doc.status === "algo_embedding" ||
     doc.current_stage === "processing" ||
     doc.current_stage === "converting" ||
     doc.current_stage === "preprocessing" ||
     doc.current_stage === "chunking" ||
     doc.current_stage === "extracting" ||
     doc.current_stage === "embedding" ||
-    doc.current_stage === "storing"
+    doc.current_stage === "storing" ||
+    doc.current_stage === "algo_identifying" ||
+    doc.current_stage === "algo_extracting" ||
+    doc.current_stage === "algo_verifying" ||
+    doc.current_stage === "algo_embedding"
   );
 }
 
@@ -70,10 +78,18 @@ function isDocumentTransitioning(doc: ListedDocument): boolean {
 function hasProcessingStatus(doc: ListedDocument): boolean {
   return (
     doc.status === "processing" ||
+    doc.status === "algo_identifying" ||
+    doc.status === "algo_extracting" ||
+    doc.status === "algo_verifying" ||
+    doc.status === "algo_embedding" ||
     doc.current_stage === "chunking" ||
     doc.current_stage === "extracting" ||
     doc.current_stage === "embedding" ||
-    doc.current_stage === "indexing"
+    doc.current_stage === "indexing" ||
+    doc.current_stage === "algo_identifying" ||
+    doc.current_stage === "algo_extracting" ||
+    doc.current_stage === "algo_verifying" ||
+    doc.current_stage === "algo_embedding"
   );
 }
 

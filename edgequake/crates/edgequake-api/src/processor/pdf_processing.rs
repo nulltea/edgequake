@@ -103,10 +103,16 @@ impl DocumentTaskProcessor {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         // FIX-DUPLICATE-BUG: Persist the generated document ID back into task_data
-        // so that worker retries reuse the same document ID instead of creating
-        // a new UUID on each attempt. Without this, a single PDF upload that fails
-        // and gets retried by the worker pool creates duplicate documents with
-        // different IDs, each stuck in "processing" state.
+        // so that worker retries (including restart-driven auto-recovery) reuse the
+        // same document ID instead of creating a new UUID on each attempt. Without
+        // this, a restart mid-processing leaves the on-disk task with
+        // existing_document_id=None; the recovered task generates a fresh UUID and
+        // we end up with duplicate documents — one orphan at the old UUID, one live
+        // at the new one.
+        //
+        // Critically, the patched task_data must be persisted to the DB NOW — before
+        // any work happens — so that a crash/restart right after this point does not
+        // lose the assignment.
         if !is_reprocess {
             if let Ok(mut task_data_map) = serde_json::from_value::<
                 serde_json::Map<String, serde_json::Value>,
@@ -117,6 +123,19 @@ impl DocumentTaskProcessor {
                     serde_json::json!(early_doc_id.clone()),
                 );
                 task.task_data = serde_json::Value::Object(task_data_map);
+
+                if let Some(ref ts) = self.task_storage {
+                    if let Err(e) = ts.update_task(task).await {
+                        // Non-fatal: we can still process this task, but a restart
+                        // before task completion will create a duplicate document.
+                        warn!(
+                            document_id = %early_doc_id,
+                            track_id = %task.track_id,
+                            error = %e,
+                            "Failed to persist existing_document_id to task_data — restart safety degraded"
+                        );
+                    }
+                }
             }
         }
         let metadata_key = format!("{}-metadata", early_doc_id);

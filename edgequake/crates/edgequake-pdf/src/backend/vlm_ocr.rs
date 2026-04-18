@@ -22,8 +22,11 @@ use super::vlm_client::{VlmClientBackend, VlmClientConfig};
 use super::{PdfConversionConfig, PdfConverter};
 use crate::error::PdfConversionError;
 
-const LAYOUT_MODEL: &str = "pp-doclayoutv2.onnx";
-const LAYOUT_MODEL_NAME: &str = "pp-doclayoutv2";
+// pp-doclayout_plus-l (20-class): outperforms V2/V3 on protocol/algorithm boxes.
+// On B2A.pdf V2 missed Protocol 1 entirely; plus-L detects all 5 algorithmic
+// blocks (2 protocols + 3 functionality figures) at confidence >= 0.79.
+const LAYOUT_MODEL: &str = "pp-doclayout_plus-l.onnx";
+const LAYOUT_MODEL_NAME: &str = "pp-doclayout_plus-l";
 
 /// VLM-OCR powered PDF → Markdown converter (PP-DocLayoutV2 + remote VLM).
 #[derive(Debug, Default)]
@@ -104,7 +107,19 @@ impl PdfConverter for VlmOcrConverter {
                 "VLM-OCR: connecting to VLM server"
             );
             let backend = VlmClientBackend::new(vlm_config);
-            let parser = oar_ocr_vl::doc_parser::DocParser::new(&backend);
+            // crop_pad_ratio=0.02 restores ~2% top/bottom padding around each
+            // layout element's bbox. Without this, the plus-L layout model's
+            // tight algorithm bboxes can crop JUST BELOW the box's title line
+            // (e.g. "**Protocol 2** B2A protocol (Π₂)"), causing GLM-OCR to
+            // return only the math body without the title. Verified with the
+            // inspect_page5_vlm_output test on B2A.pdf: default pad 0.0 gives
+            // 471 chars (no title); pad 0.02 gives 1448 chars (full structured
+            // box). See commit message for details.
+            let parser_cfg = oar_ocr_vl::doc_parser::DocParserConfig {
+                crop_pad_ratio: 0.02,
+                ..Default::default()
+            };
+            let parser = oar_ocr_vl::doc_parser::DocParser::with_config(&backend, parser_cfg);
 
             // 5. Process pages concurrently with rayon.
             let completed = Arc::new(AtomicUsize::new(0));
@@ -127,6 +142,9 @@ impl PdfConverter for VlmOcrConverter {
                         let md = match parser.parse(&layout_predictor, image) {
                             Ok(result) => {
                                 // Capture algorithm blocks if sink is provided.
+                                // One AlgorithmBlock per detected layout element (not per page) so
+                                // Pass 2 gets one algorithm per chunk and progress count matches
+                                // the number of detected algorithms.
                                 if let Some(ref sink) = algo_sink {
                                     use oar_ocr_core::domain::structure::LayoutElementType;
                                     let algo_elements: Vec<_> = result
@@ -135,14 +153,37 @@ impl PdfConverter for VlmOcrConverter {
                                         .filter(|e| e.element_type == LayoutElementType::Algorithm)
                                         .cloned()
                                         .collect();
+                                    info!(
+                                        page = page_num,
+                                        algo_count = algo_elements.len(),
+                                        total_elements = result.layout_elements.len(),
+                                        "VLM-OCR: algorithm elements on page"
+                                    );
                                     if !algo_elements.is_empty() {
-                                        let algo_md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
-                                        if !algo_md.trim().is_empty() {
-                                            if let Ok(mut blocks) = sink.lock() {
-                                                blocks.push(AlgorithmBlock {
-                                                    page: page_num,
-                                                    markdown: algo_md,
-                                                });
+                                        if let Ok(mut blocks) = sink.lock() {
+                                            for (idx, elem) in algo_elements.iter().enumerate() {
+                                                let algo_md = oar_ocr_vl::utils::to_markdown(
+                                                    std::slice::from_ref(elem),
+                                                    &[],
+                                                );
+                                                let preview: String = algo_md
+                                                    .chars()
+                                                    .take(240)
+                                                    .collect();
+                                                info!(
+                                                    page = page_num,
+                                                    algo_idx = idx,
+                                                    score = elem.confidence,
+                                                    md_len = algo_md.len(),
+                                                    preview = %preview,
+                                                    "VLM-OCR: captured algorithm block"
+                                                );
+                                                if !algo_md.trim().is_empty() {
+                                                    blocks.push(AlgorithmBlock {
+                                                        page: page_num,
+                                                        markdown: algo_md,
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -161,8 +202,12 @@ impl PdfConverter for VlmOcrConverter {
                         };
 
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if let Some(ref cb) = progress_cb {
-                            cb.on_page_complete(page_num, page_count, md.as_ref().map_or(0, |s| s.len()));
+                        // Only report page_complete on success; failures are already
+                        // reported via on_page_error above. Reporting both inflates
+                        // the completed_pages counter and makes the UI show progress
+                        // for pages that actually failed.
+                        if let (Some(ref cb), Some(ref s)) = (progress_cb.as_ref(), md.as_ref()) {
+                            cb.on_page_complete(page_num, page_count, s.len());
                         }
                         info!(page = page_num, done = done, total = page_count, "VLM-OCR: page completed");
 
@@ -271,7 +316,12 @@ pub fn detect_algorithm_blocks(
         "Algorithm detection: using VLM server"
     );
     let backend = VlmClientBackend::new(vlm_config);
-    let parser = oar_ocr_vl::doc_parser::DocParser::new(&backend);
+    // crop_pad_ratio=0.02 — see comment in VlmOcrConverter::convert for why.
+    let parser_cfg = oar_ocr_vl::doc_parser::DocParserConfig {
+        crop_pad_ratio: 0.02,
+        ..Default::default()
+    };
+    let parser = oar_ocr_vl::doc_parser::DocParser::with_config(&backend, parser_cfg);
 
     // 5. Process pages concurrently: detect layout → filter algorithms → recognize
     let concurrency = std::env::var("EDGEQUAKE_PDF_CONCURRENCY")
@@ -320,15 +370,18 @@ pub fn detect_algorithm_blocks(
                     "Algorithm detection: found algorithm blocks"
                 );
 
-                let md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
-                if md.trim().is_empty() {
-                    return Vec::new();
+                // One block per element for granular progress + cleaner LLM chunks.
+                let mut page_blocks = Vec::new();
+                for elem in &algo_elements {
+                    let md = oar_ocr_vl::utils::to_markdown(std::slice::from_ref(elem), &[]);
+                    if !md.trim().is_empty() {
+                        page_blocks.push(AlgorithmBlock {
+                            page: page_num,
+                            markdown: md,
+                        });
+                    }
                 }
-
-                vec![AlgorithmBlock {
-                    page: page_num,
-                    markdown: md,
-                }]
+                page_blocks
             })
             .collect()
     });
@@ -442,4 +495,217 @@ fn render_single_page(page: &hayro::hayro_syntax::page::Page) -> Result<image::R
         rgb,
     )
     .ok_or_else(|| "Failed to construct RgbImage from pixmap".to_string())
+}
+
+#[cfg(test)]
+mod layout_model_comparison {
+    use super::*;
+
+    /// Compare layout detection across V2, V3, and plus-L for a given PDF.
+    /// Prints per-page label counts so we can see which model detects Protocol
+    /// boxes as Algorithm-class elements (vs text/image/etc).
+    ///
+    /// Run with:
+    ///   EDGEQUAKE_OAR_OCR_MODEL_DIR=/home/timo/.cache/edgequake/oar-ocr-models \
+    ///   EDGEQUAKE_TEST_PDF=/home/timo/edgequake/B2A.pdf \
+    ///   cargo test -p edgequake-pdf --release --lib layout_model_comparison::compare_layout_models -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn compare_layout_models() {
+        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
+            .unwrap_or_else(|_| "/home/timo/edgequake/B2A.pdf".to_string());
+        let pdf_bytes = std::fs::read(&pdf_path).expect("read PDF");
+        let images = render_pdf_to_images(&pdf_bytes).expect("render pages");
+        let model_dir = model_cache_dir().expect("model dir");
+
+        let candidates = [
+            ("V2", "pp-doclayoutv2", "pp-doclayoutv2.onnx"),
+            ("V3", "pp-doclayoutv3", "pp-doclayoutv3.onnx"),
+            ("plus-L", "pp-doclayout_plus-l", "pp-doclayout_plus-l.onnx"),
+        ];
+
+        for (label, model_name, file) in candidates {
+            let path = model_dir.join(file);
+            if !path.exists() {
+                eprintln!("[{label}] model not found at {}, skipping", path.display());
+                continue;
+            }
+            let predictor = match oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
+                .model_name(model_name)
+                .build(&path)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("[{label}] failed to build predictor: {e}");
+                    continue;
+                }
+            };
+
+            println!("\n========== {label} ({model_name}) ==========");
+            for (i, img) in images.iter().enumerate() {
+                let page = i + 1;
+                let result = match predictor.predict(vec![img.clone()]) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("[{label}] page {page} predict failed: {e}");
+                        continue;
+                    }
+                };
+                let page_elements = match result.elements.first() {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let mut by_type: std::collections::BTreeMap<String, usize> =
+                    Default::default();
+                let mut algo_details = Vec::new();
+                for (idx, elem) in page_elements.iter().enumerate() {
+                    *by_type.entry(elem.element_type.clone()).or_insert(0) += 1;
+                    // Flag anything that looks algorithm-like or pseudocode-like.
+                    let raw = elem.element_type.to_lowercase();
+                    if raw.contains("algorithm")
+                        || raw.contains("pseudocode")
+                        || raw.contains("code")
+                    {
+                        algo_details.push(format!(
+                            "  #{idx} label={} score={:.3} points={:?}",
+                            elem.element_type, elem.score, elem.bbox.points,
+                        ));
+                    }
+                }
+                println!(
+                    "page {page}: total={} | {}",
+                    page_elements.len(),
+                    by_type
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                for line in algo_details {
+                    println!("{line}");
+                }
+            }
+        }
+    }
+
+    /// Run DocParser (layout + VLM) against page 5 of B2A.pdf and print the
+    /// content of every detected element, so we can see exactly what GLM-OCR
+    /// returns for the Protocol 2 algorithm crop under each layout model.
+    ///
+    /// Run with (after tailscale login):
+    ///   OPENAI_COMPATIBLE_BASE_URL=https://ai.tail59ea6b.ts.net/v1 \
+    ///   EDGEQUAKE_TEST_VLM_MODEL=GLM-OCR \
+    ///   EDGEQUAKE_OAR_OCR_MODEL_DIR=/home/timo/.edgequake/oar-ocr-models \
+    ///   EDGEQUAKE_TEST_PDF=/home/timo/edgequake/B2A.pdf \
+    ///   cargo test -p edgequake-pdf --release --lib layout_model_comparison::inspect_page5_vlm_output -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn inspect_page5_vlm_output() {
+        use super::super::vlm_client::{VlmClientBackend, VlmClientConfig};
+        use oar_ocr_vl::doc_parser::DocParser;
+
+        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
+            .unwrap_or_else(|_| "/home/timo/edgequake/B2A.pdf".to_string());
+        let pdf_bytes = std::fs::read(&pdf_path).expect("read PDF");
+        let images = render_pdf_to_images(&pdf_bytes).expect("render pages");
+        let page5 = images.get(4).expect("page 5").clone();
+        let model_dir = model_cache_dir().expect("model dir");
+
+        let mut vlm_cfg = VlmClientConfig::from_env();
+        if let Ok(m) = std::env::var("EDGEQUAKE_TEST_VLM_MODEL") {
+            vlm_cfg.model = Some(m);
+        }
+        println!(
+            "VLM: base_url={} model={:?}",
+            vlm_cfg.base_url, vlm_cfg.model
+        );
+        let backend = VlmClientBackend::new(vlm_cfg);
+
+        let candidates = [
+            ("V2", "pp-doclayoutv2", "pp-doclayoutv2.onnx"),
+            ("plus-L", "pp-doclayout_plus-l", "pp-doclayout_plus-l.onnx"),
+        ];
+
+        for (label, model_name, file) in candidates {
+            let path = model_dir.join(file);
+            if !path.exists() {
+                eprintln!("[{label}] model not found, skipping");
+                continue;
+            }
+            let predictor = match oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
+                .model_name(model_name)
+                .build(&path)
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("[{label}] build predictor failed: {e}");
+                    continue;
+                }
+            };
+            let parser = DocParser::new(&backend);
+
+            println!("\n========== {label} page 5 DocParser output (default pad 0.0) ==========");
+            let result = match parser.parse(&predictor, page5.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[{label}] DocParser.parse failed: {e}");
+                    continue;
+                }
+            };
+            for (idx, elem) in result.layout_elements.iter().enumerate() {
+                let text = elem.text.as_deref().unwrap_or("<no-text>");
+                let preview: String = text.chars().take(500).collect();
+                println!(
+                    "  #{idx} type={:?} label={:?} bbox=[x:{:.0}-{:.0} y:{:.0}-{:.0}] score={:.3} textlen={}",
+                    elem.element_type,
+                    elem.label,
+                    elem.bbox.x_min(),
+                    elem.bbox.x_max(),
+                    elem.bbox.y_min(),
+                    elem.bbox.y_max(),
+                    elem.confidence,
+                    text.len()
+                );
+                if !preview.is_empty() && text != "<no-text>" {
+                    println!("     text: {preview:?}");
+                }
+            }
+
+            println!("\n--- {label} page 5 full markdown ---");
+            println!("{}", result.to_markdown());
+
+            // --- Same model with crop_pad_ratio=0.02 (restores missing title) ---
+            let padded_cfg = oar_ocr_vl::doc_parser::DocParserConfig {
+                crop_pad_ratio: 0.02,
+                ..Default::default()
+            };
+            let padded_parser = DocParser::with_config(&backend, padded_cfg);
+            println!(
+                "\n========== {label} page 5 DocParser output (pad 0.02) =========="
+            );
+            let padded = match padded_parser.parse(&predictor, page5.clone()) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("[{label}] padded parse failed: {e}");
+                    continue;
+                }
+            };
+            for (idx, elem) in padded.layout_elements.iter().enumerate() {
+                if elem.element_type != oar_ocr_core::domain::structure::LayoutElementType::Algorithm {
+                    continue;
+                }
+                let text = elem.text.as_deref().unwrap_or("<no-text>");
+                let preview: String = text.chars().take(800).collect();
+                println!(
+                    "  ALGO #{idx} bbox=[x:{:.0}-{:.0} y:{:.0}-{:.0}] textlen={}",
+                    elem.bbox.x_min(),
+                    elem.bbox.x_max(),
+                    elem.bbox.y_min(),
+                    elem.bbox.y_max(),
+                    text.len()
+                );
+                println!("     text: {preview:?}");
+            }
+        }
+    }
 }

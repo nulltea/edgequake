@@ -310,7 +310,7 @@ impl DocumentTaskProcessor {
             task.update_progress("algo_extracting".to_string(), 3, progress.min(70));
 
             let stage_message = format!(
-                "Extracting algorithms: blocks {}/{}",
+                "Extracting algorithms: {}/{}",
                 pass2_completed, flagged_count
             );
             let stage_progress = pass2_completed as f64 / flagged_count as f64;
@@ -688,16 +688,21 @@ impl DocumentTaskProcessor {
             "Auto algorithm extraction: running Pass 2"
         );
 
+        // Layout-detected blocks are already per-algorithm and self-contained
+        // (each block = one cropped algorithm region's VLM text). The sliding-pair
+        // chunk_a+chunk_b pattern used by the text path is WRONG here — it would
+        // feed the LLM overlapping pairs of algorithms, causing the same algorithm
+        // to be re-extracted on consecutive iterations and producing duplicates.
+        // Pass None for chunk_b so each block is processed exactly once.
         let pass2_futures: Vec<_> = inventories
             .iter()
             .cloned()
             .map(|(idx, inventory)| {
                 let extractor = extraction_extractor.clone();
                 let chunk_a = chunks[idx].clone();
-                let chunk_b = chunks.get(idx + 1).cloned();
                 async move {
                     let result = extractor
-                        .run_extraction_chunk_pair(&chunk_a, chunk_b.as_deref(), &inventory, idx)
+                        .run_extraction_chunk_pair(&chunk_a, None, &inventory, idx)
                         .await;
                     (idx, result)
                 }
@@ -708,7 +713,19 @@ impl DocumentTaskProcessor {
             stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
 
         let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
+        let mut completed: usize = 0;
         while let Some((idx, result)) = pass2_stream.next().await {
+            completed += 1;
+            let stage_progress = completed as f64 / block_count.max(1) as f64;
+            self.update_stage_detail(
+                document_id,
+                "algo_extracting",
+                &format!("Extracting algorithms: {}/{}", completed, block_count),
+                stage_progress,
+            )
+            .await
+            .ok();
+
             match result {
                 Ok(ext) => all_extracted.extend(ext.algorithms),
                 Err(e) => {

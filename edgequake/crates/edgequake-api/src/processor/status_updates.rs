@@ -84,29 +84,18 @@ impl DocumentTaskProcessor {
                 return Ok(()); // Malformed metadata, skip update
             }
         } else {
-            // SPEC-002: Create new metadata for documents that don't have it
-            // This happens for PDFs that bypass the upload handler
-            let mut new_metadata = serde_json::Map::new();
-            new_metadata.insert("id".to_string(), json!(document_id));
-            new_metadata.insert("status".to_string(), json!(status));
-            new_metadata.insert("current_stage".to_string(), json!(unified_stage));
-            new_metadata.insert("stage_message".to_string(), json!(stage_message));
-            new_metadata.insert(
-                "created_at".to_string(),
-                json!(chrono::Utc::now().to_rfc3339()),
+            // Previously this branch auto-created a fresh metadata record for docs that
+            // didn't have one — but without workspace_id/tenant_id, so the record became
+            // invisible to every workspace-scoped listing. Callers always create the
+            // metadata upstream (upload handlers, pdf_processing early-metadata), so a
+            // missing record here means the doc was already deleted or never set up.
+            // Silently ignoring the update is safer than recreating an orphaned record.
+            tracing::warn!(
+                document_id = %document_id,
+                status = %status,
+                "update_document_status: no existing metadata — skipping (prevents workspace-orphaned records)"
             );
-            new_metadata.insert(
-                "updated_at".to_string(),
-                json!(chrono::Utc::now().to_rfc3339()),
-            );
-            // Note: source_type will be set later if available from task metadata
-
-            if let Some(msg) = error_message {
-                new_metadata.insert("error_message".to_string(), json!(msg));
-                new_metadata.insert("stage_message".to_string(), json!(msg));
-            }
-
-            json!(new_metadata)
+            return Ok(());
         };
 
         self.kv_storage

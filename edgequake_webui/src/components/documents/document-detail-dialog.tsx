@@ -65,14 +65,18 @@ function StatusBadge({ status, document }: { status: Document['status']; documen
   }
   
   // Legacy fallback for simple status strings
-  const statusConfig = {
-    pending: { label: 'Pending', variant: 'secondary' as const },
-    processing: { label: 'Processing', variant: 'default' as const },
-    completed: { label: 'Completed', variant: 'default' as const },
-    indexed: { label: 'Indexed', variant: 'default' as const },
-    failed: { label: 'Failed', variant: 'destructive' as const },
-    partial_failure: { label: 'Partial Failure', variant: 'destructive' as const },
-    cancelled: { label: 'Cancelled', variant: 'outline' as const },
+  const statusConfig: Record<string, { label: string; variant: 'secondary' | 'default' | 'destructive' | 'outline' }> = {
+    pending: { label: 'Pending', variant: 'secondary' },
+    processing: { label: 'Processing', variant: 'default' },
+    completed: { label: 'Completed', variant: 'default' },
+    indexed: { label: 'Indexed', variant: 'default' },
+    failed: { label: 'Failed', variant: 'destructive' },
+    partial_failure: { label: 'Partial Failure', variant: 'destructive' },
+    cancelled: { label: 'Cancelled', variant: 'outline' },
+    algo_identifying: { label: 'Identifying Algorithms', variant: 'default' },
+    algo_extracting: { label: 'Extracting Algorithms', variant: 'default' },
+    algo_verifying: { label: 'Verifying Algorithms', variant: 'default' },
+    algo_embedding: { label: 'Embedding Algorithms', variant: 'default' },
   };
 
   // Handle 'indexed' as 'completed' for display purposes
