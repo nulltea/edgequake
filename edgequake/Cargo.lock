@@ -1980,6 +1980,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "edgequake-llm",
+ "edgequake-pdf",
+ "llm_json",
+ "pulldown-latex",
+ "regex",
  "serde",
  "serde_json",
  "sqlx",
@@ -4020,6 +4024,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "llm_json"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e3a81b4dfc9cbadf5adde6e601f1b8ec0806d2b41da589e40cdc082e8e223b2"
+dependencies = [
+ "clap",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5168,6 +5183,15 @@ dependencies = [
  "bitflags 2.11.1",
  "memchr",
  "unicase",
+]
+
+[[package]]
+name = "pulldown-latex"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b8bc0583825170e3f560701d966dc2f0e3a16946da371e37d30d3ad7207fb7e"
+dependencies = [
+ "bumpalo",
 ]
 
 [[package]]

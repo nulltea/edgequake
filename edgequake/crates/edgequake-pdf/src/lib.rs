@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod error;
+pub mod latex_repair;
 pub mod links;
 pub mod repos;
 

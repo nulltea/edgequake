@@ -9,7 +9,7 @@ use std::time::Instant;
 use crate::prompts;
 use crate::types::{
     AlgorithmExtractionOutput, AlgorithmExtractionResult, AlgorithmInventory,
-    AlgorithmVerificationResult,
+    AlgorithmVerificationResult, ExtractedAlgorithm,
 };
 
 /// Errors that can occur during algorithm extraction.
@@ -205,7 +205,15 @@ impl AlgorithmExtractor {
             {
                 Ok(response) => {
                     match parse_json_response::<AlgorithmExtractionOutput>(&response.content) {
-                        Ok(parsed) => {
+                        Ok(mut parsed) => {
+                            // Post-parse LaTeX repair: reconstruct
+                            // JSON-escape collisions (tab+ext → \text, BS+eta
+                            // → \beta, …), balance [[…]] and $…$, brace
+                            // ^\theta, strip \mathbb{S} OCR artefacts.
+                            // Applied here, before returning, so every caller
+                            // of Pass 2 gets clean data and the storage
+                            // layer never sees corrupted LaTeX.
+                            repair_extraction(&mut parsed);
                             extraction = Some(parsed);
                             break;
                         }
@@ -328,6 +336,11 @@ impl AlgorithmExtractor {
 /// LLMs frequently emit raw LaTeX like `\mathcal`, `\theta` inside JSON strings.
 /// JSON only allows `\n \r \t \\ \" \/ \b \f \uXXXX` — everything else is invalid.
 /// This function doubles unrecognized backslashes so serde_json can parse them.
+///
+/// Retained as a first-line fallback *before* handing off to `llm_json` —
+/// `llm_json` handles structural issues (unquoted keys, trailing commas,
+/// unclosed brackets) but does nothing about bare `\mathcal` becoming an
+/// invalid JSON escape. This pass covers that gap.
 fn sanitize_llm_json(input: &str) -> String {
     let mut result = String::with_capacity(input.len() + 64);
     let chars: Vec<char> = input.chars().collect();
@@ -377,8 +390,22 @@ fn sanitize_llm_json(input: &str) -> String {
     result
 }
 
-/// Parse a JSON response from the LLM, stripping markdown fences and sanitizing escapes.
-fn parse_json_response<T: serde::de::DeserializeOwned>(content: &str) -> Result<T, String> {
+/// Parse a JSON response from the LLM.
+///
+/// Pipeline:
+///   1. Strip markdown code fences.
+///   2. Fast path: try `serde_json::from_str` as-is — most clean outputs parse here.
+///   3. On failure: apply `sanitize_llm_json` (doubles unrecognised backslashes
+///      so LaTeX commands like `\mathcal` survive), then `llm_json::repair_json`
+///      (battle-tested structural repair for unquoted keys, trailing commas,
+///      unclosed brackets, single quotes, stray prose).
+///   4. Retry `serde_json::from_str` on the repaired string.
+///
+/// Post-parse LaTeX repair (reconstructing `\text` from tab+ext collisions,
+/// `\beta` from backspace+eta, balancing `[[...]]`, closing orphan `$`,
+/// bracing `^\theta`) is applied by [`repair_extracted`] on the deserialised
+/// `ExtractedAlgorithm` — see its caller in `run_extraction_on_text`.
+pub fn parse_json_response<T: serde::de::DeserializeOwned>(content: &str) -> Result<T, String> {
     let trimmed = content.trim();
 
     // Strip markdown code fences if the LLM wrapped the JSON
@@ -400,12 +427,74 @@ fn parse_json_response<T: serde::de::DeserializeOwned>(content: &str) -> Result<
         return Ok(v);
     }
 
-    // Sanitize unescaped backslashes and retry
+    // Stage A: double unrecognised backslashes so LaTeX commands parse.
     let sanitized = sanitize_llm_json(json_str);
-    serde_json::from_str(&sanitized).map_err(|e| {
-        let preview: String = json_str.chars().take(200).collect();
-        format!("{e} (response preview: {preview})")
-    })
+    if let Ok(v) = serde_json::from_str(&sanitized) {
+        return Ok(v);
+    }
+
+    // Stage B: structural repair (trailing commas, unquoted keys,
+    // unclosed brackets, single quotes, stray prose). llm_json is a
+    // Rust port of Python json_repair — handles the bulk of
+    // malformed-LLM-JSON cases we don't.
+    match llm_json::repair_json(&sanitized, &Default::default()) {
+        Ok(repaired) => serde_json::from_str(&repaired).map_err(|e| {
+            let preview: String = json_str.chars().take(200).collect();
+            format!("{e} (response preview after repair: {preview})")
+        }),
+        Err(repair_err) => {
+            let preview: String = json_str.chars().take(200).collect();
+            Err(format!(
+                "JSON parse + llm_json repair both failed: {repair_err} (response preview: {preview})"
+            ))
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Post-deserialisation LaTeX repair
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Walk every math-bearing field of an `AlgorithmExtractionOutput` and apply
+/// [`edgequake_pdf::latex_repair::repair_latex`] to reconstruct JSON-escape
+/// collisions, balance brackets and `$` delimiters, brace single-token
+/// super/sub-scripts, and strip OCR artefacts.
+///
+/// Pass-2 output contains LaTeX in many places; we repair them all before
+/// the data is persisted.
+pub fn repair_extraction(extraction: &mut AlgorithmExtractionOutput) {
+    for algo in &mut extraction.algorithms {
+        repair_extracted(algo);
+    }
+}
+
+fn repair_extracted(algo: &mut ExtractedAlgorithm) {
+    algo.name = edgequake_pdf::latex_repair::repair_latex(&algo.name);
+    algo.description = edgequake_pdf::latex_repair::repair_latex(&algo.description);
+    if let Some(s) = algo.mathematical_notation.as_mut() {
+        *s = edgequake_pdf::latex_repair::repair_latex(s);
+    }
+    if let Some(s) = algo.pseudocode.as_mut() {
+        *s = edgequake_pdf::latex_repair::repair_latex(s);
+    }
+    if let Some(s) = algo.complexity.as_mut() {
+        *s = edgequake_pdf::latex_repair::repair_latex(s);
+    }
+    for step in &mut algo.steps {
+        step.action = edgequake_pdf::latex_repair::repair_latex(&step.action);
+        step.details = edgequake_pdf::latex_repair::repair_latex(&step.details);
+        if let Some(s) = step.math.as_mut() {
+            *s = edgequake_pdf::latex_repair::repair_latex(s);
+        }
+    }
+    for io in algo.inputs.iter_mut().chain(algo.outputs.iter_mut()) {
+        io.name = edgequake_pdf::latex_repair::repair_latex(&io.name);
+        io.io_type = edgequake_pdf::latex_repair::repair_latex(&io.io_type);
+        io.description = edgequake_pdf::latex_repair::repair_latex(&io.description);
+    }
+    for pre in &mut algo.preconditions {
+        *pre = edgequake_pdf::latex_repair::repair_latex(pre);
+    }
 }
 
 #[cfg(test)]
@@ -444,10 +533,17 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_fixes_latex() {
-        let input = r#"{"desc": "uses \theta and \mathcal{D}"}"#;
+    fn test_sanitize_doubles_unrecognised_escapes() {
+        // `\m` is not a valid JSON escape → should be doubled so the string
+        // parses cleanly. `\t` IS a valid JSON escape (tab), so it is passed
+        // through — the collision is then repaired post-parse by
+        // `edgequake_pdf::latex_repair::reconstruct_escape_collisions` walking
+        // the deserialised fields via `repair_extraction`.
+        let input = r#"{"desc": "uses \mathcal{D}"}"#;
         let sanitized = sanitize_llm_json(input);
-        assert!(sanitized.contains(r"\\theta"));
-        assert!(sanitized.contains(r"\\mathcal"));
+        assert!(
+            sanitized.contains(r"\\mathcal"),
+            "expected doubled backslash, got: {sanitized}"
+        );
     }
 }

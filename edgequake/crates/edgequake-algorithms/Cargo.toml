@@ -8,6 +8,11 @@ description = "Algorithm extraction extension for EdgeQuake — 3-pass LLM pipel
 
 [dependencies]
 edgequake-llm = { workspace = true }
+# Only needed for the `latex_repair` module's post-parse LaTeX repair of
+# extracted algorithm fields. Yes, this pulls in the full PDF stack as a
+# transitive compile dep; the alternative was a separate shared crate
+# which the user rejected as redundant.
+edgequake-pdf = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,7 +23,17 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true, optional = true }
 tokio = { workspace = true }
+# Structural JSON repair for LLM output (unquoted keys, trailing commas,
+# unclosed brackets, single quotes, stray prose). Paired with our own
+# LaTeX-escape-collision repair in edgequake-latex-repair.
+llm_json = "1.0"
 
 [features]
 default = ["postgres"]
 postgres = ["dep:sqlx"]
+
+[dev-dependencies]
+# Only used by the golden test b2a_latex_golden to assert repaired math
+# fields actually parse.
+pulldown-latex = "0.7"
+regex = "1.10"
