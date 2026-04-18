@@ -107,16 +107,17 @@ impl PdfConverter for VlmOcrConverter {
                 "VLM-OCR: connecting to VLM server"
             );
             let backend = VlmClientBackend::new(vlm_config);
-            // crop_pad_ratio=0.02 restores ~2% top/bottom padding around each
-            // layout element's bbox. Without this, the plus-L layout model's
-            // tight algorithm bboxes can crop JUST BELOW the box's title line
-            // (e.g. "**Protocol 2** B2A protocol (Π₂)"), causing GLM-OCR to
-            // return only the math body without the title. Verified with the
-            // inspect_page5_vlm_output test on B2A.pdf: default pad 0.0 gives
-            // 471 chars (no title); pad 0.02 gives 1448 chars (full structured
-            // box). See commit message for details.
+            // crop_pad_ratio=0.04 adds ~4% padding around each layout element's
+            // bbox before VLM recognition. Without it, plus-L's tight algorithm
+            // bboxes can crop just below a protocol box's title line (e.g.
+            // "**Protocol 1 Bit2A protocol (Π₁)**" or "**Protocol 2 B2A
+            // protocol (Π₂)**"), causing GLM-OCR to return only the math body
+            // without the title. Verified with inspect_page5_vlm_output and
+            // inspect_page4_functionalities tests on B2A.pdf: pad 0.02 is
+            // borderline (Protocol 1 sometimes loses its title); pad 0.04
+            // reliably captures both Protocol 1 and Protocol 2 headers.
             let parser_cfg = oar_ocr_vl::doc_parser::DocParserConfig {
-                crop_pad_ratio: 0.02,
+                crop_pad_ratio: 0.04,
                 ..Default::default()
             };
             let parser = oar_ocr_vl::doc_parser::DocParser::with_config(&backend, parser_cfg);
@@ -146,45 +147,19 @@ impl PdfConverter for VlmOcrConverter {
                                 // Pass 2 gets one algorithm per chunk and progress count matches
                                 // the number of detected algorithms.
                                 if let Some(ref sink) = algo_sink {
-                                    use oar_ocr_core::domain::structure::LayoutElementType;
-                                    let algo_elements: Vec<_> = result
-                                        .layout_elements
-                                        .iter()
-                                        .filter(|e| e.element_type == LayoutElementType::Algorithm)
-                                        .cloned()
-                                        .collect();
+                                    let algo_blocks_for_page = build_algorithm_blocks(
+                                        &result.layout_elements,
+                                        page_num,
+                                    );
                                     info!(
                                         page = page_num,
-                                        algo_count = algo_elements.len(),
+                                        algo_count = algo_blocks_for_page.len(),
                                         total_elements = result.layout_elements.len(),
                                         "VLM-OCR: algorithm elements on page"
                                     );
-                                    if !algo_elements.is_empty() {
-                                        if let Ok(mut blocks) = sink.lock() {
-                                            for (idx, elem) in algo_elements.iter().enumerate() {
-                                                let algo_md = oar_ocr_vl::utils::to_markdown(
-                                                    std::slice::from_ref(elem),
-                                                    &[],
-                                                );
-                                                let preview: String = algo_md
-                                                    .chars()
-                                                    .take(240)
-                                                    .collect();
-                                                info!(
-                                                    page = page_num,
-                                                    algo_idx = idx,
-                                                    score = elem.confidence,
-                                                    md_len = algo_md.len(),
-                                                    preview = %preview,
-                                                    "VLM-OCR: captured algorithm block"
-                                                );
-                                                if !algo_md.trim().is_empty() {
-                                                    blocks.push(AlgorithmBlock {
-                                                        page: page_num,
-                                                        markdown: algo_md,
-                                                    });
-                                                }
-                                            }
+                                    if let Ok(mut blocks) = sink.lock() {
+                                        for b in algo_blocks_for_page {
+                                            blocks.push(b);
                                         }
                                     }
                                 }
@@ -262,6 +237,86 @@ impl PdfConverter for VlmOcrConverter {
 // Algorithm block detection (used by algorithm extraction pipeline)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Build algorithm blocks from a page's layout elements.
+///
+/// For each `Algorithm`-class element, produces one `AlgorithmBlock` whose
+/// markdown is the VLM-recognized body prefixed by the nearest `FigureTitle`
+/// caption that sits *directly below* the algorithm in the same column (e.g.
+/// "Fig. 2: FUNCTIONALITY F_Bit2A").
+///
+/// Why prepend the caption:
+///
+/// PP-DocLayout_plus-L classifies the centered figure caption below each
+/// Functionality box as a separate `figure_title` element, so the algorithm
+/// element's crop contains only the numbered steps ("1) F_X receives...").
+/// Without the caption, Pass 2's LLM can't identify the functionality by name
+/// and invents generic titles like "Additive Secret Sharing Computation" or
+/// "Function F_Bit2A". Verified via the `inspect_page4_all_elements` test on
+/// B2A.pdf.
+fn build_algorithm_blocks(
+    elements: &[oar_ocr_core::domain::structure::LayoutElement],
+    page_num: usize,
+) -> Vec<AlgorithmBlock> {
+    use oar_ocr_core::domain::structure::LayoutElementType;
+
+    let figure_titles: Vec<&oar_ocr_core::domain::structure::LayoutElement> = elements
+        .iter()
+        .filter(|e| e.element_type == LayoutElementType::FigureTitle)
+        .collect();
+
+    let mut blocks = Vec::new();
+    for elem in elements.iter().filter(|e| e.element_type == LayoutElementType::Algorithm) {
+        let algo_md = oar_ocr_vl::utils::to_markdown(std::slice::from_ref(elem), &[]);
+        if algo_md.trim().is_empty() {
+            continue;
+        }
+
+        let caption = find_caption_below(elem, &figure_titles);
+        let markdown = match caption {
+            Some(cap) => format!("## {cap}\n\n{algo_md}"),
+            None => algo_md,
+        };
+
+        blocks.push(AlgorithmBlock {
+            page: page_num,
+            markdown,
+        });
+    }
+    blocks
+}
+
+/// Find the nearest `figure_title` element directly below `algo` in the same
+/// column (centroids within 60px horizontally; title top within 100px of
+/// algo bottom). Returns the caption text if matched.
+fn find_caption_below(
+    algo: &oar_ocr_core::domain::structure::LayoutElement,
+    figure_titles: &[&oar_ocr_core::domain::structure::LayoutElement],
+) -> Option<String> {
+    const MAX_V_GAP: f32 = 100.0;
+    const MAX_H_CENTER_DIFF: f32 = 60.0;
+
+    let algo_bottom = algo.bbox.y_max();
+    let algo_cx = (algo.bbox.x_min() + algo.bbox.x_max()) * 0.5;
+
+    let mut best: Option<(f32, &oar_ocr_core::domain::structure::LayoutElement)> = None;
+    for title in figure_titles {
+        let title_top = title.bbox.y_min();
+        let gap = title_top - algo_bottom;
+        if !(0.0..=MAX_V_GAP).contains(&gap) {
+            continue;
+        }
+        let title_cx = (title.bbox.x_min() + title.bbox.x_max()) * 0.5;
+        if (title_cx - algo_cx).abs() > MAX_H_CENTER_DIFF {
+            continue;
+        }
+        if best.map(|(g, _)| gap < g).unwrap_or(true) {
+            best = Some((gap, *title));
+        }
+    }
+
+    best.and_then(|(_, t)| t.text.clone()).map(|s| s.trim().to_string())
+}
+
 /// A detected algorithm block from layout detection + VLM recognition.
 #[derive(Debug, Clone)]
 pub struct AlgorithmBlock {
@@ -282,8 +337,6 @@ pub fn detect_algorithm_blocks(
     pdf_bytes: &[u8],
     vlm_config: VlmClientConfig,
 ) -> Result<Vec<AlgorithmBlock>, PdfConversionError> {
-    use oar_ocr_core::domain::structure::LayoutElementType;
-
     // 1. Resolve layout model
     let model_dir = model_cache_dir()?;
     let layout_path = model_dir.join(LAYOUT_MODEL);
@@ -316,9 +369,9 @@ pub fn detect_algorithm_blocks(
         "Algorithm detection: using VLM server"
     );
     let backend = VlmClientBackend::new(vlm_config);
-    // crop_pad_ratio=0.02 — see comment in VlmOcrConverter::convert for why.
+    // crop_pad_ratio=0.04 — see comment in VlmOcrConverter::convert for why.
     let parser_cfg = oar_ocr_vl::doc_parser::DocParserConfig {
-        crop_pad_ratio: 0.02,
+        crop_pad_ratio: 0.04,
         ..Default::default()
     };
     let parser = oar_ocr_vl::doc_parser::DocParser::with_config(&backend, parser_cfg);
@@ -351,36 +404,14 @@ pub fn detect_algorithm_blocks(
                     }
                 };
 
-                let algo_elements: Vec<_> = result
-                    .layout_elements
-                    .iter()
-                    .filter(|e| e.element_type == LayoutElementType::Algorithm)
-                    .cloned()
-                    .collect();
-
-                if algo_elements.is_empty() {
-                    return Vec::new();
-                }
-
+                let page_blocks = build_algorithm_blocks(&result.layout_elements, page_num);
                 info!(
                     page = page_num,
-                    count = algo_elements.len(),
+                    count = page_blocks.len(),
                     done = page_num,
                     total = page_count,
                     "Algorithm detection: found algorithm blocks"
                 );
-
-                // One block per element for granular progress + cleaner LLM chunks.
-                let mut page_blocks = Vec::new();
-                for elem in &algo_elements {
-                    let md = oar_ocr_vl::utils::to_markdown(std::slice::from_ref(elem), &[]);
-                    if !md.trim().is_empty() {
-                        page_blocks.push(AlgorithmBlock {
-                            page: page_num,
-                            markdown: md,
-                        });
-                    }
-                }
                 page_blocks
             })
             .collect()
@@ -584,6 +615,151 @@ mod layout_model_comparison {
                 for line in algo_details {
                     println!("{line}");
                 }
+            }
+        }
+    }
+
+    /// Verify the figure-caption stitching: after running DocParser, call
+    /// build_algorithm_blocks() and print each block so we can confirm the
+    /// "Fig. N: FUNCTIONALITY F_X" captions get prepended correctly.
+    #[test]
+    #[ignore]
+    fn verify_caption_stitching() {
+        use super::super::vlm_client::{VlmClientBackend, VlmClientConfig};
+        use oar_ocr_vl::doc_parser::{DocParser, DocParserConfig};
+
+        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
+            .unwrap_or_else(|_| "/home/timo/edgequake/B2A.pdf".to_string());
+        let pdf_bytes = std::fs::read(&pdf_path).expect("read PDF");
+        let images = render_pdf_to_images(&pdf_bytes).expect("render pages");
+        let model_dir = model_cache_dir().expect("model dir");
+        let mut vlm_cfg = VlmClientConfig::from_env();
+        if let Ok(m) = std::env::var("EDGEQUAKE_TEST_VLM_MODEL") {
+            vlm_cfg.model = Some(m);
+        }
+        let backend = VlmClientBackend::new(vlm_cfg);
+        let path = model_dir.join("pp-doclayout_plus-l.onnx");
+        let predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
+            .model_name("pp-doclayout_plus-l")
+            .build(&path)
+            .expect("build predictor");
+        let cfg = DocParserConfig { crop_pad_ratio: 0.02, ..Default::default() };
+        let parser = DocParser::with_config(&backend, cfg);
+
+        for (page_idx, img) in images.iter().enumerate() {
+            let page_num = page_idx + 1;
+            let result = parser.parse(&predictor, img.clone()).expect("parse");
+            let blocks = super::build_algorithm_blocks(&result.layout_elements, page_num);
+            if blocks.is_empty() {
+                continue;
+            }
+            println!("\n===== page {page_num}: {} blocks =====", blocks.len());
+            for (i, b) in blocks.iter().enumerate() {
+                let preview: String = b.markdown.chars().take(200).collect();
+                println!("  block #{i} (len={}): {:?}", b.markdown.len(), preview);
+            }
+        }
+    }
+
+    /// Print every page-4 element with bbox + element type, so we can see
+    /// how figure_title captions are positioned relative to Algorithm boxes.
+    #[test]
+    #[ignore]
+    fn inspect_page4_all_elements() {
+        use super::super::vlm_client::{VlmClientBackend, VlmClientConfig};
+        use oar_ocr_vl::doc_parser::{DocParser, DocParserConfig};
+
+        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
+            .unwrap_or_else(|_| "/home/timo/edgequake/B2A.pdf".to_string());
+        let pdf_bytes = std::fs::read(&pdf_path).expect("read PDF");
+        let images = render_pdf_to_images(&pdf_bytes).expect("render pages");
+        let page4 = images.get(3).expect("page 4").clone();
+        let model_dir = model_cache_dir().expect("model dir");
+
+        let mut vlm_cfg = VlmClientConfig::from_env();
+        if let Ok(m) = std::env::var("EDGEQUAKE_TEST_VLM_MODEL") {
+            vlm_cfg.model = Some(m);
+        }
+        let backend = VlmClientBackend::new(vlm_cfg);
+
+        let path = model_dir.join("pp-doclayout_plus-l.onnx");
+        let predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
+            .model_name("pp-doclayout_plus-l")
+            .build(&path)
+            .expect("build predictor");
+
+        let cfg = DocParserConfig { crop_pad_ratio: 0.02, ..Default::default() };
+        let parser = DocParser::with_config(&backend, cfg);
+        let result = parser.parse(&predictor, page4.clone()).expect("parse");
+        println!("\n========== plus-L page 4, all elements ==========");
+        for (idx, elem) in result.layout_elements.iter().enumerate() {
+            let text = elem.text.as_deref().unwrap_or("<no-text>");
+            let preview: String = text.chars().take(120).collect();
+            println!(
+                "  #{idx} type={:?} label={:?} bbox=[x:{:.0}-{:.0} y:{:.0}-{:.0}] textlen={} text={:?}",
+                elem.element_type,
+                elem.label,
+                elem.bbox.x_min(),
+                elem.bbox.x_max(),
+                elem.bbox.y_min(),
+                elem.bbox.y_max(),
+                text.len(),
+                preview
+            );
+        }
+    }
+
+    /// Inspect page 4's algorithm elements from both models at the current
+    /// crop_pad_ratio=0.02 used in production, so we can see what GLM-OCR
+    /// returns for each Functionality box (F_CR, F_Bit2A, F_B2A) and
+    /// Protocol 1.
+    #[test]
+    #[ignore]
+    fn inspect_page4_functionalities() {
+        use super::super::vlm_client::{VlmClientBackend, VlmClientConfig};
+        use oar_ocr_vl::doc_parser::{DocParser, DocParserConfig};
+
+        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
+            .unwrap_or_else(|_| "/home/timo/edgequake/B2A.pdf".to_string());
+        let pdf_bytes = std::fs::read(&pdf_path).expect("read PDF");
+        let images = render_pdf_to_images(&pdf_bytes).expect("render pages");
+        let page4 = images.get(3).expect("page 4").clone();
+        let model_dir = model_cache_dir().expect("model dir");
+
+        let mut vlm_cfg = VlmClientConfig::from_env();
+        if let Ok(m) = std::env::var("EDGEQUAKE_TEST_VLM_MODEL") {
+            vlm_cfg.model = Some(m);
+        }
+        let backend = VlmClientBackend::new(vlm_cfg);
+
+        let path = model_dir.join("pp-doclayout_plus-l.onnx");
+        let predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
+            .model_name("pp-doclayout_plus-l")
+            .build(&path)
+            .expect("build predictor");
+
+        for pad in [0.02_f32, 0.04, 0.06] {
+            let cfg = DocParserConfig { crop_pad_ratio: pad, ..Default::default() };
+            let parser = DocParser::with_config(&backend, cfg);
+            let result = parser.parse(&predictor, page4.clone()).expect("parse");
+            println!("\n========== plus-L page 4, pad={pad} ==========");
+            for (idx, elem) in result.layout_elements.iter().enumerate() {
+                if elem.element_type
+                    != oar_ocr_core::domain::structure::LayoutElementType::Algorithm
+                {
+                    continue;
+                }
+                let text = elem.text.as_deref().unwrap_or("<no-text>");
+                let preview: String = text.chars().take(320).collect();
+                println!(
+                    "  #{idx} bbox=[x:{:.0}-{:.0} y:{:.0}-{:.0}] textlen={}",
+                    elem.bbox.x_min(),
+                    elem.bbox.x_max(),
+                    elem.bbox.y_min(),
+                    elem.bbox.y_max(),
+                    text.len(),
+                );
+                println!("     text: {preview:?}");
             }
         }
     }

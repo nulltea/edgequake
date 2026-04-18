@@ -45,7 +45,13 @@ export function AlgorithmCard({ algorithm, onApprove, onReject, onDelete }: Algo
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-2 min-w-0">
           <CodeXml className="h-5 w-5 text-primary shrink-0" />
-          <h3 className="text-base font-semibold truncate">
+          {/* break-words only — no truncate/line-clamp. KaTeX renders the
+              math in algorithm names (e.g. "Functionality ℱ_{B2A}") as
+              inline-block spans; `truncate` hides them past the container
+              edge because text-overflow: ellipsis doesn't apply to non-text
+              children. Most titles fit on one line; rare long ones wrap
+              naturally. */}
+          <h3 className="text-base font-semibold break-words leading-tight">
             <InlineMath text={algorithm.name} />
           </h3>
         </div>

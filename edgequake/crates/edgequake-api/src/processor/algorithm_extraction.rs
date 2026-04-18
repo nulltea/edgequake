@@ -52,7 +52,13 @@ impl DocumentTaskProcessor {
             .ok();
         task.update_progress("algo_identifying".to_string(), 3, 15);
 
-        // Two paths: layout detection (PDF) or LLM chunk scanning (text)
+        // Two paths: layout detection (PDF) or LLM chunk scanning (text).
+        // `from_layout_detection` tracks which we took — layout-detected blocks
+        // are self-contained per-algorithm chunks, so Pass 2 must NOT feed the
+        // LLM overlapping (chunk_a, chunk_b) pairs the way the text path does
+        // (that pattern re-extracts the same algorithm on consecutive iterations
+        // and produces near-duplicate names).
+        let from_layout_detection = data.pdf_id.is_some();
         let (algorithm_chunks, flagged_inventories) = if let Some(ref pdf_id) = data.pdf_id {
             // ── PDF path: layout detection + VLM recognition ──
             // Precise, no hallucination — finds actual algorithm bounding boxes.
@@ -280,7 +286,16 @@ impl DocumentTaskProcessor {
             .map(|(pair_idx, inventory)| {
                 let extractor = extraction_extractor.clone();
                 let chunk_a = algorithm_chunks[pair_idx].clone();
-                let chunk_b = algorithm_chunks.get(pair_idx + 1).cloned();
+                // Only use sliding (chunk_a, chunk_b) pairs for the text path,
+                // where algorithms may straddle chunk boundaries. Layout-detected
+                // blocks are self-contained per-algorithm VLM crops — pairing
+                // them causes each algorithm to be re-extracted on two
+                // consecutive iterations and produce duplicate names.
+                let chunk_b = if from_layout_detection {
+                    None
+                } else {
+                    algorithm_chunks.get(pair_idx + 1).cloned()
+                };
                 async move {
                     let result = extractor
                         .run_extraction_chunk_pair(
