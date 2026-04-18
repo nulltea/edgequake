@@ -241,6 +241,11 @@ async fn recover_orphaned_documents(
 
     // Stages where pipeline checkpoint or at least the text is in KV storage,
     // so automatic retry is possible.
+    // WHY algo_* included: Auto algorithm extraction runs after text_insert has
+    // already completed (entities in graph, chunks indexed). If the server restarts
+    // mid-Pass-2/Pass-3, the checkpoint lets the pdf_processing auto-algo step
+    // re-run cleanly — but only if this recovery resets the metadata out of the
+    // algo_* stage so the frontend stops showing stale progress.
     let auto_retryable_statuses = [
         "converting",
         "preprocessing",
@@ -254,6 +259,10 @@ async fn recover_orphaned_documents(
         "pending",
         "processing",
         "indexing",
+        "algo_identifying",
+        "algo_extracting",
+        "algo_verifying",
+        "algo_embedding",
     ];
 
     let non_terminal_statuses: Vec<&str> = needs_reupload_stages
@@ -649,6 +658,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         processor = processor.with_pdf_storage(Arc::clone(pdf_storage));
         info!("📄 PDF storage attached to task processor");
     }
+
+    // FIX-DUPLICATE-BUG: Attach task storage so the processor can persist
+    // task_data mid-processing (needed for restart-safe existing_document_id).
+    processor = processor.with_task_storage(Arc::clone(&state.task_storage));
 
     let processor = Arc::new(processor);
 

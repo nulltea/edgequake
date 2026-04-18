@@ -175,23 +175,85 @@ impl AlgorithmExtractor {
             source_text, extraction_prompt
         );
 
-        // Reasoning kept on for Pass 2. Large max_tokens to accommodate reasoning + output.
+        // reasoning_effort=low. The extraction schema is rigid and the prompt
+        // is explicit; we don't need a lot of think-aloud. Leaving it at the
+        // provider default lets heavy reasoning models (e.g. gemma 4 26B A4B)
+        // eat the entire timeout budget with reasoning tokens and return
+        // truncated output — observed 26B producing 2 incomplete algos where
+        // gemma 4 (E4B) produced 5 clean ones at the same setting. `"low"`
+        // keeps small focused reasoning for light models without letting
+        // larger ones over-think.
         let options = edgequake_llm::traits::CompletionOptions {
             max_tokens: Some(32768),
             temperature: Some(0.0),
+            reasoning_effort: Some("low".to_string()),
             ..Default::default()
         };
 
-        let response = self
-            .llm_provider
-            .complete_with_options(&full_prompt, &options)
-            .await
-            .map_err(|e| AlgorithmExtractionError::LlmError(format!("{label} failed: {e}")))?;
+        // Retry transient failures (network errors, timeouts, empty responses).
+        // Heavy vision+extraction models like gemma 4 (26B A4B) routinely drop
+        // connections or time out under concurrent load; without retries a
+        // single burst of failures silently loses most of the algorithm blocks.
+        const MAX_ATTEMPTS: usize = 3;
+        let mut last_err: Option<AlgorithmExtractionError> = None;
+        let mut extraction: Option<AlgorithmExtractionOutput> = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match self
+                .llm_provider
+                .complete_with_options(&full_prompt, &options)
+                .await
+            {
+                Ok(response) => {
+                    match parse_json_response::<AlgorithmExtractionOutput>(&response.content) {
+                        Ok(parsed) => {
+                            extraction = Some(parsed);
+                            break;
+                        }
+                        Err(e) => {
+                            // Empty or malformed response — retry.
+                            let err = AlgorithmExtractionError::ParseError(format!(
+                                "{label} parse error (attempt {attempt}/{MAX_ATTEMPTS}): {e}"
+                            ));
+                            tracing::warn!(
+                                attempt = attempt,
+                                max = MAX_ATTEMPTS,
+                                label = label,
+                                error = %err,
+                                "Pass 2 parse failure — retrying"
+                            );
+                            last_err = Some(err);
+                        }
+                    }
+                }
+                Err(e) => {
+                    let err = AlgorithmExtractionError::LlmError(format!(
+                        "{label} failed (attempt {attempt}/{MAX_ATTEMPTS}): {e}"
+                    ));
+                    tracing::warn!(
+                        attempt = attempt,
+                        max = MAX_ATTEMPTS,
+                        label = label,
+                        error = %err,
+                        "Pass 2 LLM call failed — retrying"
+                    );
+                    last_err = Some(err);
+                }
+            }
 
-        let extraction: AlgorithmExtractionOutput = parse_json_response(&response.content)
-            .map_err(|e| {
-                AlgorithmExtractionError::ParseError(format!("{label} parse error: {e}"))
-            })?;
+            if attempt < MAX_ATTEMPTS {
+                // Backoff: 2s, 5s. Keeps retries short enough for an 8-block
+                // extraction to still finish within reasonable wall time.
+                let delay_secs = if attempt == 1 { 2 } else { 5 };
+                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            }
+        }
+
+        let extraction = match extraction {
+            Some(e) => e,
+            None => return Err(last_err.unwrap_or_else(|| {
+                AlgorithmExtractionError::LlmError(format!("{label} failed with no error recorded"))
+            })),
+        };
 
         tracing::info!(
             "{label} complete in {:.1}s: {} algorithms extracted",

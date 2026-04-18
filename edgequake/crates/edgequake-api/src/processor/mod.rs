@@ -148,6 +148,10 @@ pub struct DocumentTaskProcessor {
     /// PDF storage for PDF document management (SPEC-007, postgres-only).
     #[cfg(feature = "postgres")]
     pdf_storage: Option<Arc<dyn edgequake_storage::PdfDocumentStorage>>,
+    /// Task storage for persisting task_data mid-processing.
+    /// FIX-DUPLICATE-BUG: Needed so that `existing_document_id` patched into task_data
+    /// survives restarts (otherwise auto-recovery creates a new doc UUID → duplicate).
+    task_storage: Option<edgequake_tasks::SharedTaskStorage>,
     /// Pipeline state for progress tracking.
     pipeline_state: PipelineState,
     /// OODA-10: Progress broadcaster for WebSocket clients.
@@ -183,6 +187,7 @@ impl DocumentTaskProcessor {
             graph_storage,
             #[cfg(feature = "postgres")]
             pdf_storage: None,
+            task_storage: None,
             pipeline_state,
             progress_broadcaster: None, // OODA-10: Added for WebSocket clients
             workspace_service: None,
@@ -220,6 +225,7 @@ impl DocumentTaskProcessor {
             graph_storage,
             #[cfg(feature = "postgres")]
             pdf_storage: None,
+            task_storage: None,
             pipeline_state,
             progress_broadcaster: None, // OODA-10: Added for WebSocket clients
             workspace_service: Some(workspace_service),
@@ -254,6 +260,7 @@ impl DocumentTaskProcessor {
             graph_storage,
             #[cfg(feature = "postgres")]
             pdf_storage: None,
+            task_storage: None,
             pipeline_state,
             progress_broadcaster: None, // OODA-10: Added for WebSocket clients
             workspace_service: Some(workspace_service),
@@ -272,6 +279,20 @@ impl DocumentTaskProcessor {
         pdf_storage: Arc<dyn edgequake_storage::PdfDocumentStorage>,
     ) -> Self {
         self.pdf_storage = Some(pdf_storage);
+        self
+    }
+
+    /// Set task storage so the processor can persist task_data mid-processing.
+    ///
+    /// FIX-DUPLICATE-BUG: Without this, the generated `existing_document_id` is not
+    /// persisted before work begins, so a restart mid-processing leaves the on-disk
+    /// task with `existing_document_id=None`, and the recovered task creates a new
+    /// document UUID (duplicate).
+    pub fn with_task_storage(
+        mut self,
+        task_storage: edgequake_tasks::SharedTaskStorage,
+    ) -> Self {
+        self.task_storage = Some(task_storage);
         self
     }
 

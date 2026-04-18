@@ -26,6 +26,8 @@ export interface Algorithm {
   workspace_id: string;
   document_id: string;
   name: string;
+  /** Kind of construct: "Algorithm" | "Protocol" | "Functionality" | "Theorem" | "Definition" | "Lemma" | "Scheme" | custom. */
+  algorithm_type?: string;
   description?: string;
   steps: AlgorithmStep[];
   inputs: AlgorithmIO[];

@@ -95,7 +95,11 @@ export interface Document {
     | "partial_failure"
     | "failed"
     | "indexed"
-    | "cancelled";
+    | "cancelled"
+    | "algo_identifying"
+    | "algo_extracting"
+    | "algo_verifying"
+    | "algo_embedding";
   error_message?: string;
   file_name?: string;
   file_size?: number;

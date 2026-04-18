@@ -144,6 +144,12 @@ pub struct ExtractedAlgorithm {
     pub rank: usize,
     #[serde(deserialize_with = "string_or_json")]
     pub name: String,
+    /// One of: "Algorithm", "Protocol", "Functionality", "Theorem",
+    /// "Definition", "Lemma", "Scheme". Defaults to "Algorithm" when the
+    /// LLM does not provide a value.
+    #[serde(default = "default_algorithm_type", rename = "type", alias = "algorithm_type",
+            deserialize_with = "string_or_json")]
+    pub algorithm_type: String,
     #[serde(default, deserialize_with = "string_or_json_default")]
     pub description: String,
     pub steps: Vec<AlgorithmStep>,
@@ -167,6 +173,10 @@ pub struct ExtractedAlgorithm {
 
 fn default_confidence() -> String {
     "medium".to_string()
+}
+
+fn default_algorithm_type() -> String {
+    "Algorithm".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +260,9 @@ pub struct Algorithm {
     pub workspace_id: Uuid,
     pub document_id: String,
     pub name: String,
+    /// Kind of algorithmic construct: "Algorithm", "Protocol", "Functionality",
+    /// "Theorem", "Definition", "Lemma", "Scheme", or custom.
+    pub algorithm_type: String,
     pub description: Option<String>,
     pub steps: Vec<AlgorithmStep>,
     pub inputs: Vec<AlgorithmIO>,

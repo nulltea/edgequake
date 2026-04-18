@@ -37,6 +37,27 @@ function statusVariant(status: string): 'default' | 'secondary' | 'destructive' 
   }
 }
 
+/** Color badge for algorithm_type. Unknown / custom types get a neutral slate. */
+function typeColor(type: string): string {
+  switch (type.toLowerCase()) {
+    case 'protocol':
+      return 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border-purple-500/30';
+    case 'functionality':
+      return 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border-blue-500/30';
+    case 'algorithm':
+      return 'bg-primary/15 text-primary border-primary/30';
+    case 'theorem':
+    case 'lemma':
+      return 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30';
+    case 'definition':
+      return 'bg-teal-500/15 text-teal-700 dark:text-teal-400 border-teal-500/30';
+    case 'scheme':
+      return 'bg-pink-500/15 text-pink-700 dark:text-pink-400 border-pink-500/30';
+    default:
+      return 'bg-slate-500/15 text-slate-700 dark:text-slate-400 border-slate-500/30';
+  }
+}
+
 
 export function AlgorithmCard({ algorithm, onApprove, onReject, onDelete }: AlgorithmCardProps) {
   return (
@@ -45,11 +66,22 @@ export function AlgorithmCard({ algorithm, onApprove, onReject, onDelete }: Algo
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-2 min-w-0">
           <CodeXml className="h-5 w-5 text-primary shrink-0" />
-          <h3 className="text-base font-semibold truncate">
+          {/* break-words only — no truncate/line-clamp. KaTeX renders the
+              math in algorithm names (e.g. "Functionality ℱ_{B2A}") as
+              inline-block spans; `truncate` hides them past the container
+              edge because text-overflow: ellipsis doesn't apply to non-text
+              children. Most titles fit on one line; rare long ones wrap
+              naturally. */}
+          <h3 className="text-base font-semibold break-words leading-tight">
             <InlineMath text={algorithm.name} />
           </h3>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {algorithm.algorithm_type && (
+            <Badge className={typeColor(algorithm.algorithm_type)}>
+              {algorithm.algorithm_type}
+            </Badge>
+          )}
           <Badge className={confidenceColor(algorithm.confidence)}>
             {algorithm.confidence}
           </Badge>

@@ -51,7 +51,13 @@ impl DocumentTaskProcessor {
             .ok();
         task.update_progress("algo_identifying".to_string(), 3, 15);
 
-        // Two paths: layout detection (PDF) or LLM chunk scanning (text)
+        // Two paths: layout detection (PDF) or LLM chunk scanning (text).
+        // `from_layout_detection` tracks which we took — layout-detected blocks
+        // are self-contained per-algorithm chunks, so Pass 2 must NOT feed the
+        // LLM overlapping (chunk_a, chunk_b) pairs the way the text path does
+        // (that pattern re-extracts the same algorithm on consecutive iterations
+        // and produces near-duplicate names).
+        let from_layout_detection = data.pdf_id.is_some();
         let (algorithm_chunks, flagged_inventories) = if let Some(ref pdf_id) = data.pdf_id {
             // ── PDF path: layout detection + VLM recognition ──
             // Precise, no hallucination — finds actual algorithm bounding boxes.
@@ -262,10 +268,15 @@ impl DocumentTaskProcessor {
             .ok();
         task.update_progress("algo_extracting".to_string(), 3, 40);
 
-        let pass2_concurrency = std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+        // Algorithm Pass 2 is heavier per call than entity extraction: each
+        // block is a full algorithm definition (32k max_tokens, reasoning on).
+        // Heavy vision+extraction models like gemma 4 (26B A4B) saturate at
+        // ~2–4 concurrent requests and start timing out past that. Use a
+        // dedicated env var; defaults to 2.
+        let pass2_concurrency = std::env::var("EDGEQUAKE_ALGO_EXTRACTION_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(16)
+            .unwrap_or(2)
             .max(1);
 
         let flagged_count = flagged_inventories.len();
@@ -282,7 +293,16 @@ impl DocumentTaskProcessor {
             .map(|(pair_idx, inventory)| {
                 let extractor = extraction_extractor.clone();
                 let chunk_a = algorithm_chunks[pair_idx].clone();
-                let chunk_b = algorithm_chunks.get(pair_idx + 1).cloned();
+                // Only use sliding (chunk_a, chunk_b) pairs for the text path,
+                // where algorithms may straddle chunk boundaries. Layout-detected
+                // blocks are self-contained per-algorithm VLM crops — pairing
+                // them causes each algorithm to be re-extracted on two
+                // consecutive iterations and produce duplicate names.
+                let chunk_b = if from_layout_detection {
+                    None
+                } else {
+                    algorithm_chunks.get(pair_idx + 1).cloned()
+                };
                 async move {
                     let result = extractor
                         .run_extraction_chunk_pair(
@@ -311,7 +331,7 @@ impl DocumentTaskProcessor {
             task.update_progress("algo_extracting".to_string(), 3, progress.min(70));
 
             let stage_message = format!(
-                "Extracting algorithms: blocks {}/{}",
+                "Extracting algorithms: {}/{}",
                 pass2_completed, flagged_count
             );
             let stage_progress = pass2_completed as f64 / flagged_count as f64;
@@ -423,6 +443,7 @@ impl DocumentTaskProcessor {
                     workspace_id: workspace_id_uuid,
                     document_id: document_id.clone(),
                     name: ea.name,
+                    algorithm_type: ea.algorithm_type,
                     description: if ea.description.is_empty() {
                         None
                     } else {
@@ -676,10 +697,11 @@ impl DocumentTaskProcessor {
             .collect();
 
         // === Pass 2: Extraction ===
-        let pass2_concurrency = std::env::var("EDGEQUAKE_EXTRACTION_CONCURRENCY")
+        // Dedicated env var — see comment in the other pass2_concurrency site.
+        let pass2_concurrency = std::env::var("EDGEQUAKE_ALGO_EXTRACTION_CONCURRENCY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(8)
+            .unwrap_or(2)
             .max(1);
 
         let block_count = inventories.len();
@@ -690,16 +712,21 @@ impl DocumentTaskProcessor {
             "Auto algorithm extraction: running Pass 2"
         );
 
+        // Layout-detected blocks are already per-algorithm and self-contained
+        // (each block = one cropped algorithm region's VLM text). The sliding-pair
+        // chunk_a+chunk_b pattern used by the text path is WRONG here — it would
+        // feed the LLM overlapping pairs of algorithms, causing the same algorithm
+        // to be re-extracted on consecutive iterations and producing duplicates.
+        // Pass None for chunk_b so each block is processed exactly once.
         let pass2_futures: Vec<_> = inventories
             .iter()
             .cloned()
             .map(|(idx, inventory)| {
                 let extractor = extraction_extractor.clone();
                 let chunk_a = chunks[idx].clone();
-                let chunk_b = chunks.get(idx + 1).cloned();
                 async move {
                     let result = extractor
-                        .run_extraction_chunk_pair(&chunk_a, chunk_b.as_deref(), &inventory, idx)
+                        .run_extraction_chunk_pair(&chunk_a, None, &inventory, idx)
                         .await;
                     (idx, result)
                 }
@@ -709,7 +736,19 @@ impl DocumentTaskProcessor {
         let mut pass2_stream = stream::iter(pass2_futures).buffer_unordered(pass2_concurrency);
 
         let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
+        let mut completed: usize = 0;
         while let Some((idx, result)) = pass2_stream.next().await {
+            completed += 1;
+            let stage_progress = completed as f64 / block_count.max(1) as f64;
+            self.update_stage_detail(
+                document_id,
+                "algo_extracting",
+                &format!("Extracting algorithms: {}/{}", completed, block_count),
+                stage_progress,
+            )
+            .await
+            .ok();
+
             match result {
                 Ok(ext) => all_extracted.extend(ext.algorithms),
                 Err(e) => {
@@ -806,6 +845,7 @@ impl DocumentTaskProcessor {
                     workspace_id: workspace_id_uuid,
                     document_id: document_id.to_string(),
                     name: ea.name,
+                    algorithm_type: ea.algorithm_type,
                     description: if ea.description.is_empty() {
                         None
                     } else {

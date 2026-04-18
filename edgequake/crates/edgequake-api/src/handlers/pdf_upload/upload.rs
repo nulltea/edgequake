@@ -195,8 +195,10 @@ pub async fn upload_pdf_document(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let resolved_backend = options.resolved_backend(workspace.as_ref());
 
-    if resolved_backend == PdfParserBackend::Vision
-        && (options.vision_provider.is_none() || options.vision_model.is_none())
+    if matches!(
+        resolved_backend,
+        PdfParserBackend::Vision | PdfParserBackend::VlmOcr
+    ) && (options.vision_provider.is_none() || options.vision_model.is_none())
     {
         if let Some(ws) = workspace.as_ref() {
             if options.vision_provider.is_none() {
@@ -362,7 +364,11 @@ pub async fn upload_pdf_document(
     let page_count = extract_page_count(&file_data);
 
     // 7. Store raw PDF
-    let vision_model = if resolved_backend == PdfParserBackend::Vision && options.enable_vision {
+    let vision_model = if matches!(
+        resolved_backend,
+        PdfParserBackend::Vision | PdfParserBackend::VlmOcr
+    ) && (options.enable_vision || resolved_backend == PdfParserBackend::VlmOcr)
+    {
         Some(options.vision_model())
     } else {
         None
