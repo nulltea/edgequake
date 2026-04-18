@@ -25,10 +25,7 @@ fn parsed_and_repaired() -> AlgorithmExtractionOutput {
 
 /// Walk every `String` / `Option<String>` field that might contain LaTeX
 /// and feed it to a visitor.
-fn for_each_math_field<F: FnMut(&str, &str)>(
-    out: &AlgorithmExtractionOutput,
-    mut visit: F,
-) {
+fn for_each_math_field<F: FnMut(&str, &str)>(out: &AlgorithmExtractionOutput, mut visit: F) {
     for algo in &out.algorithms {
         visit("name", &algo.name);
         visit("description", &algo.description);
@@ -67,10 +64,7 @@ fn no_leftover_control_chars() {
     let out = parsed_and_repaired();
     for_each_math_field(&out, |field, s| {
         for (idx, c) in s.chars().enumerate() {
-            let is_forbidden = matches!(
-                c,
-                '\u{0008}' | '\u{0009}' | '\u{000B}' | '\u{000C}'
-            );
+            let is_forbidden = matches!(c, '\u{0008}' | '\u{0009}' | '\u{000B}' | '\u{000C}');
             assert!(
                 !is_forbidden,
                 "field `{field}` byte {idx} is control char U+{:04X}: {s:?}",
@@ -269,4 +263,3 @@ fn extract_math_spans(s: &str) -> Vec<&str> {
     }
     out
 }
-

@@ -416,7 +416,9 @@ impl AlgorithmRow {
             workspace_id: self.workspace_id,
             document_id: self.document_id,
             name: self.name,
-            algorithm_type: self.algorithm_type.unwrap_or_else(|| "Algorithm".to_string()),
+            algorithm_type: self
+                .algorithm_type
+                .unwrap_or_else(|| "Algorithm".to_string()),
             description: self.description,
             steps,
             inputs,

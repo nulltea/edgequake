@@ -147,8 +147,12 @@ pub struct ExtractedAlgorithm {
     /// One of: "Algorithm", "Protocol", "Functionality", "Theorem",
     /// "Definition", "Lemma", "Scheme". Defaults to "Algorithm" when the
     /// LLM does not provide a value.
-    #[serde(default = "default_algorithm_type", rename = "type", alias = "algorithm_type",
-            deserialize_with = "string_or_json")]
+    #[serde(
+        default = "default_algorithm_type",
+        rename = "type",
+        alias = "algorithm_type",
+        deserialize_with = "string_or_json"
+    )]
     pub algorithm_type: String,
     #[serde(default, deserialize_with = "string_or_json_default")]
     pub description: String,

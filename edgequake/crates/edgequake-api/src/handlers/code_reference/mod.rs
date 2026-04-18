@@ -228,7 +228,9 @@ async fn review_impl(
     code_artifact_id: Uuid,
     request: ReviewCodeArtifactRequest,
 ) -> ApiResult<Json<CodeArtifactReviewResponse>> {
-    use edgequake_agents::code_analysis::{CodeArtifactStorage, PostgresCodeArtifactStorage};
+    use edgequake_agents::code_analysis::{
+        ArtifactStatus, CodeArtifactStorage, PostgresCodeArtifactStorage,
+    };
 
     let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
     let pool = state.pg_pool.as_ref().ok_or_else(|| {
@@ -245,10 +247,177 @@ async fn review_impl(
             "code_artifact {code_artifact_id} not found"
         )));
     }
+
+    // Graph sync: on approve → upsert CODE_FUNCTION node + HAS_REFERENCE_IMPL
+    // edge from Algorithm; on reject → drop the edge (keep the row so the
+    // user can flip back without losing the artifact). Best-effort: graph
+    // failures are logged but don't fail the REST response.
+    match request.status {
+        ArtifactStatus::Approved | ArtifactStatus::Rejected => {
+            let storage_for_graph = PostgresCodeArtifactStorage::new(pool.clone());
+            if let Err(e) = sync_graph_for_review(
+                &storage_for_graph,
+                &state.graph_storage,
+                tenant_id,
+                workspace_id,
+                code_artifact_id,
+                request.status,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    code_artifact_id = %code_artifact_id,
+                    "graph sync failed (non-fatal)"
+                );
+            }
+        }
+        ArtifactStatus::Pending => {}
+    }
+
     Ok(Json(CodeArtifactReviewResponse {
         id: code_artifact_id,
         status: types::status_str(request.status),
     }))
+}
+
+/// Write or remove the (Algorithm → CODE_FUNCTION) edge in AGE reflecting
+/// the review decision. Uses the code_artifact row we just updated to
+/// materialise node properties.
+#[cfg(feature = "postgres")]
+async fn sync_graph_for_review(
+    code_storage: &edgequake_agents::code_analysis::PostgresCodeArtifactStorage,
+    graph: &std::sync::Arc<dyn edgequake_storage::traits::GraphStorage>,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    code_artifact_id: Uuid,
+    status: edgequake_agents::code_analysis::ArtifactStatus,
+) -> Result<(), String> {
+    use edgequake_agents::code_analysis::ArtifactStatus;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    // Locate the row so we know the algorithm_id + node props. We query by
+    // the natural index on (tenant, workspace, document_id), which we don't
+    // have — but list_for_algorithm walks via algorithm_id. Simpler: raw
+    // sqlx select by id.
+    let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL not set".to_string())?;
+    let pool = sqlx::PgPool::connect(&url)
+        .await
+        .map_err(|e| format!("connect postgres: {e}"))?;
+    let row: Option<(
+        Uuid,
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        String,
+        i32,
+        i32,
+        String,
+    )> = sqlx::query_as(
+        r#"SELECT algorithm_id, document_repo_id, repo_commit, file_path, symbol_name,
+                      language, start_line, end_line, document_id
+               FROM code_artifacts
+               WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3"#,
+    )
+    .bind(code_artifact_id)
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| format!("fetch code_artifact: {e}"))?;
+    let (
+        algorithm_id,
+        document_repo_id,
+        repo_commit,
+        file_path,
+        symbol_name,
+        language,
+        start_line,
+        end_line,
+        document_id,
+    ) = match row {
+        Some(r) => r,
+        None => return Err(format!("code_artifact {code_artifact_id} disappeared")),
+    };
+    // Also fetch repo url for useful node props.
+    let repo_url: Option<String> =
+        sqlx::query_scalar(r#"SELECT url FROM document_repos WHERE id = $1"#)
+            .bind(document_repo_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| format!("fetch document_repos.url: {e}"))?;
+
+    let algo_key = algorithm_id.to_string();
+    let code_key = code_artifact_id.to_string();
+
+    match status {
+        ArtifactStatus::Approved => {
+            let mut props: HashMap<String, serde_json::Value> = HashMap::new();
+            props.insert("entity_type".into(), json!("CODE_FUNCTION"));
+            props.insert("tenant_id".into(), json!(tenant_id.to_string()));
+            props.insert("workspace_id".into(), json!(workspace_id.to_string()));
+            props.insert("document_id".into(), json!(document_id));
+            props.insert(
+                "document_repo_id".into(),
+                json!(document_repo_id.to_string()),
+            );
+            props.insert("algorithm_id".into(), json!(algo_key.clone()));
+            props.insert("repo_commit".into(), json!(repo_commit));
+            if let Some(url) = repo_url {
+                props.insert("repo_url".into(), json!(url));
+            }
+            props.insert("file_path".into(), json!(file_path));
+            if let Some(symbol) = symbol_name {
+                props.insert("symbol_name".into(), json!(symbol));
+            }
+            props.insert("language".into(), json!(language));
+            props.insert("start_line".into(), json!(start_line));
+            props.insert("end_line".into(), json!(end_line));
+
+            graph
+                .upsert_node(&code_key, props)
+                .await
+                .map_err(|e| format!("upsert CODE_FUNCTION node: {e}"))?;
+
+            let mut edge_props: HashMap<String, serde_json::Value> = HashMap::new();
+            edge_props.insert("relation_type".into(), json!("HAS_REFERENCE_IMPL"));
+            edge_props.insert("tenant_id".into(), json!(tenant_id.to_string()));
+            edge_props.insert("workspace_id".into(), json!(workspace_id.to_string()));
+            edge_props.insert("code_artifact_id".into(), json!(code_key.clone()));
+            graph
+                .upsert_edge(&algo_key, &code_key, edge_props)
+                .await
+                .map_err(|e| format!("upsert HAS_REFERENCE_IMPL edge: {e}"))?;
+
+            tracing::info!(
+                %algorithm_id,
+                %code_artifact_id,
+                "graph upserted Algorithm → CODE_FUNCTION edge"
+            );
+        }
+        ArtifactStatus::Rejected => {
+            graph
+                .delete_edge(&algo_key, &code_key)
+                .await
+                .map_err(|e| format!("delete HAS_REFERENCE_IMPL edge: {e}"))?;
+            // Keep the node around; cheap to leave and lets re-approve be
+            // a pure edge-upsert without re-building node props.
+            tracing::info!(
+                %algorithm_id,
+                %code_artifact_id,
+                "graph dropped HAS_REFERENCE_IMPL edge"
+            );
+        }
+        ArtifactStatus::Pending => {}
+    }
+
+    // Silence unused-import warning for code_storage; we might route the
+    // lookup through it in a future refactor, but the raw sqlx select above
+    // is the simplest path today.
+    let _ = code_storage;
+    Ok(())
 }
 
 // Helper: find a document_repos row by id. Uses list_for_document under the

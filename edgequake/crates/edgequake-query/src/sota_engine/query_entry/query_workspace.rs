@@ -226,6 +226,13 @@ impl SOTAQueryEngine {
         final_context.relationships = truncated_relationships;
         final_context.chunks = truncated_chunks;
 
+        // Step 5.5: Reference-code enrichment (Phase 1 of the Reference Code
+        // GraphRAG extension). Silently no-ops when the postgres feature is
+        // off, DATABASE_URL is unset, or no approved code_artifacts exist
+        // for the documents surfaced in retrieval.
+        crate::reference_code_enrichment::enrich_with_reference_code(&mut final_context, &request)
+            .await;
+
         // Step 6: Generate answer
         let (answer, generated_tokens) = if request.context_only {
             (String::new(), 0)
@@ -435,6 +442,13 @@ impl SOTAQueryEngine {
         final_context.entities = truncated_entities;
         final_context.relationships = truncated_relationships;
         final_context.chunks = truncated_chunks;
+
+        // Step 5.5: Reference-code enrichment (Phase 1 of the Reference Code
+        // GraphRAG extension). Silently no-ops when the postgres feature is
+        // off, DATABASE_URL is unset, or no approved code_artifacts exist
+        // for the documents surfaced in retrieval.
+        crate::reference_code_enrichment::enrich_with_reference_code(&mut final_context, &request)
+            .await;
 
         // Step 6: Generate answer using OVERRIDE LLM or default
         let (answer, generated_tokens) = if request.context_only {

@@ -33,7 +33,9 @@ sqlx = { version = "0.8", features = [
     "runtime-tokio",
     "postgres",
     "chrono",
+    "uuid",
 ], optional = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }

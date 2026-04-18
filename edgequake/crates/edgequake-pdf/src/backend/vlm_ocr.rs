@@ -272,7 +272,10 @@ fn build_algorithm_blocks(
         .collect();
 
     let mut blocks = Vec::new();
-    for elem in elements.iter().filter(|e| e.element_type == LayoutElementType::Algorithm) {
+    for elem in elements
+        .iter()
+        .filter(|e| e.element_type == LayoutElementType::Algorithm)
+    {
         let algo_md = oar_ocr_vl::utils::to_markdown(std::slice::from_ref(elem), &[]);
         if algo_md.trim().is_empty() {
             continue;
@@ -328,7 +331,8 @@ fn find_caption_below(
         }
     }
 
-    best.and_then(|(_, t)| t.text.clone()).map(|s| s.trim().to_string())
+    best.and_then(|(_, t)| t.text.clone())
+        .map(|s| s.trim().to_string())
 }
 
 /// A detected algorithm block from layout detection + VLM recognition.
@@ -600,8 +604,7 @@ mod layout_model_comparison {
                     Some(v) => v,
                     None => continue,
                 };
-                let mut by_type: std::collections::BTreeMap<String, usize> =
-                    Default::default();
+                let mut by_type: std::collections::BTreeMap<String, usize> = Default::default();
                 let mut algo_details = Vec::new();
                 for (idx, elem) in page_elements.iter().enumerate() {
                     *by_type.entry(elem.element_type.clone()).or_insert(0) += 1;
@@ -657,7 +660,10 @@ mod layout_model_comparison {
             .model_name("pp-doclayout_plus-l")
             .build(&path)
             .expect("build predictor");
-        let cfg = DocParserConfig { crop_pad_ratio: 0.02, ..Default::default() };
+        let cfg = DocParserConfig {
+            crop_pad_ratio: 0.02,
+            ..Default::default()
+        };
         let parser = DocParser::with_config(&backend, cfg);
 
         for (page_idx, img) in images.iter().enumerate() {
@@ -702,7 +708,10 @@ mod layout_model_comparison {
             .build(&path)
             .expect("build predictor");
 
-        let cfg = DocParserConfig { crop_pad_ratio: 0.02, ..Default::default() };
+        let cfg = DocParserConfig {
+            crop_pad_ratio: 0.02,
+            ..Default::default()
+        };
         let parser = DocParser::with_config(&backend, cfg);
         let result = parser.parse(&predictor, page4.clone()).expect("parse");
         println!("\n========== plus-L page 4, all elements ==========");
@@ -753,7 +762,10 @@ mod layout_model_comparison {
             .expect("build predictor");
 
         for pad in [0.02_f32, 0.04, 0.06] {
-            let cfg = DocParserConfig { crop_pad_ratio: pad, ..Default::default() };
+            let cfg = DocParserConfig {
+                crop_pad_ratio: pad,
+                ..Default::default()
+            };
             let parser = DocParser::with_config(&backend, cfg);
             let result = parser.parse(&predictor, page4.clone()).expect("parse");
             println!("\n========== plus-L page 4, pad={pad} ==========");
@@ -870,9 +882,7 @@ mod layout_model_comparison {
                 ..Default::default()
             };
             let padded_parser = DocParser::with_config(&backend, padded_cfg);
-            println!(
-                "\n========== {label} page 5 DocParser output (pad 0.02) =========="
-            );
+            println!("\n========== {label} page 5 DocParser output (pad 0.02) ==========");
             let padded = match padded_parser.parse(&predictor, page5.clone()) {
                 Ok(r) => r,
                 Err(e) => {
@@ -881,7 +891,9 @@ mod layout_model_comparison {
                 }
             };
             for (idx, elem) in padded.layout_elements.iter().enumerate() {
-                if elem.element_type != oar_ocr_core::domain::structure::LayoutElementType::Algorithm {
+                if elem.element_type
+                    != oar_ocr_core::domain::structure::LayoutElementType::Algorithm
+                {
                     continue;
                 }
                 let text = elem.text.as_deref().unwrap_or("<no-text>");
