@@ -136,7 +136,8 @@ impl PdfConverter for VlmOcrConverter {
                                         .cloned()
                                         .collect();
                                     if !algo_elements.is_empty() {
-                                        let algo_md = oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
+                                        let algo_md =
+                                            oar_ocr_vl::utils::to_markdown(&algo_elements, &[]);
                                         if !algo_md.trim().is_empty() {
                                             if let Ok(mut blocks) = sink.lock() {
                                                 blocks.push(AlgorithmBlock {
@@ -149,7 +150,11 @@ impl PdfConverter for VlmOcrConverter {
                                 }
 
                                 let md = result.to_markdown();
-                                if md.trim().is_empty() { None } else { Some(md) }
+                                if md.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(md)
+                                }
                             }
                             Err(e) => {
                                 warn!(page = page_num, error = %e, "VLM-OCR: page failed");
@@ -162,9 +167,18 @@ impl PdfConverter for VlmOcrConverter {
 
                         let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                         if let Some(ref cb) = progress_cb {
-                            cb.on_page_complete(page_num, page_count, md.as_ref().map_or(0, |s| s.len()));
+                            cb.on_page_complete(
+                                page_num,
+                                page_count,
+                                md.as_ref().map_or(0, |s| s.len()),
+                            );
                         }
-                        info!(page = page_num, done = done, total = page_count, "VLM-OCR: page completed");
+                        info!(
+                            page = page_num,
+                            done = done,
+                            total = page_count,
+                            "VLM-OCR: page completed"
+                        );
 
                         (i, md)
                     })
@@ -254,14 +268,19 @@ pub fn detect_algorithm_blocks(
     if images.is_empty() {
         return Ok(Vec::new());
     }
-    info!(pages = images.len(), "Algorithm detection: rendered PDF pages");
+    info!(
+        pages = images.len(),
+        "Algorithm detection: rendered PDF pages"
+    );
 
     // 3. Build layout predictor
     let layout_predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
         .model_name(LAYOUT_MODEL_NAME)
         .build(&layout_path)
         .map_err(|e| {
-            PdfConversionError::Backend(format!("Algorithm detection: layout predictor failed: {e}"))
+            PdfConversionError::Backend(format!(
+                "Algorithm detection: layout predictor failed: {e}"
+            ))
         })?;
 
     // 4. Build VLM backend + DocParser
@@ -365,9 +384,8 @@ fn model_cache_dir() -> Result<PathBuf, PdfConversionError> {
         return Ok(p);
     }
     let p = PathBuf::from("/tmp/edgequake-oar-ocr-models");
-    std::fs::create_dir_all(&p).map_err(|e| {
-        PdfConversionError::Internal(format!("Failed to create model dir: {e}"))
-    })?;
+    std::fs::create_dir_all(&p)
+        .map_err(|e| PdfConversionError::Internal(format!("Failed to create model dir: {e}")))?;
     Ok(p)
 }
 
@@ -436,10 +454,6 @@ fn render_single_page(page: &hayro::hayro_syntax::page::Page) -> Result<image::R
         rgb.push(chunk[2]);
     }
 
-    image::RgbImage::from_raw(
-        u32::from(pixmap.width()),
-        u32::from(pixmap.height()),
-        rgb,
-    )
-    .ok_or_else(|| "Failed to construct RgbImage from pixmap".to_string())
+    image::RgbImage::from_raw(u32::from(pixmap.width()), u32::from(pixmap.height()), rgb)
+        .ok_or_else(|| "Failed to construct RgbImage from pixmap".to_string())
 }

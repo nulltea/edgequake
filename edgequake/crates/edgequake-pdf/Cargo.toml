@@ -28,6 +28,16 @@ image = "0.25"
 rayon = "1.8"
 base64 = "0.22"
 serde_json = "1.0"
+# Direct pdfium access for link-annotation extraction. Versions match the
+# copies pulled in transitively by edgequake-pdf2md 0.8.0 so cargo dedupes.
+pdfium-render = "0.8"
+pdfium-auto = { version = "0.3", default-features = false }
+regex = "1"
+
+[features]
+default = ["bundled"]
+# Mirror edgequake-pdf2md's feature: embeds libpdfium at compile-time.
+bundled = ["pdfium-auto/bundled"]
 
 [dev-dependencies]
 tempfile = "3"

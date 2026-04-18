@@ -147,14 +147,15 @@ impl VlmClientBackend {
                 source: Box::new(e),
             })?;
 
-        let response_str = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|e| OCRError::Inference {
-                model_name: "VlmClient".into(),
-                context: "read response body".into(),
-                source: Box::new(e),
-            })?;
+        let response_str =
+            response
+                .body_mut()
+                .read_to_string()
+                .map_err(|e| OCRError::Inference {
+                    model_name: "VlmClient".into(),
+                    context: "read response body".into(),
+                    source: Box::new(e),
+                })?;
 
         let response_body: Value =
             serde_json::from_str(&response_str).map_err(|e| OCRError::InvalidInput {
