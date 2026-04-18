@@ -2068,6 +2068,38 @@ export async function detectRepos(
 }
 
 // ============================================================================
+// Reference-code analysis (Phase 1)
+// ============================================================================
+
+/** List code-match candidates and per-repo run state for a document. */
+export async function getCodeReferences(
+  documentId: string,
+): Promise<import("@/types/code-artifacts").CodeReferenceListResponse> {
+  return api.get<import("@/types/code-artifacts").CodeReferenceListResponse>(
+    `/code-reference/by-document/${documentId}`,
+  );
+}
+
+/** Approve / reject a single code-match candidate. */
+export async function reviewCodeArtifact(
+  codeArtifactId: string,
+  status: "approved" | "rejected",
+): Promise<import("@/types/code-artifacts").CodeArtifactReviewResponse> {
+  return api.post<
+    import("@/types/code-artifacts").CodeArtifactReviewResponse
+  >(`/code-reference/${codeArtifactId}/review`, { status });
+}
+
+/** Manually (re-)trigger analysis for a given approved repo. */
+export async function analyzeCodeReference(
+  documentRepoId: string,
+): Promise<import("@/types/code-artifacts").AnalyzeCodeReferenceResponse> {
+  return api.post<
+    import("@/types/code-artifacts").AnalyzeCodeReferenceResponse
+  >(`/code-reference/analyze/${documentRepoId}`, {});
+}
+
+// ============================================================================
 // Export default API object
 // ============================================================================
 
@@ -2188,6 +2220,11 @@ export const edgequakeApi = {
   getDocumentRepos,
   reviewRepo,
   detectRepos,
+
+  // Reference-code analysis (Phase 1)
+  getCodeReferences,
+  reviewCodeArtifact,
+  analyzeCodeReference,
 };
 
 export default edgequakeApi;
