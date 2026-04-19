@@ -53,7 +53,9 @@ use std::sync::OnceLock;
 /// ever been JSON-serialised) should call the individual functions.
 pub fn repair_latex(s: &str) -> String {
     let s = reconstruct_escape_collisions(s);
+    let s = strip_fake_latex_codefence(&s);
     let s = repair_sample_dollar(&s);
+    let s = repair_missing_inner_bracket(&s);
     let s = balance_double_brackets(&s);
     let s = balance_math_delimiters(&s);
     brace_single_token_scripts(&s)
@@ -219,10 +221,98 @@ fn mathbb_s_regex() -> &'static Regex {
     })
 }
 
+fn mathbb_s_fragmented_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // GLM-OCR sometimes fragments the math block around `\mathbb{S}`, yielding
+    // `$...\leftarrow$ $\mathbb{S}$ $\mathbb{Z}...$` instead of the intended
+    // `$...\leftarrow\$ \mathbb{Z}...$`. Collapse the `$ $\mathbb{S}$ $`
+    // interstitial back to `\$ ` and keep the next set-token intact.
+    RE.get_or_init(|| {
+        Regex::new(r"\$\s*\$\s*\\mathbb\{S\}\s*\$\s*\$\s*(\\mathbb\{[ZRNFZQ]\}|\\\{|\[|\d)")
+            .expect("mathbb_s_fragmented_regex compiles")
+    })
+}
+
 /// Rewrite the GLM-OCR artefact `\mathbb{S}` back to `\$` in uniform-sampling
-/// contexts. Idempotent: after rewrite the sequence no longer matches.
+/// contexts. Handles both the contiguous form (`\mathbb{S}\mathbb{Z}`) and the
+/// fragmented form where intervening `$...$` OCR boundaries sit around the
+/// bogus `\mathbb{S}`. Idempotent.
 pub fn repair_sample_dollar(s: &str) -> String {
-    mathbb_s_regex().replace_all(s, r"\$$1$2").into_owned()
+    // Fragmented form first so it doesn't over-consume into the simpler case.
+    let s = mathbb_s_fragmented_regex().replace_all(s, r"\$ $1").into_owned();
+    mathbb_s_regex().replace_all(&s, r"\$$1$2").into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b. Missing inner `]` on `[[...]^` and `[[x[i]]^` shapes
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn missing_bracket_simple_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `[[<content>]^` where content has no `[` and no `]` — should be
+    // `[[<content>]]^`. Example: `[[v]^A` → `[[v]]^A`.
+    RE.get_or_init(|| {
+        Regex::new(r"(\[\[[^\[\]]*)\](\^)").expect("missing_bracket_simple compiles")
+    })
+}
+
+fn missing_bracket_indexed_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `[[<prefix>[<index>]]^` — a double-bracket notation wrapping an indexed
+    // reference. The inner `[...]` consumes one closing bracket that should
+    // have been outer. Example: `[[x[i]]^A` → `[[x[i]]]^A`.
+    RE.get_or_init(|| {
+        Regex::new(r"(\[\[[^\[\]]*\[[^\[\]]*\]\])(\^)")
+            .expect("missing_bracket_indexed compiles")
+    })
+}
+
+/// Repair the two OCR-induced "missing inner `]`" shapes that
+/// [`balance_double_brackets`] can't spot because its heuristic uses the
+/// `]]` substring count rather than tracking single-bracket balance.
+///
+/// Idempotent: after rewrite the single `]^` / `]]^` with missing outer
+/// bracket becomes balanced and the regex no longer fires.
+pub fn repair_missing_inner_bracket(s: &str) -> String {
+    let s = missing_bracket_indexed_regex()
+        .replace_all(s, "$1]$2")
+        .into_owned();
+    missing_bracket_simple_regex()
+        .replace_all(&s, "$1]]$2")
+        .into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2c. GLM-OCR fake LaTeX code-fence wrapper around math blocks
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn fake_latex_fence_open_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `$$```latex\\$$` — GLM-OCR wraps a `$$...$$` math block in a fake
+    // triple-backtick latex code fence whose opening line ends with a
+    // literal `\\` then `$$`. Collapse the whole marker to a single `$$`.
+    RE.get_or_init(|| {
+        Regex::new(r"\$\$```latex\\+\$\$").expect("fake_latex_fence_open compiles")
+    })
+}
+
+fn fake_latex_fence_close_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // Matching closing artefact ` ``` $$$$` (three backticks then four
+    // dollar signs). Collapse to `$$`.
+    RE.get_or_init(|| {
+        Regex::new(r"```\$\$\$\$").expect("fake_latex_fence_close compiles")
+    })
+}
+
+/// Strip the fake ```` ```latex ```` fence GLM-OCR occasionally wraps around
+/// a `$$...$$` display-math block. Idempotent: after rewrite the markers
+/// are gone and the regex no longer fires.
+pub fn strip_fake_latex_codefence(s: &str) -> String {
+    let s = fake_latex_fence_open_regex().replace_all(s, "$$$$").into_owned();
+    fake_latex_fence_close_regex()
+        .replace_all(&s, "$$$$")
+        .into_owned()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -608,5 +698,87 @@ mod tests {
             "mathbb-S removed: {once:?}"
         );
         assert!(once.contains("[[v^*]]"), "bracket balanced: {once:?}");
+    }
+
+    // ─── Fragmented `\mathbb{S}` (GLM-OCR broken math block) ────────────────
+
+    #[test]
+    fn fragmented_mathbb_s_is_repaired() {
+        // Observed on B2A.pdf page 2 — OCR shattered the math block around
+        // the sampling `\$`, leaving three fragmented `$...$` pairs.
+        let input = r"$v_{0}, v_{1} \leftarrow$ $\mathbb{S}$ $\mathbb{Z}_{2^{\ell}}^{2}$";
+        let out = repair_sample_dollar(input);
+        assert_eq!(
+            out,
+            r"$v_{0}, v_{1} \leftarrow\$ \mathbb{Z}_{2^{\ell}}^{2}$"
+        );
+        // Idempotent.
+        assert_eq!(repair_sample_dollar(&out), out);
+    }
+
+    #[test]
+    fn contiguous_mathbb_s_still_works() {
+        let input = r"$v \leftarrow \mathbb{S} \mathbb{Z}_p$";
+        let out = repair_sample_dollar(input);
+        assert!(out.contains(r"\$"), "got {out:?}");
+        assert!(!out.contains(r"\mathbb{S}"), "got {out:?}");
+    }
+
+    #[test]
+    fn genuine_script_s_is_preserved() {
+        // Paper genuinely introduces `\mathbb{S}` as a set symbol — not
+        // followed by another mathbb/brace/digit, so we leave it alone.
+        let input = r"Let $\mathbb{S}$ be the set of all strategies.";
+        assert_eq!(repair_sample_dollar(input), input);
+    }
+
+    // ─── Missing inner bracket repairs ──────────────────────────────────────
+
+    #[test]
+    fn simple_missing_inner_bracket_repaired() {
+        // `[[v]^A` → `[[v]]^A`
+        let out = repair_missing_inner_bracket(r"$$[[v]^A \leftarrow \text{X}$$");
+        assert_eq!(out, r"$$[[v]]^A \leftarrow \text{X}$$");
+        // Idempotent.
+        assert_eq!(repair_missing_inner_bracket(&out), out);
+    }
+
+    #[test]
+    fn indexed_missing_inner_bracket_repaired() {
+        // `[[x[i]]^A` → `[[x[i]]]^A`
+        let out = repair_missing_inner_bracket(r"$$[[x[i]]^A \leftarrow \text{Y}$$");
+        assert_eq!(out, r"$$[[x[i]]]^A \leftarrow \text{Y}$$");
+        assert_eq!(repair_missing_inner_bracket(&out), out);
+    }
+
+    #[test]
+    fn balanced_double_bracket_untouched() {
+        // Already correct — must NOT add extra bracket.
+        let input = r"$$[[v]]^A \leftarrow [[b]]^A$$";
+        assert_eq!(repair_missing_inner_bracket(input), input);
+    }
+
+    #[test]
+    fn balanced_indexed_bracket_untouched() {
+        let input = r"$$[[x[i]]]^A \leftarrow [[y[j]]]^B$$";
+        assert_eq!(repair_missing_inner_bracket(input), input);
+    }
+
+    // ─── Fake latex code-fence wrapper ──────────────────────────────────────
+
+    #[test]
+    fn strip_fake_latex_fence_round_trip() {
+        let input = "before\n$$```latex\\\\$$\n[[v^*]]^A \\leftarrow X\\\\\n```$$$$\nafter";
+        let out = strip_fake_latex_codefence(input);
+        assert!(!out.contains("```latex"), "got {out:?}");
+        assert!(!out.contains("$$$$"), "got {out:?}");
+        // Idempotent.
+        assert_eq!(strip_fake_latex_codefence(&out), out);
+    }
+
+    #[test]
+    fn strip_fake_latex_fence_is_idempotent_on_clean_math() {
+        let input = "$$\n\\beta_i = m_i \\oplus x_{i,2}\n$$";
+        assert_eq!(strip_fake_latex_codefence(input), input);
     }
 }

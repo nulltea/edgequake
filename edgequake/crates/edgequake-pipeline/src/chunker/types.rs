@@ -76,14 +76,16 @@ pub struct ChunkerConfig {
 impl Default for ChunkerConfig {
     fn default() -> Self {
         Self {
-            // WHY 800: The chunker estimates 4 chars/token, but dense technical content
-            // (scientific tables, formulas, gene names, numeric data) can be 2–3× denser.
-            // At 2 chars/true_token: 800 est-tokens × 4 chars = 3200 chars → 1600 true tokens.
-            // This keeps chunks safely within embeddinggemma's 2048-token hard limit (80% margin).
-            // Prior default of 1200 produced 4800-char chunks → 2400 true tokens → 400 errors.
-            chunk_size: 800,
+            // Tier B: ContextAwareChunking counts real cl100k BPE tokens, so these
+            // values are in real tokens (not the old char/4 estimate). qwen3-embedding
+            // handles 32K, so the ceiling isn't the constraint — retrieval quality is.
+            // 1600 tokens ≈ 3200–4800 chars depending on text density, roughly matching
+            // the old TokenBasedChunking effective size. min_chunk_size=600 forces the
+            // merge pass to aggressively collapse leaf-subsection stubs; without it a
+            // paper with ~20 heading anchors fragments into ~45 chunks.
+            chunk_size: 1600,
             chunk_overlap: 100,
-            min_chunk_size: 100,
+            min_chunk_size: 600,
             separators: vec![
                 "\n\n".to_string(),
                 "\n".to_string(),
