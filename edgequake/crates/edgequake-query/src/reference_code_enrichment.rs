@@ -136,20 +136,12 @@ fn collect_retrieved_document_ids(context: &QueryContext) -> Vec<String> {
         }
     }
     for entity in &context.entities {
-        if let Some(id) = entity
-            .source_document_id
-            .as_ref()
-            .filter(|s| !s.is_empty())
-        {
+        if let Some(id) = entity.source_document_id.as_ref().filter(|s| !s.is_empty()) {
             seen.insert(id.clone());
         }
     }
     for rel in &context.relationships {
-        if let Some(id) = rel
-            .source_document_id
-            .as_ref()
-            .filter(|s| !s.is_empty())
-        {
+        if let Some(id) = rel.source_document_id.as_ref().filter(|s| !s.is_empty()) {
             seen.insert(id.clone());
         }
     }

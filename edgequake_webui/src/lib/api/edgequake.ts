@@ -2100,6 +2100,78 @@ export async function analyzeCodeReference(
 }
 
 // ============================================================================
+// Reference codebase RAG (Phase 2)
+// ============================================================================
+
+/** Build the full reference-codebase RAG index for an approved repo. */
+export async function createReferenceCodebaseIndex(
+  request: import("@/types/reference-codebase").CreateReferenceCodebaseIndexRequest,
+): Promise<import("@/types/reference-codebase").CreateReferenceCodebaseIndexResponse> {
+  return api.post<
+    import("@/types/reference-codebase").CreateReferenceCodebaseIndexResponse
+  >("/reference-codebase/indexes", request);
+}
+
+/** Fetch index status and counts. */
+export async function getReferenceCodebaseIndex(
+  indexId: string,
+): Promise<import("@/types/reference-codebase").ReferenceCodebaseIndex> {
+  return api.get<import("@/types/reference-codebase").ReferenceCodebaseIndex>(
+    `/reference-codebase/indexes/${indexId}`,
+  );
+}
+
+/** Query coding-agent context from the separate reference-codebase RAG. */
+export async function queryReferenceCodebase(
+  request: import("@/types/reference-codebase").ReferenceCodebaseQueryRequest,
+): Promise<import("@/types/reference-codebase").ReferenceCodebaseQueryResponse> {
+  return api.post<
+    import("@/types/reference-codebase").ReferenceCodebaseQueryResponse
+  >("/reference-codebase/query", request);
+}
+
+/**
+ * Anchor-centric BFS subgraph for a specific index. Used by the Code
+ * Graph tab; pass `anchor_artifact_id` for the approved-code path,
+ * `anchor_symbol` for name-based lookup, or neither for top-degree
+ * fallback.
+ */
+export async function getReferenceCodebaseGraph(
+  indexId: string,
+  params: {
+    anchor_artifact_id?: string;
+    anchor_symbol?: string;
+    hops?: number;
+    max_nodes?: number;
+  } = {},
+): Promise<
+  import("@/types/reference-codebase").ReferenceCodebaseGraphResponse
+> {
+  const q = new URLSearchParams();
+  if (params.anchor_artifact_id)
+    q.set("anchor_artifact_id", params.anchor_artifact_id);
+  if (params.anchor_symbol) q.set("anchor_symbol", params.anchor_symbol);
+  if (params.hops !== undefined) q.set("hops", String(params.hops));
+  if (params.max_nodes !== undefined)
+    q.set("max_nodes", String(params.max_nodes));
+  const qs = q.toString();
+  return api.get<
+    import("@/types/reference-codebase").ReferenceCodebaseGraphResponse
+  >(`/reference-codebase/indexes/${indexId}/graph${qs ? `?${qs}` : ""}`);
+}
+
+/** List reference-codebase indexes for an approved repo (newest first). */
+export async function listReferenceCodebaseIndexesForRepo(
+  documentRepoId: string,
+): Promise<{
+  indexes: import("@/types/reference-codebase").ReferenceCodebaseIndex[];
+}> {
+  return api.get<{
+    indexes: import("@/types/reference-codebase").ReferenceCodebaseIndex[];
+  }>(`/reference-codebase/by-repo/${documentRepoId}`);
+}
+
+// ============================================================================
 // Export default API object
 // ============================================================================
 
@@ -2225,6 +2297,11 @@ export const edgequakeApi = {
   getCodeReferences,
   reviewCodeArtifact,
   analyzeCodeReference,
+
+  // Reference codebase RAG (Phase 2)
+  createReferenceCodebaseIndex,
+  getReferenceCodebaseIndex,
+  queryReferenceCodebase,
 };
 
 export default edgequakeApi;

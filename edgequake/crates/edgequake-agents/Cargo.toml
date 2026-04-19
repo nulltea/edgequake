@@ -22,6 +22,14 @@ url = "2"
 edgequake-llm = { workspace = true }
 edgequake-pdf = { workspace = true }
 sqlx = { workspace = true, optional = true }
+md5 = { workspace = true }
+regex = "1.10"
+
+# Phase 2 reference-codebase indexer: tree-sitter-backed symbol + edge
+# extraction for Rust/Python/TypeScript/C/C++. ast-grep-core gives the
+# pattern DSL; ast-grep-language pulls the grammar bindings in one go.
+ast-grep-core = "0.42"
+ast-grep-language = "0.42"
 
 [features]
 default = ["postgres"]

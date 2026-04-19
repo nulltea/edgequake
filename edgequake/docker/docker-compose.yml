@@ -51,6 +51,28 @@ services:
             EDGEQUAKE_CODE_EMBEDDING_URL: "${EDGEQUAKE_CODE_EMBEDDING_URL:-http://host.docker.internal:11437/v1}"
             EDGEQUAKE_CODE_EMBEDDING_MODEL: "${EDGEQUAKE_CODE_EMBEDDING_MODEL:-jina-code-embeddings}"
             EDGEQUAKE_CODE_EMBEDDING_DIMENSION: "${EDGEQUAKE_CODE_EMBEDDING_DIMENSION:-896}"
+
+            # Phase 2 — full reference-codebase RAG over the persisted clones.
+            # The same code-analyzer-workspace volume is mounted read-only below.
+            EDGEQUAKE_REFERENCE_CODEBASE_INDEXING: "${EDGEQUAKE_REFERENCE_CODEBASE_INDEXING:-off}"
+            EDGEQUAKE_REFERENCE_CODEBASE_WORKSPACE: /workspace
+            EDGEQUAKE_REFERENCE_CODEBASE_MODE: "${EDGEQUAKE_REFERENCE_CODEBASE_MODE:-algorithm_focused}"
+            EDGEQUAKE_REFERENCE_CODEBASE_MAX_REPO_MB: "${EDGEQUAKE_REFERENCE_CODEBASE_MAX_REPO_MB:-500}"
+            EDGEQUAKE_REFERENCE_CODEBASE_MAX_FILES: "${EDGEQUAKE_REFERENCE_CODEBASE_MAX_FILES:-25000}"
+            EDGEQUAKE_REFERENCE_CODEBASE_MAX_FILE_BYTES: "${EDGEQUAKE_REFERENCE_CODEBASE_MAX_FILE_BYTES:-1048576}"
+            EDGEQUAKE_REFERENCE_CODEBASE_MAX_CHUNKS: "${EDGEQUAKE_REFERENCE_CODEBASE_MAX_CHUNKS:-20000}"
+            EDGEQUAKE_REFERENCE_CODEBASE_QUERY_LIMIT: "${EDGEQUAKE_REFERENCE_CODEBASE_QUERY_LIMIT:-12}"
+            EDGEQUAKE_REFERENCE_CODEBASE_GRAPH_HOPS: "${EDGEQUAKE_REFERENCE_CODEBASE_GRAPH_HOPS:-1}"
+            EDGEQUAKE_REFERENCE_CODEBASE_SCIP: "${EDGEQUAKE_REFERENCE_CODEBASE_SCIP:-off}"
+
+            # Phase 2 auto-enqueue: fire a reference-codebase index task on
+            # code_artifact approval. Default off so the manual POST path
+            # stays the only trigger until we've seen the auto path stable.
+            EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX: "${EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX:-false}"
+            # Lower file cap when the indexer was auto-triggered — protects
+            # against one click burning the whole Jina quota on a 20k-file
+            # repo. Explicit POST /indexes calls aren't capped by this.
+            EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES: "${EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES:-5000}"
         extra_hosts:
             - "host.docker.internal:host-gateway"
         depends_on:

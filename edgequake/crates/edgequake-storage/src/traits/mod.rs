@@ -25,11 +25,13 @@
 mod code_vector;
 mod graph;
 mod kv;
+mod reference_codebase_vector;
 mod vector;
 mod workspace_vector;
 
 pub use code_vector::{CodeSearchHit, CodeVectorStorage};
 pub use graph::{GraphEdge, GraphNode, GraphStorage, KnowledgeGraph};
 pub use kv::KVStorage;
+pub use reference_codebase_vector::{ReferenceCodebaseSearchHit, ReferenceCodebaseVectorStorage};
 pub use vector::{MetadataFilter, VectorSearchResult, VectorStorage};
 pub use workspace_vector::{WorkspaceVectorConfig, WorkspaceVectorRegistry};

@@ -2,6 +2,7 @@
 
 import { AlgorithmsTabContent } from '@/components/algorithms';
 import { CodeMatchesTabContent } from '@/components/code-artifacts';
+import { CodeGraphTabContent } from '@/components/code-graph';
 import { DocumentReposTabContent } from '@/components/document-repos';
 import { ContentRenderer } from '@/components/document/content-renderer';
 import { MetadataSidebar } from '@/components/document/metadata-sidebar';
@@ -52,7 +53,13 @@ export default function DocumentViewPage() {
   // Get tab and highlight parameters from URL
   const defaultTab = (() => {
     const t = searchParams.get('tab');
-    if (t === 'algorithms' || t === 'repos' || t === 'code-matches') return t;
+    if (
+      t === 'algorithms' ||
+      t === 'repos' ||
+      t === 'code-matches' ||
+      t === 'code-graph'
+    )
+      return t;
     return 'content';
   })();
   const highlightText = searchParams.get('highlight') || undefined;
@@ -308,6 +315,10 @@ export default function DocumentViewPage() {
                 <FileCode2 className="h-3.5 w-3.5" />
                 Code Matches
               </TabsTrigger>
+              <TabsTrigger value="code-graph">
+                <GitBranch className="h-3.5 w-3.5" />
+                Code Graph
+              </TabsTrigger>
             </TabsList>
 
             {/* Content tab */}
@@ -390,13 +401,18 @@ export default function DocumentViewPage() {
             <TabsContent value="code-matches" className="flex-1 overflow-auto m-0 mt-0">
               <CodeMatchesTabContent documentId={documentId} />
             </TabsContent>
+
+            {/* Code graph tab (Phase 2) */}
+            <TabsContent value="code-graph" className="flex-1 overflow-hidden m-0 mt-0">
+              <CodeGraphTabContent documentId={documentId} />
+            </TabsContent>
           </Tabs>
         </div>
 
         {/* Mobile/Tablet: Tabbed layout */}
         <div className="flex-1 lg:hidden overflow-hidden">
           <Tabs defaultValue={defaultTab} className="h-full flex flex-col">
-            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-6' : 'grid-cols-5'} rounded-none border-b`}>
+            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-7' : 'grid-cols-6'} rounded-none border-b`}>
               {isPdfDocument && <TabsTrigger value="pdf">PDF</TabsTrigger>}
               <TabsTrigger value="content">Markdown</TabsTrigger>
               <TabsTrigger value="algorithms">
@@ -410,6 +426,10 @@ export default function DocumentViewPage() {
               <TabsTrigger value="code-matches">
                 <FileCode2 className="h-3.5 w-3.5" />
                 Code
+              </TabsTrigger>
+              <TabsTrigger value="code-graph">
+                <GitBranch className="h-3.5 w-3.5" />
+                Graph
               </TabsTrigger>
               <TabsTrigger value="metadata">Details</TabsTrigger>
             </TabsList>
@@ -444,6 +464,9 @@ export default function DocumentViewPage() {
             </TabsContent>
             <TabsContent value="code-matches" className="flex-1 overflow-auto m-0 mt-0">
               <CodeMatchesTabContent documentId={documentId} />
+            </TabsContent>
+            <TabsContent value="code-graph" className="flex-1 overflow-hidden m-0 mt-0">
+              <CodeGraphTabContent documentId={documentId} />
             </TabsContent>
             <TabsContent value="metadata" className="flex-1 overflow-hidden m-0 mt-0">
               <MetadataSidebar

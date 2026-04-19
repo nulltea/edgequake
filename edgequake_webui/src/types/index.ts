@@ -35,6 +35,9 @@ export * from "./lineage";
 // Algorithm extraction types
 export * from "./algorithms";
 
+// Reference codebase RAG types
+export * from "./reference-codebase";
+
 // ============================================================================
 // Graph types
 // ============================================================================

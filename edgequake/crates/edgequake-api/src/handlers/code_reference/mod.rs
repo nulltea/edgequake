@@ -288,6 +288,39 @@ async fn review_impl(
                     "embedding sync failed (non-fatal)"
                 );
             }
+
+            // Phase 2 auto-enqueue: on approve, fire-and-forget a
+            // reference-codebase indexing task. Gated behind
+            // EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX. Idempotent via
+            // the (tenant, workspace, document_repo, commit, mode)
+            // unique key — concurrent approvals across sibling
+            // artifacts enqueue exactly one task. Never tears down an
+            // existing index (rejection stays a no-op here).
+            if matches!(request.status, ArtifactStatus::Approved)
+                && auto_index_enabled()
+            {
+                let pool_cloned = pool.clone();
+                let task_storage = state.task_storage.clone();
+                let task_queue = state.task_queue.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = maybe_auto_enqueue_index(
+                        &pool_cloned,
+                        &task_storage,
+                        &task_queue,
+                        tenant_id,
+                        workspace_id,
+                        code_artifact_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            code_artifact_id = %code_artifact_id,
+                            "reference-codebase auto-enqueue failed (non-fatal)"
+                        );
+                    }
+                });
+            }
         }
         ArtifactStatus::Pending => {}
     }
@@ -563,5 +596,177 @@ async fn sync_embedding_for_review(
         }
         ArtifactStatus::Pending => {}
     }
+    Ok(())
+}
+
+/// Read `EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX` (default `false`). Gate
+/// for the Phase 2 auto-enqueue side-effect. Kept a free function so a
+/// flag flip can happen via env without a code edit.
+#[cfg(feature = "postgres")]
+fn auto_index_enabled() -> bool {
+    matches!(
+        std::env::var("EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+/// Race-safe auto-enqueue of a `reference_codebase_index` task after a
+/// code_artifact was approved. Resolves `(document_repo_id, repo_commit)`
+/// from the artifact + its repo row, then `INSERT … ON CONFLICT DO NOTHING
+/// RETURNING id` against the `(tenant, workspace, document_repo, commit,
+/// mode)` unique key — if an index already exists in any state
+/// (queued/in-flight/complete/failed), the INSERT returns no row and we
+/// skip enqueuing.
+///
+/// Only fires when the row is genuinely new, so concurrent approvals
+/// across sibling artifacts pointing at the same repo enqueue exactly
+/// one indexing task.
+///
+/// Snapshots `repo_commit` at enqueue time and writes it into the index
+/// row — never relies on re-reading it from `document_repos` later, so
+/// the detection pipeline drifting HEAD can't silently bypass the unique
+/// constraint.
+#[cfg(feature = "postgres")]
+async fn maybe_auto_enqueue_index(
+    pool: &sqlx::PgPool,
+    task_storage: &edgequake_tasks::SharedTaskStorage,
+    task_queue: &edgequake_tasks::SharedTaskQueue,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    code_artifact_id: Uuid,
+) -> Result<(), String> {
+    use edgequake_tasks::{ReferenceCodebaseIndexData, Task, TaskType};
+
+    // Look up the artifact to resolve (document_id, document_repo_id,
+    // repo_commit). Approved status is implied by the caller — we only
+    // hit this path from the approval handler after a successful status
+    // transition.
+    let row: Option<(String, Uuid, String)> = sqlx::query_as(
+        r#"
+        SELECT document_id, document_repo_id, repo_commit
+        FROM code_artifacts
+        WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3
+        "#,
+    )
+    .bind(code_artifact_id)
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("lookup code_artifact: {e}"))?;
+
+    let Some((document_id, document_repo_id, repo_commit)) = row else {
+        // Artifact was deleted out from under us (e.g. algorithm
+        // re-extraction); nothing to enqueue.
+        return Ok(());
+    };
+
+    // Resolve repo_url for the index row (snapshot — same reason we
+    // snapshot commit: document_repos mutates independently).
+    let repo_url: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT url FROM document_repos
+        WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3 AND status = 'approved'
+        "#,
+    )
+    .bind(document_repo_id)
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("lookup document_repo: {e}"))?;
+
+    let Some(repo_url) = repo_url else {
+        // Repo not approved (or gone). Normal path for approvals on
+        // orphaned artifacts — skip silently.
+        return Ok(());
+    };
+
+    // Auto-triggered indexes get a conservative file cap to protect
+    // against "click-approve on a 20k-file repo burns half the Jina
+    // quota". Explicit POST requests can raise it via force_reindex.
+    let max_files_override: i32 = std::env::var("EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5000);
+
+    // Race-safe insert. `repo_path` is '' here — the indexer overwrites
+    // it with the real `/workspace/<sha>` path once the code-analyzer
+    // /snapshot call returns.
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        INSERT INTO reference_codebase_indexes (
+            tenant_id, workspace_id, document_id, document_repo_id,
+            repo_url, repo_commit, repo_path, repo_license,
+            mode, status, auto_triggered, max_files_override
+        )
+        VALUES (
+            $1, $2, $3, $4,
+            $5, $6, '', NULL,
+            'algorithm_focused', 'queued', TRUE, $7
+        )
+        ON CONFLICT (tenant_id, workspace_id, document_repo_id, repo_commit, mode)
+        DO NOTHING
+        RETURNING id
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(&document_id)
+    .bind(document_repo_id)
+    .bind(&repo_url)
+    .bind(&repo_commit)
+    .bind(max_files_override)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("insert reference_codebase_index: {e}"))?;
+
+    let Some(_index_id) = inserted else {
+        tracing::debug!(
+            %code_artifact_id,
+            %document_repo_id,
+            %repo_commit,
+            "reference-codebase index already exists for this (repo, commit) — auto-enqueue skipped"
+        );
+        return Ok(());
+    };
+
+    // The processor resolves the index row by (document_repo_id, commit,
+    // mode); we don't need to plumb the new id through.
+    let task_data = ReferenceCodebaseIndexData {
+        document_id: document_id.clone(),
+        workspace_id: workspace_id.to_string(),
+        document_repo_id,
+        mode: "algorithm_focused".to_string(),
+        force_reindex: false,
+    };
+    let task = Task::new(
+        tenant_id,
+        workspace_id,
+        TaskType::ReferenceCodebaseIndex,
+        serde_json::to_value(&task_data).map_err(|e| format!("serialize task: {e}"))?,
+    );
+    let track_id = task.track_id.clone();
+    task_storage
+        .create_task(&task)
+        .await
+        .map_err(|e| format!("create task: {e}"))?;
+    task_queue
+        .send(task)
+        .await
+        .map_err(|e| format!("queue task: {e}"))?;
+
+    tracing::info!(
+        %code_artifact_id,
+        %document_repo_id,
+        %repo_commit,
+        %track_id,
+        "auto-enqueued reference-codebase index task after code_artifact approval"
+    );
     Ok(())
 }

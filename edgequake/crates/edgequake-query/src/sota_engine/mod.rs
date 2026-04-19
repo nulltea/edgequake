@@ -83,9 +83,9 @@ use crate::modes::QueryMode;
 use crate::tokenizer::{SimpleTokenizer, Tokenizer};
 use crate::truncation::TruncationConfig;
 
+use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
 use edgequake_llm::Reranker;
-use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_storage::traits::{CodeVectorStorage, GraphStorage, VectorStorage};
 
 /// Configuration for the SOTA query engine.

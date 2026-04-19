@@ -8,6 +8,7 @@ import { registerDocumentTools } from "./tools/document.js";
 import { registerGraphTools } from "./tools/graph.js";
 import { registerHealthTools } from "./tools/health.js";
 import { registerQueryTools } from "./tools/query.js";
+import { registerReferenceCodebaseTools } from "./tools/reference-codebase.js";
 import { registerWorkspaceTools } from "./tools/workspace.js";
 import { registerAlgorithmTools } from "./tools/algorithm.js";
 
@@ -23,6 +24,7 @@ export function createServer(): McpServer {
   registerQueryTools(server);
   registerGraphTools(server);
   registerAlgorithmTools(server);
+  registerReferenceCodebaseTools(server);
   registerResources(server);
   registerPrompts(server);
 

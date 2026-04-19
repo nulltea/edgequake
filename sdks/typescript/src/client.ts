@@ -28,6 +28,7 @@ import { FoldersResource } from "./resources/folders.js";
 import { GraphResource } from "./resources/graph.js";
 import { LineageResource } from "./resources/lineage.js";
 import { ModelsResource } from "./resources/models.js";
+import { ReferenceCodebaseResource } from "./resources/reference-codebase.js";
 import { OllamaResource } from "./resources/ollama.js";
 import { PipelineResource } from "./resources/pipeline.js";
 import { ProvenanceResource } from "./resources/provenance.js";
@@ -150,6 +151,9 @@ export class EdgeQuake {
   /** Algorithm extraction and management. */
   readonly algorithms: AlgorithmsResource;
 
+  /** Phase 2 reference-codebase RAG for coding-agent retrieval. */
+  readonly referenceCodebase: ReferenceCodebaseResource;
+
   constructor(config?: EdgeQuakeConfig) {
     this._config = resolveConfig(config);
     // WHY: Allow test code to inject a mock transport via config._transport
@@ -178,6 +182,7 @@ export class EdgeQuake {
     this.models = new ModelsResource(this._transport);
     this.ollama = new OllamaResource(this._transport);
     this.algorithms = new AlgorithmsResource(this._transport);
+    this.referenceCodebase = new ReferenceCodebaseResource(this._transport);
   }
 
   // ──────────────────────────── Top-Level Convenience ────────────────────────────

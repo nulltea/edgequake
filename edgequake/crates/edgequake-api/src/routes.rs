@@ -478,6 +478,8 @@ fn api_v1_routes() -> Router<AppState> {
         .nest("/repos", handlers::repo_routes())
         // Reference-code analysis (Phase 1)
         .nest("/code-reference", handlers::code_reference_routes())
+        // Full reference-codebase RAG (Phase 2)
+        .nest("/reference-codebase", handlers::reference_codebase_routes())
 }
 
 #[cfg(test)]

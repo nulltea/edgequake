@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use super::types::{AnalyzerRequest, AnalyzerResponse};
+use super::types::{AnalyzerRequest, AnalyzerResponse, SnapshotRequest, SnapshotResponse};
 
 #[derive(Debug, Error)]
 pub enum AnalyzerClientError {
@@ -48,6 +48,23 @@ impl AnalyzerClient {
         req: &AnalyzerRequest,
     ) -> Result<AnalyzerResponse, AnalyzerClientError> {
         let url = format!("{}/analyze", self.base_url);
+        let resp = self.http.post(&url).json(req).send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(AnalyzerClientError::Status {
+                status,
+                body: truncate(&text, 800),
+            });
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    pub async fn snapshot(
+        &self,
+        req: &SnapshotRequest,
+    ) -> Result<SnapshotResponse, AnalyzerClientError> {
+        let url = format!("{}/snapshot", self.base_url);
         let resp = self.http.post(&url).json(req).send().await?;
         let status = resp.status();
         let text = resp.text().await?;

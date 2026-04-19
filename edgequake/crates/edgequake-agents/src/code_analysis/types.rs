@@ -214,3 +214,18 @@ pub struct AnalyzerResponse {
     #[serde(default)]
     pub num_turns: Option<i32>,
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotRequest {
+    pub repo_url: String,
+    pub repo_commit: String,
+    pub size_cap_mb: u32,
+    pub timeout_s: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SnapshotResponse {
+    pub repo_path: String,
+    pub repo_commit: String,
+    pub repo_license: Option<String>,
+}

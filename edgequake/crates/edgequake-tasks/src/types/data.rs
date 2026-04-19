@@ -135,6 +135,27 @@ pub struct CodeReferenceAnalysisData {
     pub document_repo_id: uuid::Uuid,
 }
 
+/// Full reference-codebase indexing task payload (Phase 2 of the Reference
+/// Code GraphRAG extension). Uses the persisted clone created by the
+/// `code-analyzer` sidecar and builds a separate codebase RAG index for
+/// coding-agent retrieval.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceCodebaseIndexData {
+    pub document_id: String,
+    pub workspace_id: String,
+    pub document_repo_id: uuid::Uuid,
+    /// Indexing mode: "algorithm_focused" (default) or "full".
+    #[serde(default = "default_reference_codebase_mode")]
+    pub mode: String,
+    /// Rebuild even when an index already exists for the same repo commit.
+    #[serde(default)]
+    pub force_reindex: bool,
+}
+
+fn default_reference_codebase_mode() -> String {
+    "algorithm_focused".to_string()
+}
+
 /// Reindex task payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexData {

@@ -22,6 +22,8 @@ from .schema import (
     AnalyzeRequest,
     AnalyzeResponse,
     HealthResponse,
+    SnapshotRequest,
+    SnapshotResponse,
 )
 
 logging.basicConfig(
@@ -113,4 +115,35 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         usage_cost_usd_equivalent=cost,
         duration_ms=duration_ms,
         num_turns=num_turns,
+    )
+
+
+@app.post("/snapshot", response_model=SnapshotResponse)
+async def snapshot(req: SnapshotRequest) -> SnapshotResponse:
+    """Clone or reuse a repo snapshot without running Claude.
+
+    Phase 2 reference-codebase indexing uses this endpoint when EdgeQuake
+    needs the persisted clone to exist in the shared /workspace volume.
+    """
+    dest = repo_dir_for(WORKSPACE, req.repo_url, req.repo_commit)
+    try:
+        repo_path, resolved_sha, license_ = shallow_clone(
+            req.repo_url,
+            req.repo_commit,
+            dest,
+            size_cap_mb=req.size_cap_mb,
+            timeout_s=req.timeout_s,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        logger.exception("snapshot clone failed")
+        raise HTTPException(
+            status_code=502, detail=f"clone failed: {e}"
+        ) from e
+
+    return SnapshotResponse(
+        repo_path=str(repo_path),
+        repo_commit=resolved_sha,
+        repo_license=license_,
     )

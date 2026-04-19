@@ -13,5 +13,6 @@
 //!   `code_artifacts` + `code_reference_runs`.
 
 pub mod code_analysis;
+pub mod reference_codebase;
 pub mod repo_detection;
 pub mod web_search;

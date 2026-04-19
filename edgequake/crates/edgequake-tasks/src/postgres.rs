@@ -596,6 +596,9 @@ impl std::str::FromStr for crate::types::TaskType {
             "pdf_processing" => Ok(crate::types::TaskType::PdfProcessing),
             "algorithm_extraction" => Ok(crate::types::TaskType::AlgorithmExtraction),
             "algorithm_embedding" => Ok(crate::types::TaskType::AlgorithmEmbedding),
+            "repo_detection" => Ok(crate::types::TaskType::RepoDetection),
+            "code_reference_analysis" => Ok(crate::types::TaskType::CodeReferenceAnalysis),
+            "reference_codebase_index" => Ok(crate::types::TaskType::ReferenceCodebaseIndex),
             _ => Err(format!("Invalid task type: {}", s)),
         }
     }

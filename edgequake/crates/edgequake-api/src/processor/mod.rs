@@ -81,6 +81,7 @@ mod algorithm_extraction;
 mod code_reference;
 mod pdf_processing;
 pub mod pipeline_checkpoint;
+mod reference_codebase;
 mod repo_detection;
 mod status_updates;
 mod task_impl;

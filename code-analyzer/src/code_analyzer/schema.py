@@ -33,6 +33,13 @@ class AnalyzeRequest(BaseModel):
     model: str | None = None
 
 
+class SnapshotRequest(BaseModel):
+    repo_url: str
+    repo_commit: str = "HEAD"
+    size_cap_mb: int = 500
+    timeout_s: int = 300
+
+
 # ── Response ───────────────────────────────────────────────────────────────
 
 
@@ -57,6 +64,12 @@ class AnalyzeResponse(BaseModel):
     usage_cost_usd_equivalent: float | None = None
     duration_ms: int
     num_turns: int | None = None
+
+
+class SnapshotResponse(BaseModel):
+    repo_path: str
+    repo_commit: str
+    repo_license: str | None = None
 
 
 class HealthResponse(BaseModel):

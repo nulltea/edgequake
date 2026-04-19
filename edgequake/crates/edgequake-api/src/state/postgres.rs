@@ -313,13 +313,11 @@ impl AppState {
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(896);
-                let embedder = Arc::new(
-                    edgequake_agents::code_analysis::JinaEmbedder::new(
-                        &code_embed_url,
-                        &code_model,
-                        code_dim,
-                    ),
-                );
+                let embedder = Arc::new(edgequake_agents::code_analysis::JinaEmbedder::new(
+                    &code_embed_url,
+                    &code_model,
+                    code_dim,
+                ));
                 let code_store: Arc<dyn edgequake_storage::traits::CodeVectorStorage> =
                     Arc::new(edgequake_storage::PgCodeVectorStorage::new(pool.clone()));
                 tracing::info!(

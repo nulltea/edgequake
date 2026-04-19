@@ -25,4 +25,5 @@ pub use storage::{CodeArtifactStorage, CodeStorageError};
 pub use types::{
     AnalyzerAlgorithmInput, AnalyzerFinding, AnalyzerRequest, AnalyzerResponse, ArtifactStatus,
     CodeArtifact, CodeArtifactCandidate, CodeReferenceRun, MatchConfidence, RunStatus,
+    SnapshotRequest, SnapshotResponse,
 };

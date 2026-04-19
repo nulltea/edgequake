@@ -6,7 +6,7 @@ title: 'Reference Code GraphRAG'
 
 > **How EdgeQuake links every extracted algorithm to the actual code that implements it, under human review, and surfaces both in one answer at query time.**
 
-Shipped on the `code-graph` branch. Phase 0 (repo detection) and Phase 1 (algorithm → code localization, approval, embedding, query enrichment) are live. Phase 2 (call graphs, coding-agent retrieval) is deferred.
+Shipped on the `code-graph` branch. Phase 0 (repo detection) and Phase 1 (algorithm → code localization, approval, embedding, query enrichment) are live. Phase 2 (full reference-codebase RAG for coding-agent retrieval) is implemented behind explicit API/task entrypoints.
 
 ---
 
@@ -385,21 +385,105 @@ External dependencies introduced by this feature:
 
 ---
 
-## 14. Not in Phase 1
+## 14. Phase 2 — Reference Codebase RAG (shipped)
 
-Deliberately out of scope; may become Phase 2 or Phase 3 depending on what real usage exposes.
+A separate codebase RAG index for approved reference repos, targeted at coding-agent workflows — porting a C/Python reference implementation into Rust, integrating an attention kernel, validating a paper's pseudocode against its actual implementation.
 
-- **Full cross-file call graph.** SCIP + language-specific indexers would give precise call/def edges. Phase 2 if Phase-1 localization starts showing its limits (inlined algorithms, heavy refactors).
-- **Separate vector namespace tuned for a coding-agent retrieval loop.** Also Phase 2 — only worth doing once a coding-agent use case (code port, code translation) concretely shows up.
-- **Agent-driven hard-case mode.** A ReAct-style agent that goes deeper on tricky matches. Phase 3 if the deterministic CLI flow proves inadequate on specific paper classes.
-- **Multi-repo per paper.** Some papers split "model" and "dataset" repos. Phase 1 handles one repo per paper; loop later.
-- **Automatic re-analysis on upstream commits.** Explicit user action only for now — avoids surprise edits to the knowledge base when upstream rewrites.
-- **Git-blame-style provenance per snippet line.** Nice-to-have for attribution; not load-bearing for retrieval.
-- **Approved-algorithm vector retrieval.** Algorithms *are* embedded at approval time (into the workspace vector store with `type: "algorithm"` metadata), but the SOTA retrieval filter currently only surfaces `{chunk, entity, relationship}` vectors — the algorithm vectors exist but aren't reachable via `/query` today. Paper prose about algorithms *is* retrievable through regular chunk retrieval. Follow-up work: add `AlgorithmVectorStorage` symmetric to `CodeVectorStorage`, surface as a parallel `approved_algorithms[]` response field. This mirrors what we just shipped for reference code.
+Phase 2's design deliberately mirrors Phase 1's shape: trait behind a Postgres adapter, Jina code embedder reused on the passage + query side, and per-tenant/workspace isolation throughout. What's new is a **symbol graph** built alongside the vector index, so the agent can walk callers/callees instead of purely fishing by NL similarity.
+
+### 14.1 What happens when you approve a code match
+
+Once `code_artifact.status` flips to `approved`, three side-effects fire in the review handler (`crates/edgequake-api/src/handlers/code_reference/mod.rs`):
+
+1. **Graph edge.** Algorithm → CODE_FUNCTION in AGE, per Phase 1.
+2. **Jina embedding.** Snippet → `code_artifact_embeddings`, per Phase 1.
+3. **Auto-enqueue** (new). If `EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX=true`, a `reference_codebase_index` task is enqueued. Race-safe: `INSERT … ON CONFLICT DO NOTHING` against the `(tenant, workspace, document_repo, commit, mode)` uniqueness key, so sibling approvals on the same repo enqueue exactly one indexing task. Fire-and-forget (`tokio::spawn`) — the approval HTTP response doesn't wait on the clone.
+
+Auto-triggered rows carry `auto_triggered=TRUE` and a reduced `max_files_override` (default 5000) to prevent one click burning the Jina quota on a 20k-file repo. Explicit `POST /indexes` keeps the full cap.
+
+### 14.2 The indexer
+
+Runs as the `reference_codebase_index` task:
+
+1. **Snapshot.** `code-analyzer /snapshot` clones or reuses the repo on the shared `code-analyzer-workspace` volume. EdgeQuake never clones — the analyzer owns the disk and edgequake mounts read-only.
+2. **Scan.** `.gitignore`-aware walk of the repo root, skipping `.git / target / node_modules / dist / build / .venv / vendor`. Honours `max_files`, `max_file_bytes`, `max_chunks` caps.
+3. **Symbols + edges.** Tree-sitter via `ast-grep-core` for Rust / Python / TypeScript / C / C++; regex fallback for everything else. Per-language edge coverage:
+
+| Edge | Rust | Python | TS | C | C++ |
+|---|---|---|---|---|---|
+| `defines` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `calls` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `imports` | `use` | `import` | `import`/`require` | `#include` | `#include` |
+| `references` | ✓ | ✓ | ✓ | — | — |
+| `implements` | `impl Trait for Type` | — | `implements` | — | deferred (Phase 3 / SCIP) |
+| `inherits` | — | `class X(Y)` | `extends` | — | deferred (Phase 3 / SCIP) |
+
+C's preprocessor macros are **not expanded** — macro-hidden calls don't resolve. Accepts the approximation; SCIP is the Phase-3 precision pass.
+
+4. **Chunker.** In `algorithm_focused` mode, keeps only symbols inside files that contain an approved `code_artifact` anchor (or that *are* anchors). Each chunk carries `algorithm_focus` ∈ [0,1] — anchors get 1.0, file-neighbours get 0.35. `full` mode chunks every symbol.
+5. **Embed.** Each chunk goes through `JinaEmbedder.embed_code_for_indexing` (same passage prefix as Phase 1, so Phase 1 + Phase 2 embeddings live in a compatible space). Upserted into `reference_codebase_embeddings` keyed by `chunk_id`.
+6. **Complete.** Status advances `queued → scanning → parsing → chunking → embedding → complete`. Any grammar crash bumps the per-file `parse_errors` counter without failing the whole index.
+
+### 14.3 Data model
+
+Five new tables (migrations 045, 046, 048):
+
+| Table | Role |
+|---|---|
+| `reference_codebase_indexes` | Per-commit build status, counts, timings, `auto_triggered`, `max_files_override` |
+| `reference_codebase_files` | Scanned source files + `parse_errors` telemetry |
+| `reference_codebase_symbols` | Functions, structs, classes, impls with line spans |
+| `reference_codebase_edges` | `defines / calls / imports / references / implements / inherits` edges |
+| `reference_codebase_chunks` | Retrieval units (`algorithm_anchor / symbol / file_overview`) with `algorithm_focus` |
+| `reference_codebase_embeddings` | pgvector(896) + HNSW cosine on chunk embeddings |
+
+Graph edges live in the SQL tables, not AGE — the edge count per index is easily 5k+ (the V3DB zk-ivf-pq index is 3959), which would outpace AGE's Cypher-query tooling. The subgraph endpoint runs a recursive CTE directly against the SQL tables, bounded by `hops` and `max_nodes`.
+
+### 14.4 Retrieval APIs
+
+Four endpoints under `/api/v1/reference-codebase/*`:
+
+- `POST /indexes` — enqueue (manual path; auto-enqueue uses the same pipeline).
+- `GET /indexes/{id}` — status, counts, errors.
+- `GET /by-repo/{document_repo_id}` — list every index for a repo (newest first).
+- `GET /indexes/{id}/graph?anchor_artifact_id=…|anchor_symbol=…&hops=1&max_nodes=200` — BFS subgraph for the Code Graph tab and the `get_symbol_neighborhood` MCP tool. Recursive CTE over `reference_codebase_edges`; `hops` clamps to [1,3], `max_nodes` to [1,1000]. Rejects when the index isn't `status='complete'`. Seed resolution: artifact id → overlapping symbols, symbol name → exact-then-case-insensitive, neither → top-N by degree (fallback for `mode='full'`).
+- `POST /query` — semantic search via Jina. `document_repo_id` / `index_id` / `algorithm_ids` filters stack. Anchor-focus boost applied in SQL (`algorithm_focus * -0.08 + cosine_distance`).
+
+### 14.5 MCP tools
+
+Two new tools in the Node.js MCP server:
+
+- **`query_code(query, repo_url?, algorithm_id?, limit?, max_distance?)`** — semantic NL → code-chunk search. Returns rendered markdown with fenced code blocks, file:line ranges, and GitHub deep-links pinned to `repo_commit`. Meant for "find the attention kernel" / "how does the rebalance loop work" agent prompts.
+- **`get_symbol_neighborhood(index_id, symbol_name?, anchor_artifact_id?, hops?, max_nodes?)`** — N-hop symbol walk. Returns nodes + outgoing edges grouped per source symbol, with anchor markers (⭐) for approved artifacts. Meant for "what calls this" / "what does this depend on" follow-ups.
+
+Both tools share the existing env-bound tenant/workspace singleton — caller tools do not accept tenant args (multi-tenant leak guard).
+
+### 14.6 Code Graph WebUI tab
+
+New tab on the document detail page next to Code Matches. Left pane lists approved code artifacts (anchors); clicking one fetches the N-hop subgraph and renders it with sigma.js. Node click opens a drawer with the chunk's file + line range and a pinned-commit GitHub link. Truncation hints and in-flight index status banners keep the UI honest about partial results. Runs on the same graphology + ForceAtlas2 pipeline the paper knowledge graph uses; code-specific colouring (hue per language, anchors brighter) lives in a dedicated `CodeGraphRenderer` so the entity renderer stays clean.
+
+### 14.7 Where it shares with Phase 1
+
+- **Embedder.** `JinaEmbedder` is reused verbatim; Phase 1 passage prefix + Phase 2 chunk passage prefix are both `Nl2Code::passage_prefix` so a chunk embedding of `fn rebalance_clusters` is directly comparable to a Phase 1 approval of the same function.
+- **Graph edge.** Phase 1 writes one AGE edge per approved artifact; Phase 2 writes N SQL edges per indexed symbol. The AGE edge stays — it drives Phase 1 query enrichment. The SQL edges are purely for Phase 2's coding-agent retrieval.
+- **Review posture.** Nothing in Phase 2 triggers from unapproved state — a repo must be approved (Phase 0), at least one code match must be approved (Phase 1), and then either auto-enqueue or an explicit POST kicks Phase 2 indexing.
 
 ---
 
-## 15. Operational notes
+## 15. Not yet shipped — Phase 3 and beyond
+
+- **SCIP integration.** Env flag `EDGEQUAKE_REFERENCE_CODEBASE_SCIP=off|auto|required` is declared but unwired. Would unlock accurate `implements` / `inherits` for C++ (templates, multiple inheritance) and type-aware `references` for C / C++. Requires per-language indexers (gopls, pyright, scip-rust, scip-cpp).
+- **Agent-driven hard-case localization.** A ReAct-style agent that goes deeper on tricky matches. Phase 3 if the deterministic CLI flow proves inadequate on specific paper classes.
+- **Multi-repo per paper.** Some papers split "model" and "dataset" repos. Phase 1 + 2 handle one repo per paper; loop later.
+- **Automatic re-analysis on upstream commits.** Explicit user action only for now — avoids surprise edits to the knowledge base when upstream rewrites.
+- **Cross-paper repo dedup.** Same repo cited by Paper A and Paper B produces two indexes. Correct but wasteful; a `(repo_url, repo_commit)` dedup layer is a follow-up.
+- **Git-blame-style provenance per snippet line.** Nice-to-have for attribution.
+- **Approved-algorithm vector retrieval.** Algorithms *are* embedded at approval time (into the workspace vector store with `type: "algorithm"` metadata), but the SOTA retrieval filter currently only surfaces `{chunk, entity, relationship}` vectors — the algorithm vectors exist but aren't reachable via `/query` today. Follow-up: add `AlgorithmVectorStorage` symmetric to `CodeVectorStorage`, surface as a parallel `approved_algorithms[]` response field.
+- **Clone storage GC.** Phase 2 persists clones on the shared volume; nothing trims them. A TTL sweeper (`EDGEQUAKE_REFERENCE_CODEBASE_CLONE_TTL_DAYS`) is documented but not yet implemented.
+
+---
+
+## 16. Operational notes
 
 **Health.** Three services participate:
 - `edgequake` — check `GET /health`; confirms schema migration version and wired providers.

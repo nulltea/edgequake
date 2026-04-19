@@ -38,6 +38,7 @@ mod graph;
 mod kv;
 mod pdf_list_query;
 mod pdf_storage_impl;
+mod reference_codebase_vector;
 pub mod rls;
 mod vector;
 mod workspace_vector;
@@ -49,6 +50,7 @@ pub use conversation::{ConversationRow, FolderRow, MessageRow, PostgresConversat
 pub use graph::PostgresAGEGraphStorage;
 pub use kv::PostgresKVStorage;
 pub use pdf_storage_impl::PostgresPdfStorage;
+pub use reference_codebase_vector::PgReferenceCodebaseVectorStorage;
 pub use rls::{clear_tenant_context, set_tenant_context, RlsContext, RlsQueryBuilder};
 pub use vector::PgVectorStorage;
 pub use workspace_vector::PgWorkspaceVectorRegistry;

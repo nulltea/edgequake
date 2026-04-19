@@ -125,6 +125,28 @@ impl TaskProcessor for DocumentTaskProcessor {
                     ))
                 }
             }
+            TaskType::ReferenceCodebaseIndex => {
+                let data: edgequake_tasks::ReferenceCodebaseIndexData =
+                    serde_json::from_value(task.task_data.clone()).map_err(|e| {
+                        edgequake_tasks::TaskError::InvalidPayload(format!(
+                            "Invalid ReferenceCodebaseIndexData: {}",
+                            e
+                        ))
+                    })?;
+                #[cfg(feature = "postgres")]
+                {
+                    self.process_reference_codebase_index(task, data, cancel_token)
+                        .await
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    let _ = data;
+                    let _ = cancel_token;
+                    Err(edgequake_tasks::TaskError::UnsupportedOperation(
+                        "Reference-codebase indexing requires postgres feature".to_string(),
+                    ))
+                }
+            }
         }
     }
 
@@ -170,6 +192,7 @@ impl TaskProcessor for DocumentTaskProcessor {
                 | TaskType::AlgorithmEmbedding
                 | TaskType::RepoDetection
                 | TaskType::CodeReferenceAnalysis
+                | TaskType::ReferenceCodebaseIndex
         );
 
         if let Some(ref doc_id) = document_id {
