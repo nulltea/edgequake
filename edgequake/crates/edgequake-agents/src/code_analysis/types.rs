@@ -70,7 +70,10 @@ pub struct CodeArtifact {
     pub tenant_id: Uuid,
     pub workspace_id: Uuid,
     pub document_id: String,
-    pub algorithm_id: Uuid,
+    /// Nullable since migration 045: when the referenced `algorithms` row is
+    /// deleted (e.g. by document reprocessing) the FK is set to NULL, leaving
+    /// the candidate as an orphan the user can manually re-link or reject.
+    pub algorithm_id: Option<Uuid>,
     pub document_repo_id: Uuid,
 
     pub repo_commit: String,

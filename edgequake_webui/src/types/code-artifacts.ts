@@ -19,7 +19,12 @@ export type CodeRunStatus =
 export interface CodeArtifact {
   id: string;
   document_id: string;
-  algorithm_id: string;
+  /**
+   * Null when the referenced algorithm row was cleared (e.g. document
+   * reprocessing re-extracted algorithms with new IDs). Orphan candidates
+   * stay in the table for manual review / re-linking.
+   */
+  algorithm_id: string | null;
   document_repo_id: string;
   repo_commit: string;
   repo_license: string | null;

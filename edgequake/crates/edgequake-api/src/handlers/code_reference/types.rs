@@ -23,7 +23,9 @@ pub struct ReviewCodeArtifactRequest {
 pub struct CodeArtifactResponse {
     pub id: Uuid,
     pub document_id: String,
-    pub algorithm_id: Uuid,
+    /// Null when the referenced algorithm row was deleted (reprocess flow);
+    /// the candidate remains as an orphan pending manual re-link or reject.
+    pub algorithm_id: Option<Uuid>,
     pub document_repo_id: Uuid,
     pub repo_commit: String,
     pub repo_license: Option<String>,
