@@ -95,13 +95,18 @@ export function CodeMatchesTabContent({
     return map;
   }, [algorithms]);
 
-  // Group candidates by algorithm_id.
+  // Group candidates by algorithm_id. Orphan candidates (algorithm_id === null,
+  // e.g. after document reprocessing re-created algorithms under new UUIDs)
+  // are collected under the sentinel key "__orphan__" so the UI can render
+  // them in a dedicated "Orphan matches" section.
+  const ORPHAN_KEY = '__orphan__';
   const grouped = useMemo(() => {
     const by: Map<string, CodeArtifact[]> = new Map();
     for (const c of data?.candidates ?? []) {
-      const arr = by.get(c.algorithm_id) ?? [];
+      const key = c.algorithm_id ?? ORPHAN_KEY;
+      const arr = by.get(key) ?? [];
       arr.push(c);
-      by.set(c.algorithm_id, arr);
+      by.set(key, arr);
     }
     return by;
   }, [data]);
@@ -245,27 +250,39 @@ export function CodeMatchesTabContent({
       {/* Groups */}
       {!empty && (
         <div className="space-y-6">
-          {Array.from(grouped.entries()).map(([algoId, items]) => (
-            <div key={algoId}>
-              <h3 className="text-sm font-semibold mb-2">
-                {algorithmNameById.get(algoId) ?? 'Unknown algorithm'}{' '}
-                <span className="text-muted-foreground font-normal">
-                  ({items.length} match{items.length === 1 ? '' : 'es'})
-                </span>
-              </h3>
-              <div className="space-y-3">
-                {items.map((c) => (
-                  <CodeArtifactCard
-                    key={c.id}
-                    artifact={c}
-                    repoUrl={repoUrlById.get(c.document_repo_id)}
-                    onApprove={handleApprove}
-                    onReject={handleReject}
-                  />
-                ))}
+          {Array.from(grouped.entries()).map(([algoId, items]) => {
+            const isOrphan = algoId === ORPHAN_KEY;
+            const heading = isOrphan
+              ? 'Orphan matches'
+              : (algorithmNameById.get(algoId) ?? 'Unknown algorithm');
+            const subtitle = isOrphan
+              ? 'Algorithm was re-extracted; re-link or reject below'
+              : null;
+            return (
+              <div key={algoId}>
+                <h3 className="text-sm font-semibold mb-2">
+                  {heading}{' '}
+                  <span className="text-muted-foreground font-normal">
+                    ({items.length} match{items.length === 1 ? '' : 'es'})
+                  </span>
+                </h3>
+                {subtitle && (
+                  <p className="text-xs text-muted-foreground mb-2">{subtitle}</p>
+                )}
+                <div className="space-y-3">
+                  {items.map((c) => (
+                    <CodeArtifactCard
+                      key={c.id}
+                      artifact={c}
+                      repoUrl={repoUrlById.get(c.document_repo_id)}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

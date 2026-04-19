@@ -285,7 +285,11 @@ impl ReferenceCodebaseIndexer {
                     id: Uuid::new_v4(),
                     file_id: file.id,
                     symbol_id: Some(sym.id),
-                    algorithm_id: anchor.as_ref().map(|a| a.algorithm_id),
+                    // `code_artifact.algorithm_id` became Option<Uuid> in
+                    // migration 047 (algorithm re-extraction can orphan
+                    // artifacts to NULL). `.and_then` flattens the
+                    // Option<Option<Uuid>> the map would otherwise produce.
+                    algorithm_id: anchor.as_ref().and_then(|a| a.algorithm_id),
                     code_artifact_id: anchor.as_ref().map(|a| a.id),
                     chunk_kind: if anchor.is_some() {
                         "algorithm_anchor".to_string()
@@ -712,7 +716,7 @@ pub fn rebalance(values: &[i32]) -> i32 {
             tenant_id: Uuid::new_v4(),
             workspace_id: Uuid::new_v4(),
             document_id: "doc".to_string(),
-            algorithm_id: Uuid::new_v4(),
+            algorithm_id: Some(Uuid::new_v4()),
             document_repo_id: Uuid::new_v4(),
             repo_commit: "abc".to_string(),
             repo_license: Some("MIT".to_string()),

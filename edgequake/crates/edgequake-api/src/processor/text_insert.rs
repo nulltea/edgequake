@@ -491,6 +491,10 @@ impl DocumentTaskProcessor {
                         "start_offset": c.start_offset,
                         "end_offset": c.end_offset,
                         "token_count": c.token_count,
+                        // Heading hierarchy active at this chunk's location,
+                        // shallow-to-deep (populated by ContextAwareChunking,
+                        // empty otherwise). Available for retrieval filtering.
+                        "heading_path": c.heading_path,
                     }),
                 )
             })

@@ -53,8 +53,16 @@ use std::sync::OnceLock;
 /// ever been JSON-serialised) should call the individual functions.
 pub fn repair_latex(s: &str) -> String {
     let s = reconstruct_escape_collisions(s);
+    let s = strip_fake_latex_codefence(&s);
+    let s = strip_ocr_math_boundary_artefacts(&s);
     let s = repair_sample_dollar(&s);
+    // Order matters: `balance_double_brackets` handles the `]]`>`[[` case
+    // (missing outer `[`). It must run BEFORE `repair_missing_inner_bracket`
+    // (which handles the `[[v]^` / `[[x[i]]^` case, i.e. missing inner `]`),
+    // because the latter INCREASES `]]` count on a line, which would then
+    // make `balance_double_brackets` wrongly double a legitimate single `[`.
     let s = balance_double_brackets(&s);
+    let s = repair_missing_inner_bracket(&s);
     let s = balance_math_delimiters(&s);
     brace_single_token_scripts(&s)
 }
@@ -139,22 +147,25 @@ pub fn reconstruct_escape_collisions(s: &str) -> String {
 
     let table = escape_collision_table();
     let mut out = String::with_capacity(s.len() + 16);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        // Is this a collision-candidate control char?
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        // Is this a collision-candidate control char? Only ASCII control
+        // chars can be collision candidates (control chars are all single
+        // byte in UTF-8), so non-ASCII chars fall through to push as-is.
         if let Some((_, commands)) = table.iter().find(|(ctrl, _)| *ctrl == c) {
-            // Skip LF/CR reconstruction in prose context (they're legitimate line breaks).
+            // Skip LF/CR reconstruction in prose context (they're legitimate
+            // line breaks).
             let is_line_break = matches!(c, '\n' | '\r');
             if is_line_break && !aggressive {
                 out.push(c);
-                i += 1;
                 continue;
             }
             // After the control char we expect `command[1..]` (command name
             // minus its first letter, which is the one the JSON escape ate).
-            let rest = &s[i + 1..];
+            // Byte-indexed slicing is safe here because `i` is a char
+            // boundary and the next char is ASCII (control chars are
+            // single-byte), so `i + 1` is also a char boundary.
+            let rest = &s[i + c.len_utf8()..];
             let matched = commands.iter().find_map(|cmd| {
                 let suffix = &cmd[1..];
                 if rest.starts_with(suffix) {
@@ -175,12 +186,21 @@ pub fn reconstruct_escape_collisions(s: &str) -> String {
             if let Some((cmd, consumed)) = matched {
                 out.push('\\');
                 out.push_str(cmd);
-                i += 1 + consumed;
+                // Advance past the consumed suffix. We still have `chars`
+                // pointing at the next char after the control; skip
+                // `consumed` bytes worth by consuming chars until we've
+                // moved past that byte offset.
+                let target = i + c.len_utf8() + consumed;
+                while let Some(&(next_i, _)) = chars.peek() {
+                    if next_i >= target {
+                        break;
+                    }
+                    chars.next();
+                }
                 continue;
             }
         }
         out.push(c);
-        i += 1;
     }
     out
 }
@@ -219,10 +239,129 @@ fn mathbb_s_regex() -> &'static Regex {
     })
 }
 
+fn mathbb_s_fragmented_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // GLM-OCR sometimes fragments the math block around `\mathbb{S}`, yielding
+    // `$...\leftarrow$ $\mathbb{S}$ $\mathbb{Z}...$` instead of the intended
+    // `$...\leftarrow\$ \mathbb{Z}...$`. Collapse the `$ $\mathbb{S}$ $`
+    // interstitial back to `\$ ` and keep the next set-token intact.
+    RE.get_or_init(|| {
+        Regex::new(r"\$\s*\$\s*\\mathbb\{S\}\s*\$\s*\$\s*(\\mathbb\{[ZRNFZQ]\}|\\\{|\[|\d)")
+            .expect("mathbb_s_fragmented_regex compiles")
+    })
+}
+
 /// Rewrite the GLM-OCR artefact `\mathbb{S}` back to `\$` in uniform-sampling
-/// contexts. Idempotent: after rewrite the sequence no longer matches.
+/// contexts. Handles both the contiguous form (`\mathbb{S}\mathbb{Z}`) and the
+/// fragmented form where intervening `$...$` OCR boundaries sit around the
+/// bogus `\mathbb{S}`. Idempotent.
 pub fn repair_sample_dollar(s: &str) -> String {
-    mathbb_s_regex().replace_all(s, r"\$$1$2").into_owned()
+    // Fragmented form first so it doesn't over-consume into the simpler case.
+    let s = mathbb_s_fragmented_regex().replace_all(s, r"\$ $1").into_owned();
+    mathbb_s_regex().replace_all(&s, r"\$$1$2").into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b. Missing inner `]` on `[[...]^` and `[[x[i]]^` shapes
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn missing_bracket_simple_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `[[<content>]^` where content has no `[` and no `]` — should be
+    // `[[<content>]]^`. Example: `[[v]^A` → `[[v]]^A`.
+    RE.get_or_init(|| {
+        Regex::new(r"(\[\[[^\[\]]*)\](\^)").expect("missing_bracket_simple compiles")
+    })
+}
+
+fn missing_bracket_indexed_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `[[<prefix>[<index>]]^` — a double-bracket notation wrapping an indexed
+    // reference. The inner `[...]` consumes one closing bracket that should
+    // have been outer. Example: `[[x[i]]^A` → `[[x[i]]]^A`.
+    RE.get_or_init(|| {
+        Regex::new(r"(\[\[[^\[\]]*\[[^\[\]]*\]\])(\^)")
+            .expect("missing_bracket_indexed compiles")
+    })
+}
+
+/// Repair the two OCR-induced "missing inner `]`" shapes that
+/// [`balance_double_brackets`] can't spot because its heuristic uses the
+/// `]]` substring count rather than tracking single-bracket balance.
+///
+/// Idempotent: after rewrite the single `]^` / `]]^` with missing outer
+/// bracket becomes balanced and the regex no longer fires.
+pub fn repair_missing_inner_bracket(s: &str) -> String {
+    let s = missing_bracket_indexed_regex()
+        .replace_all(s, "$1]$2")
+        .into_owned();
+    missing_bracket_simple_regex()
+        .replace_all(&s, "$1]]$2")
+        .into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2c. GLM-OCR fake LaTeX code-fence wrapper around math blocks
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn fake_latex_fence_open_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `$$```latex\\$$` — GLM-OCR wraps a `$$...$$` math block in a fake
+    // triple-backtick latex code fence whose opening line ends with a
+    // literal `\\` then `$$`. Collapse the whole marker to a single `$$`.
+    RE.get_or_init(|| {
+        Regex::new(r"\$\$```latex\\+\$\$").expect("fake_latex_fence_open compiles")
+    })
+}
+
+fn fake_latex_fence_close_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // Matching closing artefact ` ``` $$$$` (three backticks then four
+    // dollar signs). Collapse to `$$`.
+    RE.get_or_init(|| {
+        Regex::new(r"```\$\$\$\$").expect("fake_latex_fence_close compiles")
+    })
+}
+
+/// Strip the fake ```` ```latex ```` fence GLM-OCR occasionally wraps around
+/// a `$$...$$` display-math block. Idempotent: after rewrite the markers
+/// are gone and the regex no longer fires.
+pub fn strip_fake_latex_codefence(s: &str) -> String {
+    let s = fake_latex_fence_open_regex().replace_all(s, "$$$$").into_owned();
+    fake_latex_fence_close_regex()
+        .replace_all(&s, "$$$$")
+        .into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2d. OCR-injected `\\$$` at display-math boundaries (no backticks variant)
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn fake_math_open_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `$$\\+$$` — GLM-OCR opens a display-math block as `$$\\$$` (2 dollars,
+    // 1+ backslashes, 2 dollars) instead of a plain `$$`. If left alone,
+    // `balance_math_delimiters` mis-counts the escaped `\$` and appends a
+    // bogus closing `$$`, inflating to `$$\\$$$$`. Observed on B2A.pdf.
+    RE.get_or_init(|| Regex::new(r"\$\$\\+\$\$").expect("fake_math_open compiles"))
+}
+
+fn fake_math_close_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // `\\+$${3,}` — GLM-OCR closes a display-math block with an extra `$`
+    // appended (e.g. `...content\\$$$` or `\\$$$$`). A legitimate LaTeX
+    // linebreak `\\` immediately before a clean close `$$` has only 2
+    // dollars and is LEFT ALONE. Observed on B2A.pdf.
+    RE.get_or_init(|| Regex::new(r"\\+\$\${2,}").expect("fake_math_close compiles"))
+}
+
+/// Strip OCR-injected `\\$$` or `\\$$$...` noise adjacent to display-math
+/// delimiters. Collapses both forms to a single `$$`. Idempotent.
+pub fn strip_ocr_math_boundary_artefacts(s: &str) -> String {
+    let s = fake_math_open_regex().replace_all(s, "$$$$").into_owned();
+    fake_math_close_regex()
+        .replace_all(&s, "$$$$")
+        .into_owned()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,15 +381,27 @@ pub fn balance_double_brackets(s: &str) -> String {
 }
 
 fn balance_double_brackets_line(line: &str) -> String {
-    let open_dbl = count_literal(line, "[[");
-    let close_dbl = count_literal(line, "]]");
-    if close_dbl <= open_dbl {
+    // Fire only when the line's single-bracket balance is actually negative
+    // (more `]` than `[`). The old heuristic compared `[[` vs `]]` substring
+    // counts, which mis-fired when legitimate indexed notation like
+    // `[x[i]]` placed two closers adjacent — making `]]` count artificially
+    // high and triggering a bogus "add `[[`" on the next legitimate `[`.
+    let bytes = line.as_bytes();
+    let mut opens = 0i32;
+    let mut closes = 0i32;
+    for &b in bytes {
+        match b {
+            b'[' => opens += 1,
+            b']' => closes += 1,
+            _ => {}
+        }
+    }
+    if closes <= opens {
         return line.to_string();
     }
-    let deficit = close_dbl - open_dbl;
+    let deficit = (closes - opens) as usize;
 
     // Walk the line; find the first N `[` that are not part of `[[`.
-    let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len() + deficit);
     let mut fixed = 0;
     let mut i = 0;
@@ -269,16 +420,6 @@ fn balance_double_brackets_line(line: &str) -> String {
     out
 }
 
-fn count_literal(hay: &str, needle: &str) -> usize {
-    let mut count = 0;
-    let mut rem = hay;
-    while let Some(pos) = rem.find(needle) {
-        count += 1;
-        rem = &rem[pos + needle.len()..];
-    }
-    count
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. Orphan `$` math delimiters
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,15 +427,31 @@ fn count_literal(hay: &str, needle: &str) -> usize {
 /// For each line: if the count of unescaped `$` is odd, append `$` at the
 /// end. Treats `$$` as one "token" (display math). Idempotent.
 pub fn balance_math_delimiters(s: &str) -> String {
-    s.lines()
-        .map(balance_math_delimiters_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+    // Track whether we're inside a multi-line `$$...$$` display-math block
+    // across lines. Without this, a closing `$$` on its own line (or at the
+    // end of a content line) looks like an "orphan open" and the old
+    // per-line logic wrongly appended another `$$` to "balance" it.
+    let mut inside_display = false;
+    let mut result_lines: Vec<String> = Vec::new();
+    for line in s.lines() {
+        let (new_line, ended_inside) =
+            balance_math_delimiters_line(line, inside_display);
+        inside_display = ended_inside;
+        result_lines.push(new_line);
+    }
+    result_lines.join("\n")
 }
 
-fn balance_math_delimiters_line(line: &str) -> String {
-    let mut inline_count = 0;
-    let mut display_count = 0;
+/// Balance math delimiters on a single line, given whether we entered the
+/// line inside a display-math block. Returns the repaired line plus the
+/// state (inside/outside) at end-of-line.
+fn balance_math_delimiters_line(line: &str, entered_inside_display: bool) -> (String, bool) {
+    // Count `$$` pairs and `$` singletons, skipping escaped `\$`. Maintain
+    // a running state machine: every `$$` toggles inside/outside display
+    // mode; every `$` toggles inside/outside inline mode (inline blocks
+    // must open and close on the same line per convention).
+    let mut inside_display = entered_inside_display;
+    let mut inside_inline = false;
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -305,23 +462,24 @@ fn balance_math_delimiters_line(line: &str) -> String {
         }
         if bytes[i] == b'$' {
             if bytes.get(i + 1).copied() == Some(b'$') {
-                display_count += 1;
+                inside_display = !inside_display;
                 i += 2;
                 continue;
             }
-            inline_count += 1;
+            inside_inline = !inside_inline;
         }
         i += 1;
     }
-    let inline_odd = inline_count % 2 == 1;
-    let display_odd = display_count % 2 == 1;
+    // If we started outside display and ended with an unmatched INLINE
+    // `$`, close it on the same line (inline math cannot span lines).
+    // If the display state flipped open *on this line and stayed open*
+    // (i.e. we entered outside, ended inside), leave it — the close may
+    // come on a later line.
     let mut out = line.to_string();
-    if display_odd {
-        out.push_str("$$");
-    } else if inline_odd {
+    if inside_inline {
         out.push('$');
     }
-    out
+    (out, inside_display)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -519,10 +677,31 @@ mod tests {
     }
 
     #[test]
-    fn closes_orphan_display_dollars() {
+    fn does_not_auto_close_display_dollars() {
+        // After the multi-line state rewrite, a single unclosed `$$` on a
+        // line is assumed to open a multi-line display block — the close
+        // may come on a later line. Auto-appending `$$` on this line was
+        // breaking legitimate multi-line math (B2A.pdf), so we leave the
+        // state open and trust the subsequent content.
         let input = "text $$a + b and more";
         let repaired = balance_math_delimiters(input);
-        assert_eq!(repaired, "text $$a + b and more$$");
+        assert_eq!(repaired, input);
+    }
+
+    #[test]
+    fn closes_multiline_display_block() {
+        // Standard multi-line display: open on one line, close on another.
+        // balance_math_delimiters must NOT touch either line.
+        let input = "prose\n$$\na + b\n$$\nmore prose";
+        assert_eq!(balance_math_delimiters(input), input);
+    }
+
+    #[test]
+    fn closing_dollar_dollar_after_content_line_unchanged() {
+        // The content line closes a block that opened earlier. The old
+        // per-line logic wrongly appended `$$` here, inflating to `$$$$`.
+        let input = "prose\n$$\nx = y.$$\n\nnext";
+        assert_eq!(balance_math_delimiters(input), input);
     }
 
     #[test]
@@ -608,5 +787,149 @@ mod tests {
             "mathbb-S removed: {once:?}"
         );
         assert!(once.contains("[[v^*]]"), "bracket balanced: {once:?}");
+    }
+
+    // ─── Fragmented `\mathbb{S}` (GLM-OCR broken math block) ────────────────
+
+    #[test]
+    fn fragmented_mathbb_s_is_repaired() {
+        // Observed on B2A.pdf page 2 — OCR shattered the math block around
+        // the sampling `\$`, leaving three fragmented `$...$` pairs.
+        let input = r"$v_{0}, v_{1} \leftarrow$ $\mathbb{S}$ $\mathbb{Z}_{2^{\ell}}^{2}$";
+        let out = repair_sample_dollar(input);
+        assert_eq!(
+            out,
+            r"$v_{0}, v_{1} \leftarrow\$ \mathbb{Z}_{2^{\ell}}^{2}$"
+        );
+        // Idempotent.
+        assert_eq!(repair_sample_dollar(&out), out);
+    }
+
+    #[test]
+    fn contiguous_mathbb_s_still_works() {
+        let input = r"$v \leftarrow \mathbb{S} \mathbb{Z}_p$";
+        let out = repair_sample_dollar(input);
+        assert!(out.contains(r"\$"), "got {out:?}");
+        assert!(!out.contains(r"\mathbb{S}"), "got {out:?}");
+    }
+
+    #[test]
+    fn genuine_script_s_is_preserved() {
+        // Paper genuinely introduces `\mathbb{S}` as a set symbol — not
+        // followed by another mathbb/brace/digit, so we leave it alone.
+        let input = r"Let $\mathbb{S}$ be the set of all strategies.";
+        assert_eq!(repair_sample_dollar(input), input);
+    }
+
+    // ─── Missing inner bracket repairs ──────────────────────────────────────
+
+    #[test]
+    fn simple_missing_inner_bracket_repaired() {
+        // `[[v]^A` → `[[v]]^A`
+        let out = repair_missing_inner_bracket(r"$$[[v]^A \leftarrow \text{X}$$");
+        assert_eq!(out, r"$$[[v]]^A \leftarrow \text{X}$$");
+        // Idempotent.
+        assert_eq!(repair_missing_inner_bracket(&out), out);
+    }
+
+    #[test]
+    fn indexed_missing_inner_bracket_repaired() {
+        // `[[x[i]]^A` → `[[x[i]]]^A`
+        let out = repair_missing_inner_bracket(r"$$[[x[i]]^A \leftarrow \text{Y}$$");
+        assert_eq!(out, r"$$[[x[i]]]^A \leftarrow \text{Y}$$");
+        assert_eq!(repair_missing_inner_bracket(&out), out);
+    }
+
+    #[test]
+    fn balanced_double_bracket_untouched() {
+        // Already correct — must NOT add extra bracket.
+        let input = r"$$[[v]]^A \leftarrow [[b]]^A$$";
+        assert_eq!(repair_missing_inner_bracket(input), input);
+    }
+
+    #[test]
+    fn balanced_indexed_bracket_untouched() {
+        let input = r"$$[[x[i]]]^A \leftarrow [[y[j]]]^B$$";
+        assert_eq!(repair_missing_inner_bracket(input), input);
+    }
+
+    // ─── Fake latex code-fence wrapper ──────────────────────────────────────
+
+    #[test]
+    fn strip_fake_latex_fence_round_trip() {
+        let input = "before\n$$```latex\\\\$$\n[[v^*]]^A \\leftarrow X\\\\\n```$$$$\nafter";
+        let out = strip_fake_latex_codefence(input);
+        assert!(!out.contains("```latex"), "got {out:?}");
+        assert!(!out.contains("$$$$"), "got {out:?}");
+        // Idempotent.
+        assert_eq!(strip_fake_latex_codefence(&out), out);
+    }
+
+    #[test]
+    fn strip_fake_latex_fence_is_idempotent_on_clean_math() {
+        let input = "$$\n\\beta_i = m_i \\oplus x_{i,2}\n$$";
+        assert_eq!(strip_fake_latex_codefence(input), input);
+    }
+
+    // ─── strip_ocr_math_boundary_artefacts ──────────────────────────────────
+
+    #[test]
+    fn strip_fake_math_open() {
+        // Observed on B2A.pdf: `$$\\$$` opening a display-math block.
+        let out = strip_ocr_math_boundary_artefacts("text\n\n$$\\\\$$\n[[x]]^A = y");
+        assert_eq!(out, "text\n\n$$\n[[x]]^A = y");
+        assert_eq!(strip_ocr_math_boundary_artefacts(&out), out);
+    }
+
+    #[test]
+    fn strip_fake_math_close_three_dollars() {
+        let out = strip_ocr_math_boundary_artefacts("content\\\\$$$\nprose");
+        assert_eq!(out, "content$$\nprose");
+    }
+
+    #[test]
+    fn strip_fake_math_close_four_dollars() {
+        let out = strip_ocr_math_boundary_artefacts("content\\\\$$$$\nprose");
+        assert_eq!(out, "content$$\nprose");
+    }
+
+    #[test]
+    fn preserves_legitimate_latex_linebreak_before_close() {
+        // `\\` as LaTeX linebreak, then a clean `$$` close — NO artefact.
+        let input = "\\beta_i = m_i\\\\\n$$\n\nnext paragraph";
+        assert_eq!(strip_ocr_math_boundary_artefacts(input), input);
+    }
+
+    #[test]
+    fn boundary_strip_idempotent_on_clean_math() {
+        let input = "$$\n\\alpha + \\beta = \\gamma\n$$";
+        assert_eq!(strip_ocr_math_boundary_artefacts(input), input);
+    }
+
+    #[test]
+    fn boundary_strip_end_to_end_on_b2a_line() {
+        // Full line from B2A.pdf that was being inflated by balance_math_delimiters.
+        let input = "i.e.,\n\n$$\\\\$$\n[[x]]^{A} = \\sum ...\\\\$$$\n\nWhile this";
+        let out = repair_latex(input);
+        assert!(!out.contains("$$\\\\$$"), "open artefact gone: {out}");
+        assert!(!out.contains("\\\\$$$"), "close artefact gone: {out}");
+        // Idempotent.
+        assert_eq!(repair_latex(&out), out);
+    }
+
+    #[test]
+    fn mixed_missing_inner_plus_legitimate_single_bracket() {
+        // Regression: observed on B2A.pdf page 4. The `[[v]^A` missing-inner
+        // case and a legitimate single-bracket `[v]^A` live on the same line.
+        // If `balance_double_brackets` runs AFTER `repair_missing_inner_bracket`
+        // it over-balances by doubling the legitimate `[v]`. Order must be
+        // `balance_double_brackets` → `repair_missing_inner_bracket`.
+        let input = r"$$[[v]^A \leftarrow \text{SS.add}([v]^A, \text{SS.sMul}(2^{\ell-1-i}, [x[i]]^A))$$";
+        let out = repair_latex(input);
+        assert!(out.contains("[[v]]^A"), "missing-inner fixed: {out}");
+        assert!(out.contains("([v]^A"), "legitimate single `[v]` preserved: {out}");
+        assert!(!out.contains("([[v]^A"), "legitimate `[v]` not corrupted: {out}");
+        // Idempotent.
+        assert_eq!(repair_latex(&out), out);
     }
 }

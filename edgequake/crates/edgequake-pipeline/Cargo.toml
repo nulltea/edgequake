@@ -25,8 +25,19 @@ futures = "0.3"
 regex = "1.10"
 # Unicode normalization for text sanitization (SPEC-001/Issue-9)
 unicode-normalization = "0.1"
-# Context-aware markdown-aware chunking (used by algorithm extraction)
-text-splitter = { version = "0.29", features = ["markdown"] }
+# Context-aware markdown-aware chunking (used by algorithm extraction).
+# `tiktoken-rs` feature lets us use a real BPE tokenizer as the chunk sizer,
+# replacing the char/4 estimation used by `TokenBasedChunking`.
+text-splitter = { version = "0.29", features = ["markdown", "tiktoken-rs"] }
+# Accurate token counts for chunk sizing. cl100k_base is a reasonable
+# approximation for any modern BPE tokenizer (Qwen, Llama, DeepSeek, …);
+# within ~15-20% vs exact, vs ~50% error from char/4 on dense technical
+# content. Workspace already uses tiktoken-rs, we just declare it direct.
+tiktoken-rs = { workspace = true }
+# Heading-path tracking: walk markdown headings, maintain a stack, emit
+# the full path per chunk. Already transitive via edgequake-pdf2md; we
+# declare direct so we don't rely on a transitive re-export.
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }

@@ -16,6 +16,13 @@ pub struct ChunkResult {
     pub tokens: usize,
     /// Zero-based index indicating the chunk's order in the document.
     pub chunk_order_index: usize,
+    /// Heading hierarchy active at the chunk's location, shallow-to-deep
+    /// (e.g. `["II. Preliminaries", "B. B2A Protocol"]`). Empty when the
+    /// chunk sits before any heading or when the strategy doesn't track
+    /// paths. Used by merge logic and by retrieval to prefer in-section
+    /// matches.
+    #[serde(default)]
+    pub heading_path: Vec<String>,
 }
 
 /// Trait for custom chunking strategies.
@@ -69,14 +76,16 @@ pub struct ChunkerConfig {
 impl Default for ChunkerConfig {
     fn default() -> Self {
         Self {
-            // WHY 800: The chunker estimates 4 chars/token, but dense technical content
-            // (scientific tables, formulas, gene names, numeric data) can be 2–3× denser.
-            // At 2 chars/true_token: 800 est-tokens × 4 chars = 3200 chars → 1600 true tokens.
-            // This keeps chunks safely within embeddinggemma's 2048-token hard limit (80% margin).
-            // Prior default of 1200 produced 4800-char chunks → 2400 true tokens → 400 errors.
-            chunk_size: 800,
+            // Tier B: ContextAwareChunking counts real cl100k BPE tokens, so these
+            // values are in real tokens (not the old char/4 estimate). qwen3-embedding
+            // handles 32K, so the ceiling isn't the constraint — retrieval quality is.
+            // 1600 tokens ≈ 3200–4800 chars depending on text density, roughly matching
+            // the old TokenBasedChunking effective size. min_chunk_size=600 forces the
+            // merge pass to aggressively collapse leaf-subsection stubs; without it a
+            // paper with ~20 heading anchors fragments into ~45 chunks.
+            chunk_size: 1600,
             chunk_overlap: 100,
-            min_chunk_size: 100,
+            min_chunk_size: 600,
             separators: vec![
                 "\n\n".to_string(),
                 "\n".to_string(),
@@ -121,6 +130,12 @@ pub struct TextChunk {
     /// Approximate token count.
     pub token_count: usize,
 
+    /// Heading hierarchy active at this chunk's location, shallow-to-deep.
+    /// Empty when the chunk sits before any heading. Populated by
+    /// `ContextAwareChunking`; other strategies currently leave this empty.
+    #[serde(default)]
+    pub heading_path: Vec<String>,
+
     /// Chunk embedding.
     pub embedding: Option<Vec<f32>>,
 }
@@ -145,6 +160,7 @@ impl TextChunk {
             start_line: 1,
             end_line: 1,
             token_count,
+            heading_path: Vec::new(),
             embedding: None,
         }
     }
@@ -170,8 +186,14 @@ impl TextChunk {
             start_line,
             end_line,
             token_count,
+            heading_path: Vec::new(),
             embedding: None,
         }
+    }
+
+    /// Set the heading path after creation.
+    pub fn set_heading_path(&mut self, heading_path: Vec<String>) {
+        self.heading_path = heading_path;
     }
 
     /// Set line numbers after creation.

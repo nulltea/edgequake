@@ -8,11 +8,12 @@
 
 use async_trait::async_trait;
 
+use super::heading_path::HeadingPathIndex;
 use super::text_utils::{
     estimate_tokens, split_into_sentences, split_text_internal, take_overlap_sentences,
 };
 use super::types::{ChunkResult, ChunkerConfig, ChunkingStrategy};
-use crate::error::Result;
+use crate::error::{PipelineError, Result};
 
 /// Default token-based chunking strategy.
 ///
@@ -38,6 +39,7 @@ impl ChunkingStrategy for TokenBasedChunking {
                         content: s.to_string(),
                         tokens: estimate_tokens(s),
                         chunk_order_index: idx,
+                    heading_path: Vec::new(),
                     })
                     .collect());
             }
@@ -63,6 +65,7 @@ impl ChunkingStrategy for TokenBasedChunking {
                     content: text.clone(),
                     tokens: estimate_tokens(&text),
                     chunk_order_index: idx,
+                    heading_path: Vec::new(),
                 },
             )
             .collect())
@@ -113,6 +116,7 @@ impl ChunkingStrategy for CharacterBasedChunking {
                 content: s.to_string(),
                 tokens: estimate_tokens(s),
                 chunk_order_index: idx,
+                    heading_path: Vec::new(),
             })
             .collect())
     }
@@ -190,6 +194,7 @@ impl ChunkingStrategy for SentenceBoundaryChunking {
                     content: current_chunk.trim().to_string(),
                     tokens: current_tokens,
                     chunk_order_index: chunk_index,
+                    heading_path: Vec::new(),
                 });
                 chunk_index += 1;
 
@@ -215,6 +220,7 @@ impl ChunkingStrategy for SentenceBoundaryChunking {
                 content: current_chunk.trim().to_string(),
                 tokens: current_tokens,
                 chunk_order_index: chunk_index,
+                    heading_path: Vec::new(),
             });
         }
 
@@ -317,6 +323,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                     content: current_chunk.trim().to_string(),
                     tokens: current_tokens,
                     chunk_order_index: chunk_index,
+                    heading_path: Vec::new(),
                 });
                 chunk_index += 1;
                 current_chunk = String::new();
@@ -328,6 +335,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                 content: para.to_string(),
                 tokens: para_tokens,
                 chunk_order_index: chunk_index,
+                    heading_path: Vec::new(),
             });
             chunk_index += 1;
             continue;
@@ -339,6 +347,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                 content: current_chunk.trim().to_string(),
                 tokens: current_tokens,
                 chunk_order_index: chunk_index,
+                    heading_path: Vec::new(),
             });
             chunk_index += 1;
             current_chunk = String::new();
@@ -359,6 +368,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
             content: current_chunk.trim().to_string(),
             tokens: current_tokens,
             chunk_order_index: chunk_index,
+                    heading_path: Vec::new(),
         });
     }
 
@@ -371,16 +381,23 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
 
 /// Markdown-aware chunking that respects heading hierarchy and structure.
 ///
-/// Uses the `text-splitter` crate's `MarkdownSplitter` which understands markdown
-/// syntax (headings, lists, code fences, paragraphs) and splits at natural
-/// structural boundaries. Token counts use char estimation (4 chars ≈ 1 token).
+/// Three-stage pipeline:
+///   1. Split the markdown using `text-splitter::MarkdownSplitter` sized by a
+///      real BPE tokenizer (cl100k_base) — token counts within a few percent
+///      of what the embedding model sees instead of the ~50% error from
+///      char/4 estimation. Respects headings, lists, code fences, paragraphs.
+///   2. Walk the document with [`HeadingPathIndex`] and tag each chunk with
+///      its shallow-to-deep heading path.
+///   3. Merge-pass: combine adjacent chunks whose combined token count is
+///      still within the budget AND whose `heading_path` is identical.
+///      Replaces the old `filter(|c| c.len() >= 50)` which silently dropped
+///      content below the threshold.
 ///
-/// Unlike `TokenBasedChunking`, this strategy:
-/// - Never splits mid-heading-section when possible
-/// - Respects markdown list / code block boundaries
-/// - Is intended for LLM extraction contexts (not embedding)
-///
-/// Ported from RAGSearcher's `context_aware.rs`. Used by algorithm extraction.
+/// The result is that algorithm boxes prefixed with `## Fig. N:` headings
+/// stay co-located with their bodies, code fences and `$$...$$` blocks are
+/// preserved atomically by the splitter, and small neighbouring sections
+/// under the same heading get combined into useable chunks instead of
+/// being dropped.
 pub struct ContextAwareChunking;
 
 #[async_trait]
@@ -392,43 +409,118 @@ impl ChunkingStrategy for ContextAwareChunking {
             return Ok(Vec::new());
         }
 
-        // Convert token-based config to chars (4 chars ≈ 1 token, EdgeQuake's
-        // existing heuristic). text-splitter's default sizer counts chars.
-        let min_chars = config.min_chunk_size.saturating_mul(4);
-        let max_chars = config.chunk_size.saturating_mul(4);
-        let overlap_chars = config.chunk_overlap.saturating_mul(4);
+        // Real BPE tokenizer for accurate sizing. cl100k_base is reasonable
+        // for any modern BPE tokenizer (Qwen, Llama, DeepSeek, …) — within
+        // ~15-20% of exact; char/4 is ~50% wrong on dense technical content.
+        // `CoreBPE` isn't `Clone`, so we build two — one goes into the
+        // splitter as a sizer, the other is used later for token counts
+        // during the merge pass.
+        let sizer = tiktoken_rs::cl100k_base()
+            .map_err(|e| PipelineError::ChunkingError(format!("tiktoken init: {e}")))?;
+        let counter = tiktoken_rs::cl100k_base()
+            .map_err(|e| PipelineError::ChunkingError(format!("tiktoken init: {e}")))?;
 
-        // text-splitter requires max > 0 and overlap < max
-        let max_chars = max_chars.max(256);
-        let min_chars = min_chars.min(max_chars.saturating_sub(1));
-        let overlap_chars = overlap_chars.min(max_chars.saturating_sub(1));
-
-        let range = if min_chars > 0 && min_chars < max_chars {
-            min_chars..max_chars
+        // Respect the user's chunk_size verbatim (test configs use
+        // intentionally tiny sizes to exercise splitting).
+        let target_tokens = config.chunk_size.max(1);
+        let min_tokens = config.min_chunk_size.min(target_tokens.saturating_sub(1));
+        // text-splitter requires overlap < range.start (the MIN capacity),
+        // not just < range.end. Cap overlap accordingly so default configs
+        // like chunk_size=800/min=100/overlap=100 don't trip the check.
+        let overlap_cap = if min_tokens > 0 {
+            min_tokens.saturating_sub(1)
         } else {
-            0..max_chars
+            target_tokens.saturating_sub(1)
+        };
+        let overlap_tokens = config.chunk_overlap.min(overlap_cap);
+        let range = if min_tokens > 0 && min_tokens < target_tokens {
+            min_tokens..target_tokens
+        } else {
+            0..target_tokens
         };
 
         let splitter_config = ChunkConfig::new(range)
-            .with_overlap(overlap_chars)
+            .with_sizer(sizer)
+            .with_overlap(overlap_tokens)
             .map_err(|e| {
-                crate::error::PipelineError::ChunkingError(format!(
+                PipelineError::ChunkingError(format!(
                     "Invalid context-aware chunk config (overlap >= capacity): {e}"
                 ))
             })?
             .with_trim(true);
 
         let splitter = MarkdownSplitter::new(splitter_config);
-        let text_chunks: Vec<&str> = splitter.chunks(content).collect();
 
-        Ok(text_chunks
+        // Use the indexed variant so we know each chunk's byte offset for
+        // heading-path lookup.
+        let indexed: Vec<(usize, &str)> = splitter.chunk_indices(content).collect();
+
+        let heading_index = HeadingPathIndex::build(content);
+
+        // Build pre-merge chunks with token counts and heading paths.
+        #[derive(Clone)]
+        struct Pending {
+            content: String,
+            tokens: usize,
+            heading_path: Vec<String>,
+        }
+        let mut pending: Vec<Pending> = indexed
             .into_iter()
-            .filter(|c| c.trim().len() >= 50)
+            .map(|(offset, slice)| {
+                let tokens = counter.encode_ordinary(slice).len();
+                let heading_path = heading_index.path_at(offset);
+                Pending {
+                    content: slice.to_string(),
+                    tokens,
+                    heading_path,
+                }
+            })
+            .collect();
+
+        // Merge-pass. Walk the vector and greedily combine chunk[i] with
+        // chunk[i+1] when:
+        //   - current chunk is under `min_chunk_size` OR under the target,
+        //   - combined size would still fit in the target,
+        //   - heading paths match exactly.
+        // This fixes the old "drop chunks < 50 chars" bug (which lost
+        // content) and fills the gap between MarkdownSplitter boundary
+        // preservation (which can emit tiny heading-only chunks) and
+        // useful-for-embedding sizing.
+        let mut merged: Vec<Pending> = Vec::with_capacity(pending.len());
+        let min = config.min_chunk_size;
+        let max = target_tokens;
+        while !pending.is_empty() {
+            let mut cur = pending.remove(0);
+            while let Some(next) = pending.first() {
+                let combined = cur.tokens + next.tokens;
+                // Only merge if (a) current is too small or already under
+                // target, (b) combined stays within target, (c) both are
+                // in the same section.
+                let should_merge =
+                    (cur.tokens < min || combined <= max)
+                        && combined <= max
+                        && cur.heading_path == next.heading_path;
+                if !should_merge {
+                    break;
+                }
+                // Pop the peeked element and glue with a blank line so the
+                // markdown structure is preserved.
+                let n = pending.remove(0);
+                cur.content.push_str("\n\n");
+                cur.content.push_str(&n.content);
+                cur.tokens = counter.encode_ordinary(&cur.content).len();
+            }
+            merged.push(cur);
+        }
+
+        Ok(merged
+            .into_iter()
             .enumerate()
-            .map(|(idx, c)| ChunkResult {
-                content: c.to_string(),
-                tokens: estimate_tokens(c),
+            .map(|(idx, p)| ChunkResult {
+                content: p.content,
+                tokens: p.tokens,
                 chunk_order_index: idx,
+                heading_path: p.heading_path,
             })
             .collect())
     }
