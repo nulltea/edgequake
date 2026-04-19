@@ -80,41 +80,31 @@ fn escape_collision_table() -> &'static [(char, &'static [&'static str])] {
         (
             '\t',
             &[
-                "textbf", "textit", "textrm", "text",
-                "theta", "times", "top",
-                "tau", "to",
+                "textbf", "textit", "textrm", "text", "theta", "times", "top", "tau", "to",
             ],
         ),
         // \b = backspace (0x08) — commands starting with `b`
         (
             '\u{0008}',
             &[
-                "begin", "bigoplus", "bigotimes",
-                "beta", "boxed",
-                "big", "bar",
+                "begin",
+                "bigoplus",
+                "bigotimes",
+                "beta",
+                "boxed",
+                "big",
+                "bar",
             ],
         ),
         // \f = form-feed (0x0C) — commands starting with `f`
-        (
-            '\u{000C}',
-            &["forall", "frac", "frown", "flat", "floor"],
-        ),
+        ('\u{000C}', &["forall", "frac", "frown", "flat", "floor"]),
         // \n = line-feed (0x0A) — commands starting with `n`.
         // We gate on math-like context to avoid rewriting legitimate
         // paragraph breaks in prose.
-        (
-            '\n',
-            &["nabla", "notin", "newline", "neq", "ne", "not"],
-        ),
+        ('\n', &["nabla", "notin", "newline", "neq", "ne", "not"]),
         // \r = carriage-return (0x0D) — commands starting with `r`.
         // Also gated on math-like context.
-        (
-            '\r',
-            &[
-                "rightarrow", "rightharpoon", "rangle",
-                "rho", "rm",
-            ],
-        ),
+        ('\r', &["rightarrow", "rightharpoon", "rangle", "rho", "rm"]),
         // \v = vertical tab (0x0B) — rare
         (
             '\u{000B}',
@@ -133,7 +123,10 @@ fn escape_collision_table() -> &'static [(char, &'static [&'static str])] {
 /// matches.
 pub fn reconstruct_escape_collisions(s: &str) -> String {
     // Fast path: no control chars at all, nothing to do.
-    if !s.bytes().any(|b| matches!(b, 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D)) {
+    if !s
+        .bytes()
+        .any(|b| matches!(b, 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D))
+    {
         return s.to_string();
     }
 
@@ -221,19 +214,15 @@ fn mathbb_s_regex() -> &'static Regex {
     // a bare `$` as sampling operator. Any standalone `\mathbb{S}` (e.g. a
     // paper genuinely introducing script-S as a variable) is left alone.
     RE.get_or_init(|| {
-        Regex::new(
-            r"\\mathbb\{S\}(\s*)(\\mathbb\{[ZRNFZQ]\}|\\\{|\[|\d)",
-        )
-        .expect("mathbb_s_regex compiles")
+        Regex::new(r"\\mathbb\{S\}(\s*)(\\mathbb\{[ZRNFZQ]\}|\\\{|\[|\d)")
+            .expect("mathbb_s_regex compiles")
     })
 }
 
 /// Rewrite the GLM-OCR artefact `\mathbb{S}` back to `\$` in uniform-sampling
 /// contexts. Idempotent: after rewrite the sequence no longer matches.
 pub fn repair_sample_dollar(s: &str) -> String {
-    mathbb_s_regex()
-        .replace_all(s, r"\$$1$2")
-        .into_owned()
+    mathbb_s_regex().replace_all(s, r"\$$1$2").into_owned()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,9 +256,8 @@ fn balance_double_brackets_line(line: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let is_bracket = bytes[i] == b'[';
-        let is_part_of_doubled =
-            is_bracket && bytes.get(i + 1).is_some_and(|b| *b == b'[') ||
-            is_bracket && i > 0 && bytes[i - 1] == b'[';
+        let is_part_of_doubled = is_bracket && bytes.get(i + 1).is_some_and(|b| *b == b'[')
+            || is_bracket && i > 0 && bytes[i - 1] == b'[';
         if is_bracket && !is_part_of_doubled && fixed < deficit {
             out.push_str("[[");
             fixed += 1;
@@ -456,7 +444,10 @@ mod tests {
         // `\text` + `ure`. That's actually wrong for "texture". The safeguard
         // is the command-boundary check: after `text` we expect non-alpha,
         // but `u` is alpha, so we DO skip the rewrite. Confirm:
-        assert_eq!(repaired, corrupted, "must preserve 'texture', got: {repaired:?}");
+        assert_eq!(
+            repaired, corrupted,
+            "must preserve 'texture', got: {repaired:?}"
+        );
     }
 
     #[test]
@@ -612,7 +603,10 @@ mod tests {
         assert!(once.contains(r"\text"), "reconstructed \\text: {once:?}");
         assert!(once.contains(r"\beta"), "reconstructed \\beta: {once:?}");
         assert!(once.contains("^{\\theta}"), "braced ^theta: {once:?}");
-        assert!(!once.contains(r"\mathbb{S} \mathbb{Z}"), "mathbb-S removed: {once:?}");
+        assert!(
+            !once.contains(r"\mathbb{S} \mathbb{Z}"),
+            "mathbb-S removed: {once:?}"
+        );
         assert!(once.contains("[[v^*]]"), "bracket balanced: {once:?}");
     }
 }

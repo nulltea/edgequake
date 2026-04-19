@@ -2033,6 +2033,73 @@ export async function deleteAlgorithm(
 }
 
 // ============================================================================
+// Reference-repo detection (Phase 0 of Reference Code GraphRAG extension)
+// ============================================================================
+
+/** List detected reference-repo candidates for a document. */
+export async function getDocumentRepos(
+  documentId: string,
+): Promise<import("@/types/document-repos").RepoListResponse> {
+  return api.get<import("@/types/document-repos").RepoListResponse>(
+    `/repos/by-document/${documentId}`,
+  );
+}
+
+/** Approve or reject a detected reference repo. */
+export async function reviewRepo(
+  repoId: string,
+  status: "approved" | "rejected",
+): Promise<import("@/types/document-repos").RepoReviewResponse> {
+  return api.post<import("@/types/document-repos").RepoReviewResponse>(
+    `/repos/${repoId}/review`,
+    { status },
+  );
+}
+
+/** Trigger (or re-trigger) repo detection for a document. */
+export async function detectRepos(
+  documentId: string,
+  pdfId?: string,
+): Promise<import("@/types/document-repos").DetectReposResponse> {
+  return api.post<import("@/types/document-repos").DetectReposResponse>(
+    `/repos/detect/${documentId}`,
+    pdfId ? { pdf_id: pdfId } : {},
+  );
+}
+
+// ============================================================================
+// Reference-code analysis (Phase 1)
+// ============================================================================
+
+/** List code-match candidates and per-repo run state for a document. */
+export async function getCodeReferences(
+  documentId: string,
+): Promise<import("@/types/code-artifacts").CodeReferenceListResponse> {
+  return api.get<import("@/types/code-artifacts").CodeReferenceListResponse>(
+    `/code-reference/by-document/${documentId}`,
+  );
+}
+
+/** Approve / reject a single code-match candidate. */
+export async function reviewCodeArtifact(
+  codeArtifactId: string,
+  status: "approved" | "rejected",
+): Promise<import("@/types/code-artifacts").CodeArtifactReviewResponse> {
+  return api.post<
+    import("@/types/code-artifacts").CodeArtifactReviewResponse
+  >(`/code-reference/${codeArtifactId}/review`, { status });
+}
+
+/** Manually (re-)trigger analysis for a given approved repo. */
+export async function analyzeCodeReference(
+  documentRepoId: string,
+): Promise<import("@/types/code-artifacts").AnalyzeCodeReferenceResponse> {
+  return api.post<
+    import("@/types/code-artifacts").AnalyzeCodeReferenceResponse
+  >(`/code-reference/analyze/${documentRepoId}`, {});
+}
+
+// ============================================================================
 // Export default API object
 // ============================================================================
 
@@ -2148,6 +2215,16 @@ export const edgequakeApi = {
   reviewAlgorithm,
   deleteAlgorithms,
   deleteAlgorithm,
+
+  // Reference-repo detection
+  getDocumentRepos,
+  reviewRepo,
+  detectRepos,
+
+  // Reference-code analysis (Phase 1)
+  getCodeReferences,
+  reviewCodeArtifact,
+  analyzeCodeReference,
 };
 
 export default edgequakeApi;

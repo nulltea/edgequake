@@ -78,8 +78,10 @@
 // Sub-modules organized by responsibility (SRP)
 mod algorithm_embedding;
 mod algorithm_extraction;
+mod code_reference;
 mod pdf_processing;
 pub mod pipeline_checkpoint;
+mod repo_detection;
 mod status_updates;
 mod task_impl;
 mod text_insert;
@@ -287,10 +289,7 @@ impl DocumentTaskProcessor {
     /// persisted before work begins, so a restart mid-processing leaves the on-disk
     /// task with `existing_document_id=None`, and the recovered task creates a new
     /// document UUID (duplicate).
-    pub fn with_task_storage(
-        mut self,
-        task_storage: edgequake_tasks::SharedTaskStorage,
-    ) -> Self {
+    pub fn with_task_storage(mut self, task_storage: edgequake_tasks::SharedTaskStorage) -> Self {
         self.task_storage = Some(task_storage);
         self
     }

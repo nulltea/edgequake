@@ -1953,6 +1953,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "edgequake-agents"
+version = "0.10.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "edgequake-llm",
+ "edgequake-pdf",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "edgequake-algorithms"
 version = "0.10.1"
 dependencies = [
@@ -1982,6 +2003,7 @@ dependencies = [
  "axum-extra",
  "bytes",
  "chrono",
+ "edgequake-agents",
  "edgequake-algorithms",
  "edgequake-audit",
  "edgequake-auth",
@@ -2131,6 +2153,8 @@ dependencies = [
  "image",
  "oar-ocr-core",
  "oar-ocr-vl",
+ "pdfium-auto",
+ "pdfium-render",
  "rayon",
  "regex",
  "serde",
@@ -2201,6 +2225,7 @@ version = "0.10.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "edgequake-agents",
  "edgequake-core",
  "edgequake-llm",
  "edgequake-storage",
@@ -2211,10 +2236,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7157,6 +7182,7 @@ dependencies = [
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
  "tokio",

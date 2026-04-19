@@ -291,16 +291,48 @@ impl AppState {
 
         // Create SOTA query engine with LightRAG-style enhancements
         let reranker = create_bm25_reranker();
-        let sota_engine = Arc::new(
-            SOTAQueryEngine::new(
-                SOTAQueryConfig::default(),
-                Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
-                Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
-                Arc::clone(&embedding_provider),
-                Arc::clone(&llm_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
-            )
-            .with_reranker(reranker),
-        );
+        let mut sota_builder = SOTAQueryEngine::new(
+            SOTAQueryConfig::default(),
+            Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
+            Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
+            Arc::clone(&embedding_provider),
+            Arc::clone(&llm_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
+        )
+        .with_reranker(reranker);
+
+        // Phase 1 Reference Code GraphRAG: wire the code-embedder + vector
+        // store when the embedder URL is configured. Missing env → feature
+        // disabled, no error.
+        if let Ok(code_embed_url) =
+            std::env::var("EDGEQUAKE_CODE_EMBEDDING_URL").map(|s| s.trim().to_string())
+        {
+            if !code_embed_url.is_empty() {
+                let code_model = std::env::var("EDGEQUAKE_CODE_EMBEDDING_MODEL")
+                    .unwrap_or_else(|_| "jina-code-embeddings".to_string());
+                let code_dim: usize = std::env::var("EDGEQUAKE_CODE_EMBEDDING_DIMENSION")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(896);
+                let embedder = Arc::new(
+                    edgequake_agents::code_analysis::JinaEmbedder::new(
+                        &code_embed_url,
+                        &code_model,
+                        code_dim,
+                    ),
+                );
+                let code_store: Arc<dyn edgequake_storage::traits::CodeVectorStorage> =
+                    Arc::new(edgequake_storage::PgCodeVectorStorage::new(pool.clone()));
+                tracing::info!(
+                    url = %code_embed_url,
+                    model = %code_model,
+                    dim = code_dim,
+                    "✓ Code-reference enrichment: embedder + pg storage wired"
+                );
+                sota_builder = sota_builder.with_code_reference(code_store, embedder);
+            }
+        }
+
+        let sota_engine = Arc::new(sota_builder);
 
         // Create workspace vector registry for per-workspace dimensions
         let vector_registry: Arc<dyn edgequake_storage::traits::WorkspaceVectorRegistry> =

@@ -1,7 +1,7 @@
 mod edgeparse;
+mod vision;
 pub mod vlm_client;
 mod vlm_ocr;
-mod vision;
 
 use std::sync::Arc;
 
@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::PdfConversionError;
 
 pub use edgeparse::EdgeParsePdfConverter;
-pub use vlm_ocr::{AlgorithmBlock, VlmOcrConverter, detect_algorithm_blocks};
 pub use vision::VisionPdfConverter;
+pub use vlm_ocr::{detect_algorithm_blocks, AlgorithmBlock, VlmOcrConverter};
 
 /// Runtime-selectable PDF parser backend.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,7 +109,10 @@ impl std::fmt::Debug for PdfConversionConfig {
             .field("filename", &self.filename)
             .field("vlm_base_url", &self.vlm_base_url)
             .field("vlm_model", &self.vlm_model)
-            .field("algorithm_block_sink", &self.algorithm_block_sink.as_ref().map(|_| "<sink>"))
+            .field(
+                "algorithm_block_sink",
+                &self.algorithm_block_sink.as_ref().map(|_| "<sink>"),
+            )
             .finish()
     }
 }

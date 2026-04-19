@@ -40,6 +40,8 @@ pub enum TaskType {
     PdfProcessing,
     AlgorithmExtraction,
     AlgorithmEmbedding,
+    RepoDetection,
+    CodeReferenceAnalysis,
 }
 
 impl fmt::Display for TaskType {
@@ -52,6 +54,8 @@ impl fmt::Display for TaskType {
             Self::PdfProcessing => write!(f, "pdf_processing"),
             Self::AlgorithmExtraction => write!(f, "algorithm_extraction"),
             Self::AlgorithmEmbedding => write!(f, "algorithm_embedding"),
+            Self::RepoDetection => write!(f, "repo_detection"),
+            Self::CodeReferenceAnalysis => write!(f, "code_reference_analysis"),
         }
     }
 }

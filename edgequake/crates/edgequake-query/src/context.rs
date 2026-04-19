@@ -32,6 +32,13 @@ pub struct QueryContext {
     /// Retrieved relationships.
     pub relationships: Vec<RetrievedRelationship>,
 
+    /// Approved reference-code snippets attached post-retrieval to enrich
+    /// algorithm-heavy queries with their implementations. Populated by the
+    /// Reference Code GraphRAG extension (Phase 1); empty when the feature
+    /// is disabled or no approved snippets exist for matched documents.
+    #[serde(default)]
+    pub reference_code: Vec<ReferenceCodeSnippet>,
+
     /// Total token count of the context.
     pub token_count: usize,
 
@@ -40,6 +47,23 @@ pub struct QueryContext {
 
     /// Retrieval metadata.
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// A single approved code snippet associated with a paper algorithm, ready
+/// to be rendered into the LLM prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReferenceCodeSnippet {
+    pub algorithm_id: String,
+    pub algorithm_name: String,
+    pub document_id: String,
+    pub file_path: String,
+    pub start_line: i32,
+    pub end_line: i32,
+    pub language: String,
+    pub snippet: String,
+    pub repo_url: Option<String>,
+    pub repo_commit: String,
+    pub match_rationale: Option<String>,
 }
 
 impl QueryContext {
@@ -113,12 +137,54 @@ impl QueryContext {
             }
         }
 
+        if !self.reference_code.is_empty() {
+            parts.push("### Reference Code Implementations\n\n".to_string());
+            parts.push(
+                "The following code snippets are reviewer-approved implementations \
+                 of algorithms referenced above. Treat them as authoritative.\n\n"
+                    .to_string(),
+            );
+            for (i, snip) in self.reference_code.iter().enumerate() {
+                let ref_id = i + 1;
+                let link = match &snip.repo_url {
+                    Some(url) => format!(
+                        "{}/blob/{}/{}#L{}-L{}",
+                        url.trim_end_matches('/'),
+                        snip.repo_commit,
+                        snip.file_path,
+                        snip.start_line,
+                        snip.end_line,
+                    ),
+                    None => format!("{}#L{}-L{}", snip.file_path, snip.start_line, snip.end_line),
+                };
+                let rationale = snip
+                    .match_rationale
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!("   _rationale:_ {s}\n"))
+                    .unwrap_or_default();
+                parts.push(format!(
+                    "[C{ref_id}] **{name}** ← {file}:{start}-{end} ([source]({link}))\n\
+                     {rationale}```{lang}\n{body}\n```\n\n",
+                    name = snip.algorithm_name,
+                    file = snip.file_path,
+                    start = snip.start_line,
+                    end = snip.end_line,
+                    lang = snip.language,
+                    body = snip.snippet.trim_end(),
+                ));
+            }
+        }
+
         parts.join("")
     }
 
     /// Check if the context is empty.
     pub fn is_empty(&self) -> bool {
-        self.chunks.is_empty() && self.entities.is_empty() && self.relationships.is_empty()
+        self.chunks.is_empty()
+            && self.entities.is_empty()
+            && self.relationships.is_empty()
+            && self.reference_code.is_empty()
     }
 }
 

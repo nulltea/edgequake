@@ -139,7 +139,10 @@ impl DocumentTaskProcessor {
         let mut updated = obj.clone();
         updated.insert("current_stage".to_string(), json!(stage));
         updated.insert("stage_message".to_string(), json!(message));
-        updated.insert("stage_progress".to_string(), json!(progress.clamp(0.0, 1.0)));
+        updated.insert(
+            "stage_progress".to_string(),
+            json!(progress.clamp(0.0, 1.0)),
+        );
         updated.insert(
             "updated_at".to_string(),
             json!(chrono::Utc::now().to_rfc3339()),

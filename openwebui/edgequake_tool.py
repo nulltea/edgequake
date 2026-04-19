@@ -1,7 +1,7 @@
 """
 title: EdgeQuake RAG
 author: EdgeQuake
-version: 0.2.0
+version: 0.3.0
 description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships.
 """
 
@@ -73,7 +73,8 @@ class Tools:
             return f"EdgeQuake query failed: {e}"
 
         sources = data.get("sources", [])
-        if not sources:
+        reference_code = data.get("reference_code", [])
+        if not sources and not reference_code:
             return "No relevant context found in the knowledge base."
 
         chunks = []
@@ -105,6 +106,8 @@ class Tools:
             parts.append("**Entities:**\n" + "\n".join(entities[:15]))
         if relationships:
             parts.append("**Relationships:**\n" + "\n".join(relationships[:10]))
+        if reference_code:
+            parts.append(_render_reference_code(reference_code))
         if seen_docs:
             parts.append("**Source documents:** " + ", ".join(seen_docs))
 
@@ -344,3 +347,36 @@ class Tools:
             desc = rel.get("description", "")[:100]
             lines.append(f"- **{src}** —[{rtype}]→ **{tgt}**{f': {desc}' if desc else ''}")
         return "\n".join(lines)
+
+
+def _render_reference_code(snippets: list) -> str:
+    """Render approved reference-code snippets from the EdgeQuake query API
+    into a Markdown block the chat model can treat as authoritative.
+
+    The EdgeQuake backend matches approved code_artifacts against the
+    query via HNSW cosine search over jina-code-embeddings; anything
+    returned here has already been human-reviewed in the Code Matches
+    tab. These are the actual implementations of algorithms in the
+    retrieved papers — higher fidelity than the paper's prose
+    description of the same algorithm."""
+    lines = ["**Reference code implementations (reviewer-approved):**"]
+    for i, s in enumerate(snippets, start=1):
+        algo = s.get("algorithm_name") or s.get("algorithm_id", "?")
+        file_path = s.get("file_path", "?")
+        start = s.get("start_line", 0)
+        end = s.get("end_line", 0)
+        lang = s.get("language", "")
+        snippet = s.get("snippet", "")
+        repo_url = s.get("repo_url")
+        repo_commit = s.get("repo_commit", "")
+        rationale = s.get("match_rationale")
+
+        header = f"[C{i}] **{algo}** — `{file_path}:{start}-{end}`"
+        if repo_url and repo_commit:
+            header += f" ([source]({repo_url}/blob/{repo_commit}/{file_path}#L{start}-L{end}))"
+        lines.append(header)
+        if rationale:
+            lines.append(f"_rationale:_ {rationale}")
+        fence_lang = lang if lang else ""
+        lines.append(f"```{fence_lang}\n{snippet}\n```")
+    return "\n".join(lines)

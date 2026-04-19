@@ -147,10 +147,8 @@ impl PdfConverter for VlmOcrConverter {
                                 // Pass 2 gets one algorithm per chunk and progress count matches
                                 // the number of detected algorithms.
                                 if let Some(ref sink) = algo_sink {
-                                    let algo_blocks_for_page = build_algorithm_blocks(
-                                        &result.layout_elements,
-                                        page_num,
-                                    );
+                                    let algo_blocks_for_page =
+                                        build_algorithm_blocks(&result.layout_elements, page_num);
                                     info!(
                                         page = page_num,
                                         algo_count = algo_blocks_for_page.len(),
@@ -172,7 +170,11 @@ impl PdfConverter for VlmOcrConverter {
                                 // page markdown stored in pdf_documents.markdown_content
                                 // keeps OCR artefacts that the algorithm path avoids.
                                 let md = crate::latex_repair::repair_latex(&md);
-                                if md.trim().is_empty() { None } else { Some(md) }
+                                if md.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(md)
+                                }
                             }
                             Err(e) => {
                                 warn!(page = page_num, error = %e, "VLM-OCR: page failed");
@@ -191,7 +193,12 @@ impl PdfConverter for VlmOcrConverter {
                         if let (Some(ref cb), Some(ref s)) = (progress_cb.as_ref(), md.as_ref()) {
                             cb.on_page_complete(page_num, page_count, s.len());
                         }
-                        info!(page = page_num, done = done, total = page_count, "VLM-OCR: page completed");
+                        info!(
+                            page = page_num,
+                            done = done,
+                            total = page_count,
+                            "VLM-OCR: page completed"
+                        );
 
                         (i, md)
                     })
@@ -272,7 +279,10 @@ fn build_algorithm_blocks(
         .collect();
 
     let mut blocks = Vec::new();
-    for elem in elements.iter().filter(|e| e.element_type == LayoutElementType::Algorithm) {
+    for elem in elements
+        .iter()
+        .filter(|e| e.element_type == LayoutElementType::Algorithm)
+    {
         let algo_md = oar_ocr_vl::utils::to_markdown(std::slice::from_ref(elem), &[]);
         if algo_md.trim().is_empty() {
             continue;
@@ -328,7 +338,8 @@ fn find_caption_below(
         }
     }
 
-    best.and_then(|(_, t)| t.text.clone()).map(|s| s.trim().to_string())
+    best.and_then(|(_, t)| t.text.clone())
+        .map(|s| s.trim().to_string())
 }
 
 /// A detected algorithm block from layout detection + VLM recognition.
@@ -366,14 +377,19 @@ pub fn detect_algorithm_blocks(
     if images.is_empty() {
         return Ok(Vec::new());
     }
-    info!(pages = images.len(), "Algorithm detection: rendered PDF pages");
+    info!(
+        pages = images.len(),
+        "Algorithm detection: rendered PDF pages"
+    );
 
     // 3. Build layout predictor
     let layout_predictor = oar_ocr_core::predictors::LayoutDetectionPredictor::builder()
         .model_name(LAYOUT_MODEL_NAME)
         .build(&layout_path)
         .map_err(|e| {
-            PdfConversionError::Backend(format!("Algorithm detection: layout predictor failed: {e}"))
+            PdfConversionError::Backend(format!(
+                "Algorithm detection: layout predictor failed: {e}"
+            ))
         })?;
 
     // 4. Build VLM backend + DocParser
@@ -463,9 +479,8 @@ fn model_cache_dir() -> Result<PathBuf, PdfConversionError> {
         return Ok(p);
     }
     let p = PathBuf::from("/tmp/edgequake-oar-ocr-models");
-    std::fs::create_dir_all(&p).map_err(|e| {
-        PdfConversionError::Internal(format!("Failed to create model dir: {e}"))
-    })?;
+    std::fs::create_dir_all(&p)
+        .map_err(|e| PdfConversionError::Internal(format!("Failed to create model dir: {e}")))?;
     Ok(p)
 }
 
@@ -534,12 +549,8 @@ fn render_single_page(page: &hayro::hayro_syntax::page::Page) -> Result<image::R
         rgb.push(chunk[2]);
     }
 
-    image::RgbImage::from_raw(
-        u32::from(pixmap.width()),
-        u32::from(pixmap.height()),
-        rgb,
-    )
-    .ok_or_else(|| "Failed to construct RgbImage from pixmap".to_string())
+    image::RgbImage::from_raw(u32::from(pixmap.width()), u32::from(pixmap.height()), rgb)
+        .ok_or_else(|| "Failed to construct RgbImage from pixmap".to_string())
 }
 
 #[cfg(test)]
@@ -600,8 +611,7 @@ mod layout_model_comparison {
                     Some(v) => v,
                     None => continue,
                 };
-                let mut by_type: std::collections::BTreeMap<String, usize> =
-                    Default::default();
+                let mut by_type: std::collections::BTreeMap<String, usize> = Default::default();
                 let mut algo_details = Vec::new();
                 for (idx, elem) in page_elements.iter().enumerate() {
                     *by_type.entry(elem.element_type.clone()).or_insert(0) += 1;
@@ -657,7 +667,10 @@ mod layout_model_comparison {
             .model_name("pp-doclayout_plus-l")
             .build(&path)
             .expect("build predictor");
-        let cfg = DocParserConfig { crop_pad_ratio: 0.02, ..Default::default() };
+        let cfg = DocParserConfig {
+            crop_pad_ratio: 0.02,
+            ..Default::default()
+        };
         let parser = DocParser::with_config(&backend, cfg);
 
         for (page_idx, img) in images.iter().enumerate() {
@@ -702,7 +715,10 @@ mod layout_model_comparison {
             .build(&path)
             .expect("build predictor");
 
-        let cfg = DocParserConfig { crop_pad_ratio: 0.02, ..Default::default() };
+        let cfg = DocParserConfig {
+            crop_pad_ratio: 0.02,
+            ..Default::default()
+        };
         let parser = DocParser::with_config(&backend, cfg);
         let result = parser.parse(&predictor, page4.clone()).expect("parse");
         println!("\n========== plus-L page 4, all elements ==========");
@@ -753,7 +769,10 @@ mod layout_model_comparison {
             .expect("build predictor");
 
         for pad in [0.02_f32, 0.04, 0.06] {
-            let cfg = DocParserConfig { crop_pad_ratio: pad, ..Default::default() };
+            let cfg = DocParserConfig {
+                crop_pad_ratio: pad,
+                ..Default::default()
+            };
             let parser = DocParser::with_config(&backend, cfg);
             let result = parser.parse(&predictor, page4.clone()).expect("parse");
             println!("\n========== plus-L page 4, pad={pad} ==========");
@@ -870,9 +889,7 @@ mod layout_model_comparison {
                 ..Default::default()
             };
             let padded_parser = DocParser::with_config(&backend, padded_cfg);
-            println!(
-                "\n========== {label} page 5 DocParser output (pad 0.02) =========="
-            );
+            println!("\n========== {label} page 5 DocParser output (pad 0.02) ==========");
             let padded = match padded_parser.parse(&predictor, page5.clone()) {
                 Ok(r) => r,
                 Err(e) => {
@@ -881,7 +898,9 @@ mod layout_model_comparison {
                 }
             };
             for (idx, elem) in padded.layout_elements.iter().enumerate() {
-                if elem.element_type != oar_ocr_core::domain::structure::LayoutElementType::Algorithm {
+                if elem.element_type
+                    != oar_ocr_core::domain::structure::LayoutElementType::Algorithm
+                {
                     continue;
                 }
                 let text = elem.text.as_deref().unwrap_or("<no-text>");

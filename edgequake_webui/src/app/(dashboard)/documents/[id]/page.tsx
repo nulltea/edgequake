@@ -1,6 +1,8 @@
 'use client';
 
 import { AlgorithmsTabContent } from '@/components/algorithms';
+import { CodeMatchesTabContent } from '@/components/code-artifacts';
+import { DocumentReposTabContent } from '@/components/document-repos';
 import { ContentRenderer } from '@/components/document/content-renderer';
 import { MetadataSidebar } from '@/components/document/metadata-sidebar';
 import { PDFViewer } from '@/components/documents/pdf-viewer';
@@ -18,6 +20,8 @@ import {
     ArrowLeft,
     CodeXml,
     Download,
+    FileCode2,
+    GitBranch,
     Loader2,
     Network,
     RefreshCw,
@@ -46,7 +50,11 @@ export default function DocumentViewPage() {
   const { selectedWorkspaceId } = useTenantStore();
   
   // Get tab and highlight parameters from URL
-  const defaultTab = searchParams.get('tab') === 'algorithms' ? 'algorithms' : 'content';
+  const defaultTab = (() => {
+    const t = searchParams.get('tab');
+    if (t === 'algorithms' || t === 'repos' || t === 'code-matches') return t;
+    return 'content';
+  })();
   const highlightText = searchParams.get('highlight') || undefined;
   const startLine = searchParams.get('start_line') 
     ? parseInt(searchParams.get('start_line')!) 
@@ -292,6 +300,14 @@ export default function DocumentViewPage() {
                 <CodeXml className="h-3.5 w-3.5" />
                 Algorithms
               </TabsTrigger>
+              <TabsTrigger value="repos">
+                <GitBranch className="h-3.5 w-3.5" />
+                References
+              </TabsTrigger>
+              <TabsTrigger value="code-matches">
+                <FileCode2 className="h-3.5 w-3.5" />
+                Code Matches
+              </TabsTrigger>
             </TabsList>
 
             {/* Content tab */}
@@ -364,18 +380,36 @@ export default function DocumentViewPage() {
             <TabsContent value="algorithms" className="flex-1 overflow-auto m-0 mt-0">
               <AlgorithmsTabContent documentId={documentId} />
             </TabsContent>
+
+            {/* Reference-repo detection tab */}
+            <TabsContent value="repos" className="flex-1 overflow-auto m-0 mt-0">
+              <DocumentReposTabContent documentId={documentId} />
+            </TabsContent>
+
+            {/* Code matches tab (Phase 1) */}
+            <TabsContent value="code-matches" className="flex-1 overflow-auto m-0 mt-0">
+              <CodeMatchesTabContent documentId={documentId} />
+            </TabsContent>
           </Tabs>
         </div>
 
         {/* Mobile/Tablet: Tabbed layout */}
         <div className="flex-1 lg:hidden overflow-hidden">
           <Tabs defaultValue={defaultTab} className="h-full flex flex-col">
-            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-4' : 'grid-cols-3'} rounded-none border-b`}>
+            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-6' : 'grid-cols-5'} rounded-none border-b`}>
               {isPdfDocument && <TabsTrigger value="pdf">PDF</TabsTrigger>}
               <TabsTrigger value="content">Markdown</TabsTrigger>
               <TabsTrigger value="algorithms">
                 <CodeXml className="h-3.5 w-3.5" />
                 Algorithms
+              </TabsTrigger>
+              <TabsTrigger value="repos">
+                <GitBranch className="h-3.5 w-3.5" />
+                References
+              </TabsTrigger>
+              <TabsTrigger value="code-matches">
+                <FileCode2 className="h-3.5 w-3.5" />
+                Code
               </TabsTrigger>
               <TabsTrigger value="metadata">Details</TabsTrigger>
             </TabsList>
@@ -404,6 +438,12 @@ export default function DocumentViewPage() {
             </TabsContent>
             <TabsContent value="algorithms" className="flex-1 overflow-auto m-0 mt-0">
               <AlgorithmsTabContent documentId={documentId} />
+            </TabsContent>
+            <TabsContent value="repos" className="flex-1 overflow-auto m-0 mt-0">
+              <DocumentReposTabContent documentId={documentId} />
+            </TabsContent>
+            <TabsContent value="code-matches" className="flex-1 overflow-auto m-0 mt-0">
+              <CodeMatchesTabContent documentId={documentId} />
             </TabsContent>
             <TabsContent value="metadata" className="flex-1 overflow-hidden m-0 mt-0">
               <MetadataSidebar

@@ -367,7 +367,8 @@ pub async fn upload_pdf_document(
     let vision_model = if matches!(
         resolved_backend,
         PdfParserBackend::Vision | PdfParserBackend::VlmOcr
-    ) && (options.enable_vision || resolved_backend == PdfParserBackend::VlmOcr)
+    ) && (options.enable_vision
+        || resolved_backend == PdfParserBackend::VlmOcr)
     {
         Some(options.vision_model())
     } else {

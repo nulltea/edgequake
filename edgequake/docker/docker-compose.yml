@@ -35,6 +35,22 @@ services:
             MAX_TASKS_PER_TENANT: "${MAX_TASKS_PER_TENANT:-1}"
             EDGEQUAKE_OAR_OCR_MODEL_DIR: /var/cache/edgequake/oar-ocr-models
             RUST_LOG: "info,edgequake=debug"
+
+            # Reference Code GraphRAG — Layer B fallback (empty-string → disabled).
+            # Uses host.docker.internal to reach the user's host-side SearXNG/Crawl4AI.
+            SEARXNG_URL: "${SEARXNG_URL:-http://host.docker.internal:8888}"
+            CRAWL4AI_URL: "${CRAWL4AI_URL:-http://host.docker.internal:11235}"
+
+            # Phase 1 — code-analyzer sidecar (algorithm localization in cloned repos).
+            CODE_ANALYZER_URL: "${CODE_ANALYZER_URL:-http://code-analyzer:9100}"
+            CODE_ANALYZER_WORKSPACE: /workspace
+
+            # Phase 1 — code embedder (jina-code-embeddings via llama-server).
+            # Both approval-time indexing and query-time semantic search use it.
+            # Unset EDGEQUAKE_CODE_EMBEDDING_URL to disable the feature entirely.
+            EDGEQUAKE_CODE_EMBEDDING_URL: "${EDGEQUAKE_CODE_EMBEDDING_URL:-http://host.docker.internal:11437/v1}"
+            EDGEQUAKE_CODE_EMBEDDING_MODEL: "${EDGEQUAKE_CODE_EMBEDDING_MODEL:-jina-code-embeddings}"
+            EDGEQUAKE_CODE_EMBEDDING_DIMENSION: "${EDGEQUAKE_CODE_EMBEDDING_DIMENSION:-896}"
         extra_hosts:
             - "host.docker.internal:host-gateway"
         depends_on:
@@ -46,8 +62,49 @@ services:
             - ${HOME}/.edgequake/models.toml:/config/models.toml:ro
             - ${HOME}/.edgequake/oar-ocr-models:/var/cache/edgequake/oar-ocr-models
             - ${LLAMACPP_MODEL_DIR:-$HOME/.cache/edgequake/llamacpp-models}:/var/cache/edgequake/llamacpp-models:ro
+            - code-analyzer-workspace:/workspace:ro
         healthcheck:
             test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 10s
+
+    code-analyzer:
+        # Phase 1 of the Reference Code GraphRAG extension.
+        # Locates algorithm implementations in cloned repos by driving the
+        # `claude` CLI headless. See code-analyzer/README.md for setup.
+        build:
+            context: ../../code-analyzer
+            dockerfile: Dockerfile
+        container_name: code-analyzer
+        restart: unless-stopped
+        environment:
+            # Subscription-backed auth (1-year token from `claude setup-token`).
+            # Set in .env. Do NOT also set ANTHROPIC_API_KEY — it would
+            # silently override and bill API credits instead of the sub.
+            CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+            CODE_ANALYZER_PORT: "9100"
+            CODE_ANALYZER_WORKSPACE: /workspace
+            # Default Claude model. Pinned to "sonnet" to keep localization off
+            # the Opus quota; per-request override via AnalyzeRequest.model still
+            # wins. Set to "opus" / "haiku" / full model id as needed.
+            CODE_ANALYZER_DEFAULT_MODEL: "${CODE_ANALYZER_DEFAULT_MODEL:-sonnet}"
+            LOG_LEVEL: "${CODE_ANALYZER_LOG_LEVEL:-INFO}"
+        ports:
+            - "${CODE_ANALYZER_PORT:-9100}:9100"
+        networks:
+            - edgequake-network
+        volumes:
+            - code-analyzer-workspace:/workspace
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "curl",
+                    "-f",
+                    "http://localhost:9100/health",
+                ]
             interval: 30s
             timeout: 10s
             retries: 3
@@ -112,6 +169,7 @@ services:
 
 volumes:
     postgres-data:
+    code-analyzer-workspace:
 
 networks:
     edgequake-network:

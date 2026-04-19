@@ -1,0 +1,32 @@
+[package]
+name = "edgequake-agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agentic components for EdgeQuake: web search, code matching, repo orchestration"
+
+[dependencies]
+async-trait.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+chrono = { workspace = true }
+uuid = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+url = "2"
+edgequake-llm = { workspace = true }
+edgequake-pdf = { workspace = true }
+sqlx = { workspace = true, optional = true }
+
+[features]
+default = ["postgres"]
+postgres = ["dep:sqlx"]
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = "3"

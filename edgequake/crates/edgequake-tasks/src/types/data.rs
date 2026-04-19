@@ -110,6 +110,31 @@ pub struct AlgorithmEmbeddingData {
     pub algorithm_ids: Vec<String>,
 }
 
+/// Reference-repository detection task payload (Phase 0 of the Reference
+/// Code GraphRAG extension). Runs Layer A (PDF hyperlinks) and, if nothing
+/// is found, Layer B (SearXNG + Crawl4AI web-search fallback).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoDetectionData {
+    pub document_id: String,
+    pub workspace_id: String,
+    /// PDF id. Set when the document was ingested as a PDF — enables Layer A.
+    /// If None, only Layer B runs (assumes the markdown is stored and loadable).
+    #[serde(default)]
+    pub pdf_id: Option<String>,
+}
+
+/// Reference-code analysis task payload (Phase 1 of the Reference Code
+/// GraphRAG extension). Kicked off when a user approves a `document_repos`
+/// row — edgequake will call the code-analyzer sidecar, locate approved
+/// algorithms inside the repo, and persist `code_artifacts` for review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeReferenceAnalysisData {
+    pub document_id: String,
+    pub workspace_id: String,
+    /// The approved document_repos row we're about to analyze.
+    pub document_repo_id: uuid::Uuid,
+}
+
 /// Reindex task payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexData {

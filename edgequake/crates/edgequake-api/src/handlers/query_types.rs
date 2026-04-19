@@ -254,6 +254,36 @@ pub struct QueryResponse {
     /// Whether reranking was applied.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub reranked: bool,
+
+    /// Approved reference-code snippets attached to the query via the
+    /// Reference Code GraphRAG enrichment (Phase 1). Empty unless the
+    /// workspace has approved code_artifacts whose embedding is close to
+    /// the query vector. Separate from `sources[]` because chunks and
+    /// code snippets have different renderers and different lifetimes.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub reference_code: Vec<ReferenceCodeSnippetDto>,
+}
+
+/// Public shape of a [`ReferenceCodeSnippet`] for the API.
+///
+/// Mirrors `edgequake_query::context::ReferenceCodeSnippet` but declared
+/// locally so `edgequake-api` doesn't re-export query-crate types in its
+/// public JSON contract.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ReferenceCodeSnippetDto {
+    pub algorithm_id: String,
+    pub algorithm_name: String,
+    pub document_id: String,
+    pub file_path: String,
+    pub start_line: i32,
+    pub end_line: i32,
+    pub language: String,
+    pub snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    pub repo_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_rationale: Option<String>,
 }
 
 /// A source reference.

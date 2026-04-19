@@ -117,8 +117,8 @@ impl AlgorithmExtractor {
             .await
             .map_err(|e| AlgorithmExtractionError::LlmError(format!("{label} failed: {e}")))?;
 
-        let inventory: AlgorithmInventory = parse_json_response(&response.content)
-            .map_err(|e| {
+        let inventory: AlgorithmInventory =
+            parse_json_response(&response.content).map_err(|e| {
                 AlgorithmExtractionError::ParseError(format!("{label} parse error: {e}"))
             })?;
 
@@ -258,9 +258,13 @@ impl AlgorithmExtractor {
 
         let extraction = match extraction {
             Some(e) => e,
-            None => return Err(last_err.unwrap_or_else(|| {
-                AlgorithmExtractionError::LlmError(format!("{label} failed with no error recorded"))
-            })),
+            None => {
+                return Err(last_err.unwrap_or_else(|| {
+                    AlgorithmExtractionError::LlmError(format!(
+                        "{label} failed with no error recorded"
+                    ))
+                }))
+            }
         };
 
         tracing::info!(
@@ -520,7 +524,8 @@ mod tests {
     #[test]
     fn test_parse_json_with_latex_escapes() {
         // Simulates LLM output with unescaped LaTeX
-        let json = r#"{"paper_title": "Test \mathcal{D}", "algorithms": [], "paper_type": "empirical"}"#;
+        let json =
+            r#"{"paper_title": "Test \mathcal{D}", "algorithms": [], "paper_type": "empirical"}"#;
         let result: AlgorithmInventory = parse_json_response(json).unwrap();
         assert!(result.paper_title.contains("\\mathcal"));
     }
