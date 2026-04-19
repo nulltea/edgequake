@@ -55,8 +55,13 @@ pub fn repair_latex(s: &str) -> String {
     let s = reconstruct_escape_collisions(s);
     let s = strip_fake_latex_codefence(&s);
     let s = repair_sample_dollar(&s);
-    let s = repair_missing_inner_bracket(&s);
+    // Order matters: `balance_double_brackets` handles the `]]`>`[[` case
+    // (missing outer `[`). It must run BEFORE `repair_missing_inner_bracket`
+    // (which handles the `[[v]^` / `[[x[i]]^` case, i.e. missing inner `]`),
+    // because the latter INCREASES `]]` count on a line, which would then
+    // make `balance_double_brackets` wrongly double a legitimate single `[`.
     let s = balance_double_brackets(&s);
+    let s = repair_missing_inner_bracket(&s);
     let s = balance_math_delimiters(&s);
     brace_single_token_scripts(&s)
 }
@@ -332,15 +337,27 @@ pub fn balance_double_brackets(s: &str) -> String {
 }
 
 fn balance_double_brackets_line(line: &str) -> String {
-    let open_dbl = count_literal(line, "[[");
-    let close_dbl = count_literal(line, "]]");
-    if close_dbl <= open_dbl {
+    // Fire only when the line's single-bracket balance is actually negative
+    // (more `]` than `[`). The old heuristic compared `[[` vs `]]` substring
+    // counts, which mis-fired when legitimate indexed notation like
+    // `[x[i]]` placed two closers adjacent — making `]]` count artificially
+    // high and triggering a bogus "add `[[`" on the next legitimate `[`.
+    let bytes = line.as_bytes();
+    let mut opens = 0i32;
+    let mut closes = 0i32;
+    for &b in bytes {
+        match b {
+            b'[' => opens += 1,
+            b']' => closes += 1,
+            _ => {}
+        }
+    }
+    if closes <= opens {
         return line.to_string();
     }
-    let deficit = close_dbl - open_dbl;
+    let deficit = (closes - opens) as usize;
 
     // Walk the line; find the first N `[` that are not part of `[[`.
-    let bytes = line.as_bytes();
     let mut out = String::with_capacity(line.len() + deficit);
     let mut fixed = 0;
     let mut i = 0;
@@ -780,5 +797,21 @@ mod tests {
     fn strip_fake_latex_fence_is_idempotent_on_clean_math() {
         let input = "$$\n\\beta_i = m_i \\oplus x_{i,2}\n$$";
         assert_eq!(strip_fake_latex_codefence(input), input);
+    }
+
+    #[test]
+    fn mixed_missing_inner_plus_legitimate_single_bracket() {
+        // Regression: observed on B2A.pdf page 4. The `[[v]^A` missing-inner
+        // case and a legitimate single-bracket `[v]^A` live on the same line.
+        // If `balance_double_brackets` runs AFTER `repair_missing_inner_bracket`
+        // it over-balances by doubling the legitimate `[v]`. Order must be
+        // `balance_double_brackets` → `repair_missing_inner_bracket`.
+        let input = r"$$[[v]^A \leftarrow \text{SS.add}([v]^A, \text{SS.sMul}(2^{\ell-1-i}, [x[i]]^A))$$";
+        let out = repair_latex(input);
+        assert!(out.contains("[[v]]^A"), "missing-inner fixed: {out}");
+        assert!(out.contains("([v]^A"), "legitimate single `[v]` preserved: {out}");
+        assert!(!out.contains("([[v]^A"), "legitimate `[v]` not corrupted: {out}");
+        // Idempotent.
+        assert_eq!(repair_latex(&out), out);
     }
 }
