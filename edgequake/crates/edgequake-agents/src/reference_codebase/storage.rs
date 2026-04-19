@@ -97,6 +97,20 @@ pub trait ReferenceCodebaseStorage: Send + Sync {
         limit: i64,
     ) -> Result<Vec<Uuid>, ReferenceCodebaseStorageError>;
 
+    /// Approximate graph diameter: run one BFS from the highest-degree
+    /// symbol, return the maximum depth reached. Capped at
+    /// `safety_cap` hops so even a pathological chain doesn't stall
+    /// the UI. Undirected — treats `source_symbol_id` and
+    /// `target_symbol_id` as endpoints, both directions are walked.
+    /// Returns `None` when the index has no symbols or edges.
+    async fn estimate_max_depth(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+        index_id: Uuid,
+        safety_cap: i32,
+    ) -> Result<Option<i32>, ReferenceCodebaseStorageError>;
+
     /// Return the top-N symbols by symbol-level degree (incoming +
     /// outgoing edges). Used as the fallback seed set when the graph
     /// endpoint is called on a `mode='full'` index with no anchor.
@@ -480,6 +494,83 @@ mod postgres {
                 .collect()
         }
 
+        async fn estimate_max_depth(
+            &self,
+            tenant_id: Uuid,
+            workspace_id: Uuid,
+            index_id: Uuid,
+            safety_cap: i32,
+        ) -> Result<Option<i32>, ReferenceCodebaseStorageError> {
+            // Single recursive CTE: seed from the highest-degree
+            // symbol, BFS undirected over symbol↔symbol edges until
+            // we either exhaust reachable nodes or hit `safety_cap`.
+            // Returns MAX(depth) across visited nodes — this is the
+            // *eccentricity* of the highest-degree node, which is a
+            // tight lower bound on the graph's diameter for nearly
+            // all real-world code graphs.
+            // Recursive CTEs in Postgres dedupe on the full row, so a
+            // naive `UNION (sid, depth)` lets cycles keep incrementing
+            // depth and returns garbage. Collapse to `MIN(depth)`
+            // per node in the outer query, then take MAX of that.
+            // Safety: if any node gets to depth N, at least one
+            // other node must too, so the per-node MIN across all
+            // walks is still a valid depth observation.
+            let row: Option<(Option<i32>,)> = sqlx::query_as(
+                r#"
+                WITH RECURSIVE
+                edge_endpoints AS (
+                    SELECT source_symbol_id AS sid FROM reference_codebase_edges
+                    WHERE index_id = $3 AND source_symbol_id IS NOT NULL
+                    UNION ALL
+                    SELECT target_symbol_id FROM reference_codebase_edges
+                    WHERE index_id = $3 AND target_symbol_id IS NOT NULL
+                ),
+                seed AS (
+                    SELECT s.id
+                    FROM reference_codebase_symbols s
+                    LEFT JOIN edge_endpoints e ON e.sid = s.id
+                    WHERE s.tenant_id = $1
+                      AND s.workspace_id = $2
+                      AND s.index_id = $3
+                    GROUP BY s.id
+                    ORDER BY COUNT(e.sid) DESC, s.start_line ASC
+                    LIMIT 1
+                ),
+                walk(sid, depth) AS (
+                    SELECT id, 0 FROM seed
+                    UNION
+                    SELECT CASE
+                             WHEN e.source_symbol_id = w.sid THEN e.target_symbol_id
+                             ELSE e.source_symbol_id
+                           END AS sid,
+                           w.depth + 1
+                    FROM walk w
+                    JOIN reference_codebase_edges e
+                      ON e.index_id = $3
+                     AND e.source_symbol_id IS NOT NULL
+                     AND e.target_symbol_id IS NOT NULL
+                     AND (e.source_symbol_id = w.sid OR e.target_symbol_id = w.sid)
+                    WHERE w.depth < $4
+                ),
+                shortest AS (
+                    SELECT sid, MIN(depth) AS d FROM walk
+                    WHERE sid IS NOT NULL
+                    GROUP BY sid
+                )
+                SELECT MAX(d) AS max_depth FROM shortest
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(index_id)
+            .bind(safety_cap)
+            .fetch_optional(&self.pool)
+            .await?;
+            // sqlx gives Option<Option<i32>> — outer None = no row,
+            // inner None = no edges to walk. Either way → None.
+            Ok(row.and_then(|(d,)| d))
+        }
+
         async fn fetch_subgraph(
             &self,
             tenant_id: Uuid,
@@ -806,6 +897,9 @@ mod postgres {
             chunk_count: row.try_get("chunk_count")?,
             edge_count: row.try_get("edge_count")?,
             error_message: row.try_get("error_message")?,
+            // Not stored — callers populate max_depth on demand via
+            // `estimate_max_depth` when they need a slider bound.
+            max_depth: None,
             started_at: row.try_get::<Option<DateTime<Utc>>, _>("started_at")?,
             completed_at: row.try_get::<Option<DateTime<Utc>>, _>("completed_at")?,
         })

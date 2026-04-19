@@ -53,6 +53,10 @@ pub struct ReferenceCodebaseIndexResponse {
     pub symbol_count: i32,
     pub chunk_count: i32,
     pub edge_count: i32,
+    /// Approximate graph diameter — drives the Code Graph tab's hops
+    /// slider max. None for indexes that aren't `complete` yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<i32>,
     pub error_message: Option<String>,
 }
 
@@ -87,6 +91,11 @@ pub struct ReferenceCodebaseGraphParams {
     pub hops: Option<u8>,
     #[serde(default)]
     pub max_nodes: Option<u16>,
+    /// When true, skip BFS entirely and return the top-N symbols by
+    /// degree plus every edge between them. Useful for "show me the
+    /// whole repo" exploration. Hard-capped by `max_nodes`.
+    #[serde(default)]
+    pub whole: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -238,13 +247,24 @@ pub async fn get_index(
             ApiError::Internal("Reference codebase storage requires PostgreSQL".to_string())
         })?;
         let storage = PostgresReferenceCodebaseStorage::new(pool.clone());
-        let index = storage
+        let mut index = storage
             .get_index(tenant_id, workspace_id, index_id)
             .await
             .map_err(|e| ApiError::Internal(format!("load reference codebase index: {e}")))?
             .ok_or_else(|| {
                 ApiError::NotFound(format!("reference codebase index {index_id} not found"))
             })?;
+        // Populate approximate graph diameter so the UI can size its
+        // hops slider to the codebase. Only makes sense on complete
+        // indexes; skip otherwise. Safety-capped at 50 — beyond that
+        // we're either in a pathological chain or the query stalled.
+        if index.status.as_str() == "complete" && index.edge_count > 0 {
+            index.max_depth = storage
+                .estimate_max_depth(tenant_id, workspace_id, index_id, 50)
+                .await
+                .ok()
+                .flatten();
+        }
         Ok(Json(index.into()))
     }
     #[cfg(not(feature = "postgres"))]
@@ -283,8 +303,16 @@ pub async fn get_index_graph(
         })?;
         let storage = PostgresReferenceCodebaseStorage::new(pool.clone());
 
-        let hops: i32 = params.hops.unwrap_or(1).clamp(1, 3) as i32;
-        let max_nodes: i32 = params.max_nodes.unwrap_or(200).clamp(1, 1000) as i32;
+        // Default to 3 hops (was 1) so first-click exploration surfaces
+        // the typical 2–3 function-call chain around an anchor. No
+        // explicit upper clamp — `max_nodes` is the real safety
+        // ceiling, and real-world codebases saturate to "basically the
+        // whole repo" by hop ~10 anyway. Lower bound stays at 1.
+        let hops: i32 = (params.hops.unwrap_or(3) as i32).max(1);
+        // Raise the node ceiling for whole-repo exploration (2000
+        // keeps V3DB-scale repos fully visible).
+        let max_nodes: i32 = params.max_nodes.unwrap_or(200).clamp(1, 2000) as i32;
+        let whole = params.whole.unwrap_or(false);
 
         let index = storage
             .get_index(tenant_id, workspace_id, index_id)
@@ -299,6 +327,53 @@ pub async fn get_index_graph(
                 "index {index_id} is {}, must be 'complete' before graph queries",
                 index.status.as_str()
             )));
+        }
+
+        // Whole-repo path: skip BFS entirely, seed = top-N symbols by
+        // degree (up to max_nodes). Gives the user the full graph in a
+        // single request, bounded only by max_nodes. `hops` is ignored.
+        if whole {
+            let seeds = storage
+                .top_symbols_by_degree(tenant_id, workspace_id, index_id, max_nodes as i64)
+                .await
+                .map_err(|e| ApiError::Internal(format!("top-symbols fallback: {e}")))?;
+            if seeds.is_empty() {
+                return Ok(Json(ReferenceCodebaseGraphResponse {
+                    index_id,
+                    document_id: index.document_id,
+                    repo_url: index.repo_url,
+                    repo_commit: index.repo_commit,
+                    mode: index.mode.as_str().to_string(),
+                    hops: 0,
+                    truncated: false,
+                    seed_symbol_ids: Vec::new(),
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                }));
+            }
+            // BFS with hops=0 returns exactly the seed set; we still
+            // want that path so we reuse fetch_subgraph's chunk-join.
+            let subgraph = storage
+                .fetch_subgraph(tenant_id, workspace_id, index_id, &seeds, 0, max_nodes)
+                .await
+                .map_err(|e| ApiError::Internal(format!("fetch subgraph: {e}")))?;
+            // `top_symbols_by_degree` hard-caps at `max_nodes` rows, so
+            // `fetch_subgraph` never sees the +1 that would have flagged
+            // truncation. Infer from the index's own symbol_count.
+            let truncated =
+                subgraph.truncated || (subgraph.nodes.len() as i32) < index.symbol_count;
+            return Ok(Json(ReferenceCodebaseGraphResponse {
+                index_id,
+                document_id: index.document_id,
+                repo_url: index.repo_url,
+                repo_commit: index.repo_commit,
+                mode: index.mode.as_str().to_string(),
+                hops: 0,
+                truncated,
+                seed_symbol_ids: seeds,
+                nodes: subgraph.nodes.into_iter().map(Into::into).collect(),
+                edges: subgraph.edges.into_iter().map(Into::into).collect(),
+            }));
         }
 
         // Seed resolution: artifact id wins if both are given.
@@ -402,9 +477,21 @@ pub async fn list_indexes_by_repo(
             .list_indexes_for_repo(tenant_id, workspace_id, document_repo_id)
             .await
             .map_err(|e| ApiError::Internal(format!("list indexes: {e}")))?;
-        Ok(Json(ListIndexesResponse {
-            indexes: rows.into_iter().map(Into::into).collect(),
-        }))
+        // Enrich complete rows with max_depth so the UI slider sizes
+        // to the codebase without an extra round-trip. One CTE per
+        // complete index; V3DB-scale repos (6k edges) run in <50ms.
+        let mut enriched = Vec::with_capacity(rows.len());
+        for mut idx in rows {
+            if idx.status.as_str() == "complete" && idx.edge_count > 0 {
+                idx.max_depth = storage
+                    .estimate_max_depth(tenant_id, workspace_id, idx.id, 50)
+                    .await
+                    .ok()
+                    .flatten();
+            }
+            enriched.push(idx.into());
+        }
+        Ok(Json(ListIndexesResponse { indexes: enriched }))
     }
     #[cfg(not(feature = "postgres"))]
     {
@@ -550,6 +637,7 @@ impl From<edgequake_agents::reference_codebase::CodebaseIndex> for ReferenceCode
             symbol_count: i.symbol_count,
             chunk_count: i.chunk_count,
             edge_count: i.edge_count,
+            max_depth: i.max_depth,
             error_message: i.error_message,
         }
     }

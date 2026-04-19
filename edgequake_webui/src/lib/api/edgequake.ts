@@ -2143,6 +2143,7 @@ export async function getReferenceCodebaseGraph(
     anchor_symbol?: string;
     hops?: number;
     max_nodes?: number;
+    whole?: boolean;
   } = {},
 ): Promise<
   import("@/types/reference-codebase").ReferenceCodebaseGraphResponse
@@ -2154,6 +2155,7 @@ export async function getReferenceCodebaseGraph(
   if (params.hops !== undefined) q.set("hops", String(params.hops));
   if (params.max_nodes !== undefined)
     q.set("max_nodes", String(params.max_nodes));
+  if (params.whole) q.set("whole", "true");
   const qs = q.toString();
   return api.get<
     import("@/types/reference-codebase").ReferenceCodebaseGraphResponse

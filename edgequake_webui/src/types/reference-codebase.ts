@@ -42,6 +42,12 @@ export interface ReferenceCodebaseIndex {
   symbol_count: number;
   chunk_count: number;
   edge_count: number;
+  /**
+   * Approximate graph diameter — the max BFS depth from the
+   * highest-degree symbol. Drives the Code Graph tab's hops slider
+   * upper bound. Omitted for indexes that aren't `complete` yet.
+   */
+  max_depth?: number | null;
   error_message: string | null;
 }
 

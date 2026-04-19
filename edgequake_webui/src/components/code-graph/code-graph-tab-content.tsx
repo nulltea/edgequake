@@ -119,7 +119,14 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
   );
   const [selectedNode, setSelectedNode] =
     useState<ReferenceCodebaseGraphNode | null>(null);
-  const [hops, setHops] = useState(1);
+  // Default to 3 hops — 1 surfaces only direct neighbours which is
+  // almost always too thin for a porting context; 3 typically shows
+  // the callers-of-callers that matter.
+  const [hops, setHops] = useState(3);
+  // Whole-repo toggle: skip BFS, show top-N by degree + every edge
+  // between them. Useful for "give me the lay of the land" before
+  // drilling into an anchor.
+  const [whole, setWhole] = useState(false);
 
   const selectedArtifact = useMemo(
     () => approvedArtifacts.find((a) => a.id === selectedArtifactId) ?? null,
@@ -146,14 +153,25 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
       selectedIndex?.id,
       selectedArtifact?.id,
       hops,
+      whole,
     ],
     queryFn: () =>
       getReferenceCodebaseGraph(selectedIndex!.id, {
-        anchor_artifact_id: selectedArtifact!.id,
-        hops,
-        max_nodes: 200,
+        // Whole mode: no anchor, top-N by degree with a much higher
+        // node cap so the full repo fits. Anchor mode: 200 is plenty
+        // for a N-hop subgraph around one function.
+        ...(whole
+          ? { whole: true, max_nodes: 2000 }
+          : {
+              anchor_artifact_id: selectedArtifact?.id,
+              hops,
+              max_nodes: 500,
+            }),
       }),
-    enabled: !!selectedIndex && !!selectedArtifact && selectedIndex.status === "complete",
+    enabled:
+      !!selectedIndex &&
+      selectedIndex.status === "complete" &&
+      (whole || !!selectedArtifact),
     staleTime: 60 * 1000,
   });
 
@@ -248,18 +266,37 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
       {/* Right pane: graph + drawer */}
       <section className="flex-1 flex flex-col overflow-hidden">
         <div className="flex items-center gap-3 p-3 border-b text-xs">
-          <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={whole}
+              onChange={(e) => setWhole(e.target.checked)}
+              className="h-3.5 w-3.5"
+            />
+            <span>Whole repo</span>
+          </label>
+          <div className={`flex items-center gap-2 ${whole ? "opacity-40" : ""}`}>
             <GitBranch className="h-4 w-4 text-muted-foreground" />
             <span className="text-muted-foreground">Hops</span>
             <input
               type="range"
               min={1}
-              max={3}
-              value={hops}
+              // Slider upper bound = the indexed codebase's approximate
+              // graph diameter, returned by the backend. Falls back to
+              // 10 while loading or for indexes too small to compute a
+              // diameter (e.g. a single-file repo with no edges).
+              max={Math.max(1, selectedIndex?.max_depth ?? 10)}
+              value={Math.min(hops, selectedIndex?.max_depth ?? 10)}
               onChange={(e) => setHops(parseInt(e.target.value, 10))}
+              disabled={whole}
               className="w-24"
             />
-            <span className="tabular-nums">{hops}</span>
+            <span className="tabular-nums">
+              {hops}
+              {selectedIndex?.max_depth
+                ? ` / ${selectedIndex.max_depth}`
+                : ""}
+            </span>
           </div>
           {selectedIndex && (
             <div className="ml-auto flex items-center gap-2 text-muted-foreground">
@@ -345,7 +382,9 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
             />
           ) : (
             <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-              Select an anchor to load its subgraph.
+              {whole
+                ? "Empty index — try toggling whole-repo off and selecting an anchor."
+                : "Select an anchor to load its subgraph, or toggle \"Whole repo\"."}
             </div>
           )}
         </div>

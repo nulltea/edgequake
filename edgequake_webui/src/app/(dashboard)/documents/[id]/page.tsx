@@ -316,7 +316,7 @@ export default function DocumentViewPage() {
                 Code Matches
               </TabsTrigger>
               <TabsTrigger value="code-graph">
-                <GitBranch className="h-3.5 w-3.5" />
+                <Network className="h-3.5 w-3.5" />
                 Code Graph
               </TabsTrigger>
             </TabsList>
@@ -428,7 +428,7 @@ export default function DocumentViewPage() {
                 Code
               </TabsTrigger>
               <TabsTrigger value="code-graph">
-                <GitBranch className="h-3.5 w-3.5" />
+                <Network className="h-3.5 w-3.5" />
                 Graph
               </TabsTrigger>
               <TabsTrigger value="metadata">Details</TabsTrigger>

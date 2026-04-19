@@ -83,6 +83,11 @@ pub struct CodebaseIndex {
     pub symbol_count: i32,
     pub chunk_count: i32,
     pub edge_count: i32,
+    /// Approximate graph diameter (max BFS depth from the highest-degree
+    /// symbol). Computed on-demand in `get_index` so it matches the
+    /// current edge set without requiring reindex. `None` on indexes
+    /// that aren't `complete` yet.
+    pub max_depth: Option<i32>,
     pub error_message: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
