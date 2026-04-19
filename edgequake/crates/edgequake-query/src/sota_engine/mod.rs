@@ -85,7 +85,8 @@ use crate::truncation::TruncationConfig;
 
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
 use edgequake_llm::Reranker;
-use edgequake_storage::traits::{GraphStorage, VectorStorage};
+use edgequake_agents::code_analysis::JinaEmbedder;
+use edgequake_storage::traits::{CodeVectorStorage, GraphStorage, VectorStorage};
 
 /// Configuration for the SOTA query engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +253,12 @@ pub struct SOTAQueryEngine {
     /// Cache for keyword validation (keyword -> exists_in_graph).
     /// WHY: Avoids repeated graph lookups for the same keywords.
     keyword_validation_cache: Arc<tokio::sync::RwLock<std::collections::HashMap<String, bool>>>,
+    /// Phase 1 Reference Code GraphRAG: approved-snippet vector store.
+    /// `None` disables the post-retrieval code-enrichment step entirely.
+    code_vector_storage: Option<Arc<dyn CodeVectorStorage>>,
+    /// Jina code-embedder client used to embed the NL query for the same step.
+    /// `None` disables enrichment just like an absent `code_vector_storage`.
+    code_embedder: Option<Arc<JinaEmbedder>>,
 }
 
 impl SOTAQueryEngine {
@@ -284,6 +291,8 @@ impl SOTAQueryEngine {
             keyword_validation_cache: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            code_vector_storage: None,
+            code_embedder: None,
         }
     }
 
@@ -315,6 +324,8 @@ impl SOTAQueryEngine {
             keyword_validation_cache: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            code_vector_storage: None,
+            code_embedder: None,
         }
     }
 
@@ -328,6 +339,28 @@ impl SOTAQueryEngine {
     pub fn with_tokenizer(mut self, tokenizer: Arc<dyn Tokenizer>) -> Self {
         self.tokenizer = tokenizer;
         self
+    }
+
+    /// Wire in the approved-code vector store + code embedder used by the
+    /// Phase 1 Reference Code GraphRAG post-retrieval enrichment step.
+    pub fn with_code_reference(
+        mut self,
+        storage: Arc<dyn CodeVectorStorage>,
+        embedder: Arc<JinaEmbedder>,
+    ) -> Self {
+        self.code_vector_storage = Some(storage);
+        self.code_embedder = Some(embedder);
+        self
+    }
+
+    /// Accessor for the code-reference vector store (None = feature off).
+    pub fn code_vector_storage(&self) -> Option<&Arc<dyn CodeVectorStorage>> {
+        self.code_vector_storage.as_ref()
+    }
+
+    /// Accessor for the code embedder (None = feature off).
+    pub fn code_embedder(&self) -> Option<&Arc<JinaEmbedder>> {
+        self.code_embedder.as_ref()
     }
 }
 

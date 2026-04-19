@@ -2223,6 +2223,7 @@ version = "0.10.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "edgequake-agents",
  "edgequake-core",
  "edgequake-llm",
  "edgequake-storage",
@@ -2233,7 +2234,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

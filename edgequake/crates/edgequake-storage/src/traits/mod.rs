@@ -22,11 +22,13 @@
 //! - **Flexibility**: Multiple backend support (Postgres, Memory, SurrealDB)
 //! - **Modularity**: Storage can be swapped without changing business logic
 
+mod code_vector;
 mod graph;
 mod kv;
 mod vector;
 mod workspace_vector;
 
+pub use code_vector::{CodeSearchHit, CodeVectorStorage};
 pub use graph::{GraphEdge, GraphNode, GraphStorage, KnowledgeGraph};
 pub use kv::KVStorage;
 pub use vector::{MetadataFilter, VectorSearchResult, VectorStorage};

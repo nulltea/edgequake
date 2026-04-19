@@ -271,6 +271,23 @@ async fn review_impl(
                     "graph sync failed (non-fatal)"
                 );
             }
+            // Embedding sync: approve → embed + index; reject → delete index.
+            // Best-effort, same pattern: failures don't poison the review.
+            if let Err(e) = sync_embedding_for_review(
+                pool,
+                tenant_id,
+                workspace_id,
+                code_artifact_id,
+                request.status,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    code_artifact_id = %code_artifact_id,
+                    "embedding sync failed (non-fatal)"
+                );
+            }
         }
         ArtifactStatus::Pending => {}
     }
@@ -457,4 +474,94 @@ async fn find_repo_by_id(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to list document_repos: {e}")))?;
     Ok(rows.into_iter().find(|r| r.id == id))
+}
+
+/// Embed the approved snippet into `code_artifact_embeddings` (upsert) or
+/// drop its index row on rejection. Silently skipped when
+/// `EDGEQUAKE_CODE_EMBEDDING_URL` is unset — lets the feature roll out
+/// without a hard dep on the embedder service.
+#[cfg(feature = "postgres")]
+async fn sync_embedding_for_review(
+    pool: &sqlx::PgPool,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    code_artifact_id: Uuid,
+    status: edgequake_agents::code_analysis::ArtifactStatus,
+) -> Result<(), String> {
+    use edgequake_agents::code_analysis::{ArtifactStatus, CodeEmbeddingStorage, JinaEmbedder};
+
+    let storage = CodeEmbeddingStorage::new(pool.clone());
+
+    match status {
+        ArtifactStatus::Approved => {
+            let Some(url) = std::env::var("EDGEQUAKE_CODE_EMBEDDING_URL")
+                .ok()
+                .filter(|v| !v.is_empty())
+            else {
+                tracing::debug!(
+                    code_artifact_id = %code_artifact_id,
+                    "EDGEQUAKE_CODE_EMBEDDING_URL unset — skipping embedding"
+                );
+                return Ok(());
+            };
+            let model = std::env::var("EDGEQUAKE_CODE_EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "jina-code-embeddings".to_string());
+            let dim: usize = std::env::var("EDGEQUAKE_CODE_EMBEDDING_DIMENSION")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(896);
+
+            // Load the snippet + metadata we need to vectorise + upsert.
+            let row: Option<(String, Uuid, String)> = sqlx::query_as(
+                r#"SELECT snippet, algorithm_id, document_id
+                   FROM code_artifacts
+                   WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3"#,
+            )
+            .bind(code_artifact_id)
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("fetch code_artifact: {e}"))?;
+            let (snippet, algorithm_id, document_id) =
+                row.ok_or_else(|| format!("code_artifact {code_artifact_id} disappeared"))?;
+
+            let embedder = JinaEmbedder::new(url, &model, dim);
+            let embedding = embedder
+                .embed_code_for_indexing(&snippet)
+                .await
+                .map_err(|e| format!("embed snippet: {e}"))?;
+
+            let embedding_row_id = storage
+                .upsert(
+                    code_artifact_id,
+                    tenant_id,
+                    workspace_id,
+                    &document_id,
+                    algorithm_id,
+                    &model,
+                    &embedding,
+                )
+                .await
+                .map_err(|e| format!("persist embedding: {e}"))?;
+
+            tracing::info!(
+                %code_artifact_id,
+                %embedding_row_id,
+                dim = embedding.len(),
+                "indexed approved code_artifact into vector store"
+            );
+        }
+        ArtifactStatus::Rejected => {
+            if let Err(e) = storage.delete_for_artifact(code_artifact_id).await {
+                return Err(format!("delete embedding: {e}"));
+            }
+            tracing::info!(
+                %code_artifact_id,
+                "removed rejected code_artifact from vector store"
+            );
+        }
+        ArtifactStatus::Pending => {}
+    }
+    Ok(())
 }

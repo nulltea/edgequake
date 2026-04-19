@@ -44,6 +44,13 @@ services:
             # Phase 1 — code-analyzer sidecar (algorithm localization in cloned repos).
             CODE_ANALYZER_URL: "${CODE_ANALYZER_URL:-http://code-analyzer:9100}"
             CODE_ANALYZER_WORKSPACE: /workspace
+
+            # Phase 1 — code embedder (jina-code-embeddings via llama-server).
+            # Both approval-time indexing and query-time semantic search use it.
+            # Unset EDGEQUAKE_CODE_EMBEDDING_URL to disable the feature entirely.
+            EDGEQUAKE_CODE_EMBEDDING_URL: "${EDGEQUAKE_CODE_EMBEDDING_URL:-http://host.docker.internal:11437/v1}"
+            EDGEQUAKE_CODE_EMBEDDING_MODEL: "${EDGEQUAKE_CODE_EMBEDDING_MODEL:-jina-code-embeddings}"
+            EDGEQUAKE_CODE_EMBEDDING_DIMENSION: "${EDGEQUAKE_CODE_EMBEDDING_DIMENSION:-896}"
         extra_hosts:
             - "host.docker.internal:host-gateway"
         depends_on:
@@ -79,6 +86,10 @@ services:
             CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
             CODE_ANALYZER_PORT: "9100"
             CODE_ANALYZER_WORKSPACE: /workspace
+            # Default Claude model. Pinned to "sonnet" to keep localization off
+            # the Opus quota; per-request override via AnalyzeRequest.model still
+            # wins. Set to "opus" / "haiku" / full model id as needed.
+            CODE_ANALYZER_DEFAULT_MODEL: "${CODE_ANALYZER_DEFAULT_MODEL:-sonnet}"
             LOG_LEVEL: "${CODE_ANALYZER_LOG_LEVEL:-INFO}"
         ports:
             - "${CODE_ANALYZER_PORT:-9100}:9100"

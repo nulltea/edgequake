@@ -9,11 +9,15 @@
 //! glue (types, HTTP client, snippet reader, storage).
 
 pub mod client;
+pub mod embedding;
 pub mod snippet;
 pub mod storage;
 pub mod types;
 
 pub use client::{AnalyzerClient, AnalyzerClientError};
+#[cfg(feature = "postgres")]
+pub use embedding::{CodeEmbeddingStorage, EmbeddingStorageError};
+pub use embedding::{EmbedderError, JinaCodeTask, JinaEmbedder};
 pub use snippet::{extract as extract_snippet, language_from_path, ExtractedSnippet, SnippetError};
 #[cfg(feature = "postgres")]
 pub use storage::PostgresCodeArtifactStorage;

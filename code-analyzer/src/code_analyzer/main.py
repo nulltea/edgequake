@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(os.environ.get("CODE_ANALYZER_WORKSPACE", "/workspace"))
 
+# Default Claude model used when /analyze callers don't override it. Pinned to
+# "sonnet" so we never accidentally burn the Opus quota on routine localization
+# — request.model still wins if the caller explicitly asks for something else.
+DEFAULT_MODEL = os.environ.get("CODE_ANALYZER_DEFAULT_MODEL", "sonnet")
+
 app = FastAPI(title="code-analyzer", version="0.1.0")
 
 
@@ -80,11 +85,12 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
             status_code=502, detail=f"clone failed: {e}"
         ) from e
 
+    model = req.model or DEFAULT_MODEL
     try:
         findings, cost, _, num_turns = localize_all(
             repo_path,
             req.algorithms,
-            model=req.model,
+            model=model,
             timeout_s=req.timeout_s,
         )
     except ClaudeCliError as e:
