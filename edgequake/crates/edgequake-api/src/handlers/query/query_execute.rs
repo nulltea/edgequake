@@ -20,7 +20,9 @@ use super::{
         get_workspace_vector_storage,
     },
 };
-pub use crate::handlers::query_types::{QueryRequest, QueryResponse, QueryStats, SourceReference};
+pub use crate::handlers::query_types::{
+    QueryRequest, QueryResponse, QueryStats, ReferenceCodeSnippetDto, SourceReference,
+};
 
 /// Execute a RAG query with multi-mode retrieval.
 ///
@@ -497,6 +499,28 @@ pub async fn execute_query(
             None
         };
 
+    // Phase 1 Reference Code GraphRAG: lift approved code snippets out of the
+    // context into a first-class response field so callers that render their
+    // own output (e.g. OpenWebUI tool) don't have to grep the LLM prompt.
+    let reference_code: Vec<ReferenceCodeSnippetDto> = result
+        .context
+        .reference_code
+        .iter()
+        .map(|s| ReferenceCodeSnippetDto {
+            algorithm_id: s.algorithm_id.clone(),
+            algorithm_name: s.algorithm_name.clone(),
+            document_id: s.document_id.clone(),
+            file_path: s.file_path.clone(),
+            start_line: s.start_line,
+            end_line: s.end_line,
+            language: s.language.clone(),
+            snippet: s.snippet.clone(),
+            repo_url: s.repo_url.clone(),
+            repo_commit: s.repo_commit.clone(),
+            match_rationale: s.match_rationale.clone(),
+        })
+        .collect();
+
     let response = QueryResponse {
         answer: result.answer,
         mode: result.mode.to_string(),
@@ -518,6 +542,7 @@ pub async fn execute_query(
         },
         conversation_id,
         reranked,
+        reference_code,
     };
 
     Ok(Json(response))

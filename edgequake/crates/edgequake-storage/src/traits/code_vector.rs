@@ -37,6 +37,12 @@ pub struct CodeSearchHit {
 pub trait CodeVectorStorage: Send + Sync {
     /// Return the nearest approved snippets to `query_vec` within
     /// `max_distance`, scoped to `(tenant_id, workspace_id)`.
+    ///
+    /// When `document_ids` is `Some(&[...])`, hits are restricted to code
+    /// artifacts belonging to those documents — used by the query engine
+    /// to avoid cross-citing code from papers that weren't actually
+    /// surfaced by the main retrieval pass. `None` (or an empty slice)
+    /// disables the filter and searches the whole workspace.
     async fn search_approved_code(
         &self,
         tenant_id: Uuid,
@@ -44,5 +50,6 @@ pub trait CodeVectorStorage: Send + Sync {
         query_vec: &[f32],
         limit: i64,
         max_distance: f64,
+        document_ids: Option<&[String]>,
     ) -> Result<Vec<CodeSearchHit>>;
 }

@@ -33,17 +33,39 @@ impl CodeVectorStorage for PgCodeVectorStorage {
         query_vec: &[f32],
         limit: i64,
         max_distance: f64,
+        document_ids: Option<&[String]>,
     ) -> Result<Vec<CodeSearchHit>> {
         let literal = vector_literal(query_vec);
-        let rows: Vec<Row> = sqlx::query_as::<_, Row>(SQL)
-            .bind(&literal)
-            .bind(tenant_id)
-            .bind(workspace_id)
-            .bind(limit)
-            .bind(max_distance)
-            .fetch_all(&*self.pool)
-            .await
-            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        // When document_ids is Some(non-empty), restrict the vector search
+        // to those documents so we don't surface code from papers that
+        // main retrieval didn't hit. The filter is pushed *into* the CTE
+        // so pgvector's HNSW index applies after the pre-filter — scoring
+        // is still top-k by distance, but only among allowed documents.
+        let use_filter = matches!(document_ids, Some(ids) if !ids.is_empty());
+
+        let rows: Vec<Row> = if use_filter {
+            let ids: &[String] = document_ids.unwrap();
+            sqlx::query_as::<_, Row>(SQL_FILTERED)
+                .bind(&literal)
+                .bind(tenant_id)
+                .bind(workspace_id)
+                .bind(limit)
+                .bind(max_distance)
+                .bind(ids)
+                .fetch_all(&*self.pool)
+                .await
+        } else {
+            sqlx::query_as::<_, Row>(SQL)
+                .bind(&literal)
+                .bind(tenant_id)
+                .bind(workspace_id)
+                .bind(limit)
+                .bind(max_distance)
+                .fetch_all(&*self.pool)
+                .await
+        }
+        .map_err(|e| StorageError::Database(e.to_string()))?;
 
         Ok(rows.into_iter().map(Row::into_hit).collect())
     }
@@ -57,6 +79,45 @@ const SQL: &str = r#"
         FROM code_artifact_embeddings cae
         WHERE cae.tenant_id = $2
           AND cae.workspace_id = $3
+        ORDER BY cae.embedding <=> $1::vector ASC
+        LIMIT $4
+    )
+    SELECT
+        ca.algorithm_id::text      AS algorithm_id,
+        a.name                     AS algorithm_name,
+        ca.document_id             AS document_id,
+        ca.file_path               AS file_path,
+        ca.start_line              AS start_line,
+        ca.end_line                AS end_line,
+        ca.language                AS language,
+        ca.snippet                 AS snippet,
+        ca.repo_commit             AS repo_commit,
+        ca.match_rationale         AS match_rationale,
+        dr.url                     AS repo_url,
+        m.distance::float8         AS distance
+    FROM matches m
+    JOIN code_artifacts ca ON ca.id = m.code_artifact_id
+    JOIN algorithms a ON a.id = ca.algorithm_id
+    LEFT JOIN document_repos dr ON dr.id = ca.document_repo_id
+    WHERE ca.status = 'approved'
+      AND m.distance <= $5
+    ORDER BY m.distance ASC
+"#;
+
+/// Same as [`SQL`] but pre-filters to `code_artifacts.document_id = ANY($6)`
+/// inside the CTE. This keeps the vector-search top-K honest — without
+/// pushing the filter into the CTE, a paper-unrelated snippet could evict
+/// the right one from the top-K before the WHERE runs.
+const SQL_FILTERED: &str = r#"
+    WITH matches AS (
+        SELECT
+            cae.code_artifact_id,
+            cae.embedding <=> $1::vector AS distance
+        FROM code_artifact_embeddings cae
+        JOIN code_artifacts ca2 ON ca2.id = cae.code_artifact_id
+        WHERE cae.tenant_id = $2
+          AND cae.workspace_id = $3
+          AND ca2.document_id = ANY($6)
         ORDER BY cae.embedding <=> $1::vector ASC
         LIMIT $4
     )

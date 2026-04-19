@@ -73,6 +73,16 @@ async fn try_enrich(
         .await
         .map_err(|e| EnrichmentError::Embedder(e.to_string()))?;
 
+    // Scope the vector search to documents surfaced by the main retrieval.
+    // Prevents cross-paper contamination in workspaces with >1 approved
+    // code_artifact: the code for algorithm X from paper A shouldn't bleed
+    // into answers about paper B's similarly-named algorithm.
+    // Empty set → skip enrichment entirely (main retrieval hit no docs).
+    let document_ids = collect_retrieved_document_ids(context);
+    if document_ids.is_empty() {
+        return Ok(());
+    }
+
     let hits = storage
         .search_approved_code(
             tenant_uuid,
@@ -80,6 +90,7 @@ async fn try_enrich(
             &query_vec,
             max_snippets,
             max_distance,
+            Some(&document_ids),
         )
         .await
         .map_err(|e| EnrichmentError::Storage(e.to_string()))?;
@@ -112,6 +123,37 @@ async fn try_enrich(
         "attached reference-code snippets via vector search"
     );
     Ok(())
+}
+
+/// Collect distinct `document_id`s that main retrieval surfaced in the
+/// context (chunks + entities + relationships). These define the "paper
+/// allow-list" the code search is restricted to.
+fn collect_retrieved_document_ids(context: &QueryContext) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for chunk in &context.chunks {
+        if let Some(id) = chunk.document_id.as_ref().filter(|s| !s.is_empty()) {
+            seen.insert(id.clone());
+        }
+    }
+    for entity in &context.entities {
+        if let Some(id) = entity
+            .source_document_id
+            .as_ref()
+            .filter(|s| !s.is_empty())
+        {
+            seen.insert(id.clone());
+        }
+    }
+    for rel in &context.relationships {
+        if let Some(id) = rel
+            .source_document_id
+            .as_ref()
+            .filter(|s| !s.is_empty())
+        {
+            seen.insert(id.clone());
+        }
+    }
+    seen.into_iter().collect()
 }
 
 #[derive(Debug, thiserror::Error)]
