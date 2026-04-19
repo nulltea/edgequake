@@ -2074,7 +2074,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
- "tiktoken-rs",
+ "tiktoken-rs 0.9.1",
  "tokio",
  "tokio-test",
  "tracing",
@@ -2108,7 +2108,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
- "tiktoken-rs",
+ "tiktoken-rs 0.6.0",
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
@@ -2180,12 +2180,14 @@ dependencies = [
  "edgequake-llm",
  "edgequake-storage",
  "futures",
+ "pulldown-cmark",
  "regex",
  "serde",
  "serde_json",
  "sha2",
  "text-splitter",
  "thiserror 2.0.18",
+ "tiktoken-rs 0.9.1",
  "tokio",
  "tokio-util",
  "tracing",
@@ -6742,6 +6744,7 @@ dependencies = [
  "pulldown-cmark",
  "strum",
  "thiserror 2.0.18",
+ "tiktoken-rs 0.9.1",
 ]
 
 [[package]]
@@ -6819,6 +6822,21 @@ dependencies = [
  "fancy-regex 0.13.0",
  "lazy_static",
  "parking_lot",
+ "regex",
+ "rustc-hash 1.1.0",
+]
+
+[[package]]
+name = "tiktoken-rs"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a19830747d9034cd9da43a60eaa8e552dfda7712424aebf187b7a60126bae0d"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bstr",
+ "fancy-regex 0.13.0",
+ "lazy_static",
  "regex",
  "rustc-hash 1.1.0",
 ]

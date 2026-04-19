@@ -38,9 +38,12 @@
 //! - [`text_utils`]: String splitting, UTF-8 boundary, sentence detection utilities
 //! - `strategies`: Chunking strategy implementations (token, character, sentence, paragraph)
 
+mod heading_path;
 mod strategies;
 pub mod text_utils;
 mod types;
+
+pub use heading_path::HeadingPathIndex;
 
 use std::sync::Arc;
 
@@ -69,7 +72,15 @@ impl Chunker {
     pub fn new(config: ChunkerConfig) -> Self {
         Self {
             config,
-            strategy: Arc::new(TokenBasedChunking),
+            // Default is markdown-aware. `ContextAwareChunking` is
+            // structure-aware (headings, code fences, `$$` math blocks,
+            // lists are preserved), uses a real BPE tokenizer, tags every
+            // chunk with its heading path, and merges small-but-same-
+            // section neighbours. Replaces TokenBasedChunking which had
+            // no markdown awareness and silently split algorithm boxes
+            // mid-content. Explicit opt-out via `Chunker::with_strategy`
+            // if you truly want the old sliding window.
+            strategy: Arc::new(ContextAwareChunking),
         }
     }
 
@@ -97,9 +108,14 @@ impl Chunker {
     }
 
     /// Chunk text into overlapping segments.
+    ///
+    /// Delegates to the configured strategy (default: `ContextAwareChunking`)
+    /// via `futures::executor::block_on` so we respect the user's choice of
+    /// strategy from `with_strategy()`. Our strategies are CPU-only (no await
+    /// points that need a tokio reactor), so block_on is safe even inside a
+    /// tokio runtime.
     pub fn chunk(&self, text: &str, doc_id: &str) -> Result<Vec<TextChunk>> {
-        // Always use sync implementation to avoid tokio runtime conflicts
-        self.chunk_sync(text, doc_id)
+        futures::executor::block_on(self.chunk_async(text, doc_id))
     }
 
     /// Chunk text asynchronously using the configured strategy.
@@ -118,7 +134,7 @@ impl Chunker {
                 let (start_line, end_line) = calculate_line_numbers(text, start_offset, end_offset);
                 cumulative_offset = end_offset;
 
-                TextChunk::with_line_numbers(
+                let mut chunk = TextChunk::with_line_numbers(
                     id,
                     result.content.clone(),
                     result.chunk_order_index,
@@ -126,49 +142,11 @@ impl Chunker {
                     end_offset,
                     start_line,
                     end_line,
-                )
+                );
+                chunk.set_heading_path(result.heading_path);
+                chunk
             })
             .collect())
-    }
-
-    /// Synchronous chunk implementation (fallback).
-    fn chunk_sync(&self, text: &str, doc_id: &str) -> Result<Vec<TextChunk>> {
-        if text.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let target_chars = self.config.chunk_size * 4;
-        let overlap_chars = self.config.chunk_overlap * 4;
-        let min_chars = self.config.min_chunk_size * 4;
-
-        let chunks = self.split_text(text, target_chars, overlap_chars, min_chars);
-
-        Ok(chunks
-            .into_iter()
-            .enumerate()
-            .map(|(index, (content, start, end))| {
-                let id = format!("{}-chunk-{}", doc_id, index);
-                let (start_line, end_line) = calculate_line_numbers(text, start, end);
-                TextChunk::with_line_numbers(id, content, index, start, end, start_line, end_line)
-            })
-            .collect())
-    }
-
-    /// Split text using recursive character splitting.
-    fn split_text(
-        &self,
-        text: &str,
-        target_size: usize,
-        overlap: usize,
-        min_size: usize,
-    ) -> Vec<(String, usize, usize)> {
-        text_utils::split_text_internal(
-            text,
-            target_size,
-            overlap,
-            min_size,
-            &self.config.separators,
-        )
     }
 
     /// Find the best split point near the target size.
@@ -192,7 +170,15 @@ impl Default for Chunker {
     fn default() -> Self {
         Self {
             config: ChunkerConfig::default(),
-            strategy: Arc::new(TokenBasedChunking),
+            // Default is markdown-aware. `ContextAwareChunking` is
+            // structure-aware (headings, code fences, `$$` math blocks,
+            // lists are preserved), uses a real BPE tokenizer, tags every
+            // chunk with its heading path, and merges small-but-same-
+            // section neighbours. Replaces TokenBasedChunking which had
+            // no markdown awareness and silently split algorithm boxes
+            // mid-content. Explicit opt-out via `Chunker::with_strategy`
+            // if you truly want the old sliding window.
+            strategy: Arc::new(ContextAwareChunking),
         }
     }
 }

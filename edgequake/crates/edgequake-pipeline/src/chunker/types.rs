@@ -16,6 +16,13 @@ pub struct ChunkResult {
     pub tokens: usize,
     /// Zero-based index indicating the chunk's order in the document.
     pub chunk_order_index: usize,
+    /// Heading hierarchy active at the chunk's location, shallow-to-deep
+    /// (e.g. `["II. Preliminaries", "B. B2A Protocol"]`). Empty when the
+    /// chunk sits before any heading or when the strategy doesn't track
+    /// paths. Used by merge logic and by retrieval to prefer in-section
+    /// matches.
+    #[serde(default)]
+    pub heading_path: Vec<String>,
 }
 
 /// Trait for custom chunking strategies.
@@ -121,6 +128,12 @@ pub struct TextChunk {
     /// Approximate token count.
     pub token_count: usize,
 
+    /// Heading hierarchy active at this chunk's location, shallow-to-deep.
+    /// Empty when the chunk sits before any heading. Populated by
+    /// `ContextAwareChunking`; other strategies currently leave this empty.
+    #[serde(default)]
+    pub heading_path: Vec<String>,
+
     /// Chunk embedding.
     pub embedding: Option<Vec<f32>>,
 }
@@ -145,6 +158,7 @@ impl TextChunk {
             start_line: 1,
             end_line: 1,
             token_count,
+            heading_path: Vec::new(),
             embedding: None,
         }
     }
@@ -170,8 +184,14 @@ impl TextChunk {
             start_line,
             end_line,
             token_count,
+            heading_path: Vec::new(),
             embedding: None,
         }
+    }
+
+    /// Set the heading path after creation.
+    pub fn set_heading_path(&mut self, heading_path: Vec<String>) {
+        self.heading_path = heading_path;
     }
 
     /// Set line numbers after creation.
