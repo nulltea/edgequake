@@ -165,6 +165,13 @@ impl PdfConverter for VlmOcrConverter {
                                 }
 
                                 let md = result.to_markdown();
+                                // Apply the same deterministic LaTeX repair we run on
+                                // algorithm blocks (\mathbb{S} from sampling-$, unbraced
+                                // ^\theta scripts, orphan $ delimiters, unbalanced [[…]],
+                                // JSON-escape collisions). Without this pass the full
+                                // page markdown stored in pdf_documents.markdown_content
+                                // keeps OCR artefacts that the algorithm path avoids.
+                                let md = crate::latex_repair::repair_latex(&md);
                                 if md.trim().is_empty() { None } else { Some(md) }
                             }
                             Err(e) => {
