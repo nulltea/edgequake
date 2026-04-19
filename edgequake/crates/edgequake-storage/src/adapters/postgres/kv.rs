@@ -129,21 +129,39 @@ impl KVStorage for PostgresKVStorage {
     }
 
     async fn get_by_ids(&self, ids: &[String]) -> Result<Vec<serde_json::Value>> {
+        // Contract: returns one `Value` per input `id`, in the same order.
+        // Missing keys become `Value::Null`.
+        //
+        // WHY the key+value projection and explicit re-ordering: the previous
+        // `SELECT value FROM kv WHERE key = ANY($1)` relied on Postgres row
+        // order, which is unspecified. Callers that paired `ids[i]` with
+        // `result[i]` (e.g. `recover_orphaned_documents`) silently wrote each
+        // doc's metadata to the WRONG key slot, scrambling the KV on every
+        // backend restart. See migration note in main.rs's recovery hook.
         if ids.is_empty() {
             return Ok(Vec::new());
         }
 
         let pool = self.pool.get().await?;
 
-        let sql = format!("SELECT value FROM {} WHERE key = ANY($1)", self.table_name);
+        let sql = format!(
+            "SELECT key, value FROM {} WHERE key = ANY($1)",
+            self.table_name
+        );
 
-        let rows: Vec<(serde_json::Value,)> = sqlx::query_as(&sql)
+        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(&sql)
             .bind(ids)
             .fetch_all(&pool)
             .await
             .map_err(|e| StorageError::Database(format!("KV get_by_ids failed: {}", e)))?;
 
-        Ok(rows.into_iter().map(|(v,)| v).collect())
+        let map: std::collections::HashMap<String, serde_json::Value> =
+            rows.into_iter().collect();
+
+        Ok(ids
+            .iter()
+            .map(|k| map.get(k).cloned().unwrap_or(serde_json::Value::Null))
+            .collect())
     }
 
     async fn filter_keys(&self, keys: HashSet<String>) -> Result<HashSet<String>> {

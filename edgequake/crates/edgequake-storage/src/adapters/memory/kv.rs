@@ -75,18 +75,18 @@ impl KVStorage for MemoryKVStorage {
     }
 
     async fn get_by_ids(&self, ids: &[String]) -> Result<Vec<serde_json::Value>> {
+        // Contract: one value per input id, same order, `Value::Null` for
+        // missing keys. Mirrors the Postgres adapter so callers that zip
+        // `ids[i]` with `values[i]` are safe in both backends.
         let data = self
             .data
             .read()
             .map_err(|e| StorageError::Database(format!("Lock error: {}", e)))?;
 
-        let mut results = Vec::new();
-        for id in ids {
-            if let Some(value) = data.get(id) {
-                results.push(value.clone());
-            }
-        }
-        Ok(results)
+        Ok(ids
+            .iter()
+            .map(|id| data.get(id).cloned().unwrap_or(serde_json::Value::Null))
+            .collect())
     }
 
     async fn filter_keys(&self, keys: HashSet<String>) -> Result<HashSet<String>> {
@@ -248,7 +248,13 @@ mod tests {
 
         let ids: Vec<String> = vec!["0".to_string(), "2".to_string(), "999".to_string()];
         let results = storage.get_by_ids(&ids).await.unwrap();
-        assert_eq!(results.len(), 2);
+        // Contract: one result per input id, in the same order, with
+        // `Value::Null` for missing keys (keeps `ids[i] ↔ results[i]`
+        // positional pairing safe even when some keys don't exist).
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], json!({"id": "0", "value": 0}));
+        assert_eq!(results[1], json!({"id": "2", "value": 2}));
+        assert_eq!(results[2], serde_json::Value::Null);
     }
 
     #[tokio::test]

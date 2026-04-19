@@ -253,7 +253,9 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
             }`}
           >
             <div className="font-medium truncate">
-              {algorithmNameById.get(a.algorithm_id) ?? "Unknown algorithm"}
+              {a.algorithm_id
+                ? (algorithmNameById.get(a.algorithm_id) ?? "Unknown algorithm")
+                : "Orphan match"}
             </div>
             <div className="text-muted-foreground mt-1 truncate">
               <FileCode2 className="inline h-3 w-3 mr-1" />

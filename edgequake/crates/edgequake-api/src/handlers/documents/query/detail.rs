@@ -48,7 +48,13 @@ pub async fn get_document(
         "Metadata values retrieved"
     );
 
-    let metadata = metadata_values.into_iter().next();
+    // `get_by_ids` now returns `Vec<Value>` with `Value::Null` for missing
+    // keys (positional contract). Filter Null so downstream "not found"
+    // checks still work.
+    let metadata = metadata_values
+        .into_iter()
+        .next()
+        .filter(|v| !v.is_null());
     debug!(has_metadata = metadata.is_some(), "Metadata value present");
 
     // Check if document exists by metadata or chunks

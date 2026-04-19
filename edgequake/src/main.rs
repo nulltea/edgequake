@@ -273,8 +273,82 @@ async fn recover_orphaned_documents(
 
     let mut auto_recovered_count = 0;
     let mut needs_reupload_count = 0;
+    let mut scrambled_repaired_count = 0;
 
     for (key, value) in metadata_keys.iter().zip(metadata_values.iter()) {
+        // Detect scrambled metadata — a row whose JSON `id` doesn't match
+        // the key prefix. This was caused by a contract bug in the Postgres
+        // `get_by_ids` (returned rows in arbitrary order while callers
+        // zipped by position), which previous recovery passes perpetuated
+        // by writing each doc's JSON to the wrong slot. The `get_by_ids`
+        // fix prevents new scrambling, but existing scrambled rows need
+        // patching here so the id field matches the key prefix.
+        //
+        // We cannot recover fields the donor JSON overwrote (title, real
+        // chunk_count, status), but we CAN restore the identity invariant
+        // and clear a misleading `pdf_id`/etc. belonging to the donor.
+        let expected_id: Option<String> = key
+            .strip_suffix("-metadata")
+            .filter(|prefix| prefix.len() == 36)
+            .map(|prefix| prefix.to_string());
+
+        if let (Some(expected), Some(obj)) = (expected_id.as_deref(), value.as_object()) {
+            let json_id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if !json_id.is_empty() && json_id != expected {
+                // Scrambled row: JSON carries another document's identity.
+                // Replace with a minimal, correct envelope. Further fields
+                // (title, pdf linkage) need a separate reconstruction pass
+                // that joins against `pdf_documents` — done at the SQL
+                // layer, not here.
+                let tenant_id = obj
+                    .get("tenant_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let workspace_id = obj
+                    .get("workspace_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let mut repaired = serde_json::Map::new();
+                repaired.insert("id".to_string(), serde_json::json!(expected));
+                if let Some(t) = tenant_id {
+                    repaired.insert("tenant_id".to_string(), serde_json::json!(t));
+                }
+                if let Some(w) = workspace_id {
+                    repaired.insert("workspace_id".to_string(), serde_json::json!(w));
+                }
+                repaired.insert("status".to_string(), serde_json::json!("pending"));
+                repaired.insert("current_stage".to_string(), serde_json::json!("pending"));
+                repaired.insert(
+                    "stage_message".to_string(),
+                    serde_json::json!(
+                        "Metadata recovered after KV scramble — identity restored from key prefix"
+                    ),
+                );
+                repaired.insert(
+                    "updated_at".to_string(),
+                    serde_json::json!(now.to_rfc3339()),
+                );
+
+                match kv_storage
+                    .upsert(&[(key.clone(), serde_json::json!(repaired))])
+                    .await
+                {
+                    Ok(_) => {
+                        scrambled_repaired_count += 1;
+                        warn!(
+                            "🔧 Repaired scrambled metadata: {} (JSON id was '{}' → reset to key prefix)",
+                            key, json_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to repair scrambled metadata {}: {}", key, e);
+                    }
+                }
+                continue;
+            }
+        }
+
         if let Some(obj) = value.as_object() {
             // Check both `status` and `current_stage` for stuck states
             let status = obj.get("status").and_then(|v| v.as_str()).unwrap_or("");
@@ -375,11 +449,12 @@ async fn recover_orphaned_documents(
         }
     }
 
-    let total_recovered = auto_recovered_count + needs_reupload_count;
+    let total_recovered =
+        auto_recovered_count + needs_reupload_count + scrambled_repaired_count;
     if total_recovered > 0 {
         info!(
-            "🔧 Orphaned document recovery complete: {} auto-recovered (pending), {} need re-upload (failed)",
-            auto_recovered_count, needs_reupload_count
+            "🔧 Orphaned document recovery complete: {} auto-recovered (pending), {} need re-upload (failed), {} scrambled-metadata repaired",
+            auto_recovered_count, needs_reupload_count, scrambled_repaired_count
         );
     } else {
         info!("✅ No orphaned documents found - clean startup");
