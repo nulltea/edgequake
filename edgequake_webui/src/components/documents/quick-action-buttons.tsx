@@ -42,6 +42,9 @@ export interface QuickActionButtonsProps {
   onViewInGraph: (doc: Document) => void;
   /** Handler for "View Algorithms" click - navigates to algorithms tab */
   onViewAlgorithms?: (doc: Document) => void;
+  /** True when this doc has at least one extracted algorithm row. Gates
+   *  the `</>` button so it doesn't show on docs that never produced any. */
+  hasAlgorithms?: boolean;
   /** Handler for "Retry" click - reprocesses failed document */
   onRetry: (id: string) => void;
   /** Whether retry operation is in progress */
@@ -96,6 +99,7 @@ export function QuickActionButtons({
   onPreview,
   onViewInGraph,
   onViewAlgorithms,
+  hasAlgorithms = false,
   onRetry,
   isRetrying,
   children,
@@ -103,6 +107,7 @@ export function QuickActionButtons({
   const status = doc.status ?? '';
   const canViewInGraph = GRAPH_VIEWABLE_STATUSES.includes(status);
   const canRetry = RETRYABLE_STATUSES.includes(status);
+  const canViewAlgorithms = canViewInGraph && hasAlgorithms;
 
   return (
     <div className="flex items-center gap-1 justify-end">
@@ -129,8 +134,8 @@ export function QuickActionButtons({
         />
       )}
 
-      {/* View Algorithms - only for completed documents */}
-      {canViewInGraph && onViewAlgorithms && (
+      {/* View Algorithms - only when the doc has extracted algorithms */}
+      {canViewAlgorithms && onViewAlgorithms && (
         <ActionButton
           icon={<CodeXml className="h-4 w-4" />}
           label="Algorithms"

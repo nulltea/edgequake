@@ -135,6 +135,9 @@ export interface DocumentTableRowProps {
   onExtractAlgorithms?: (docId: string) => void;
   /** Called when View Algorithms action is triggered */
   onViewAlgorithms?: (doc: Document) => void;
+  /** True when this doc has at least one extracted algorithm. Gates the
+   *  row-level `</>` action button — when false the button is hidden. */
+  hasAlgorithms?: boolean;
   /** Whether a retry operation is pending */
   isRetrying: boolean;
   /** Whether a cancel operation is pending */
@@ -162,6 +165,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onDelete,
   onExtractAlgorithms,
   onViewAlgorithms,
+  hasAlgorithms = false,
   isRetrying,
   isCancelling,
 }: DocumentTableRowProps) {
@@ -294,6 +298,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
           onPreview={onClick}
           onViewInGraph={onViewInGraph}
           onViewAlgorithms={onViewAlgorithms}
+          hasAlgorithms={hasAlgorithms}
           onRetry={onRetry}
           isRetrying={isRetrying}
         >

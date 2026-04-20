@@ -24,9 +24,12 @@
 import { useTenantStore } from '@/stores/use-tenant-store';
 import type { Document } from '@/types';
 
+import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { getAlgorithmCounts } from '@/lib/api/edgequake';
 
 import { useBulkSelection } from '@/hooks/use-bulk-selection';
 import { useDocumentDropzone } from '@/hooks/use-document-dropzone';
@@ -80,6 +83,23 @@ export function DocumentManager() {
 
   // Pipeline status dialog state
   const [pipelineDialogOpen, setPipelineDialogOpen] = useState(false);
+
+  // Per-document algorithm counts: drives the row-level "Algorithms" button
+  // visibility (only show `</>` when extracted algos exist for that doc).
+  // One fetch per workspace, memoised into a Set for O(1) lookup.
+  const { data: algoCountsData } = useQuery({
+    queryKey: ['algorithm-counts', selectedTenantId, selectedWorkspaceId],
+    queryFn: getAlgorithmCounts,
+    enabled: !!selectedTenantId && !!selectedWorkspaceId,
+    staleTime: 30_000,
+  });
+  const docsWithAlgorithms: Set<string> = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of algoCountsData?.counts ?? []) {
+      if (entry.count > 0) set.add(entry.document_id);
+    }
+    return set;
+  }, [algoCountsData]);
 
   // OODA-13: Upload state extracted to useFileUpload hook
   const {
@@ -312,6 +332,7 @@ export function DocumentManager() {
         onDelete={(id) => deleteMutation.mutate(id)}
         onExtractAlgorithms={handleExtractAlgorithms}
         onViewAlgorithms={handleViewAlgorithms}
+        docsWithAlgorithms={docsWithAlgorithms}
         isRetrying={reprocessMutation.isPending}
         isCancelling={cancelMutation.isPending}
         onUploadClick={openFileDialog}

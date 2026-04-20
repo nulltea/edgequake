@@ -28,6 +28,7 @@ pub fn algorithm_routes() -> Router<AppState> {
         .route("/by-document/{document_id}", delete(delete_algorithms))
         .route("/by-document/{document_id}/submit", post(submit_algorithms))
         .route("/search", get(search_algorithms))
+        .route("/counts", get(algorithm_counts))
         .route("/{algorithm_id}/review", post(review_algorithm))
         .route("/{algorithm_id}", delete(delete_single_algorithm))
 }
@@ -327,6 +328,49 @@ async fn extract_algorithms_impl(
             ),
         }),
     ))
+}
+
+#[cfg(feature = "postgres")]
+/// List algorithm counts grouped by document for the calling workspace.
+///
+/// Used by the document-list UI to decide, per-row, whether to render the
+/// "Algorithms" (`</>`) action button: no row for a doc here → no button.
+pub async fn algorithm_counts(
+    State(state): State<AppState>,
+    tenant_ctx: TenantContext,
+) -> ApiResult<Json<AlgorithmCountsResponse>> {
+    #[cfg(feature = "postgres")]
+    {
+        use edgequake_algorithms::{AlgorithmStorage, PostgresAlgorithmStorage};
+
+        let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
+        let pool = state.pg_pool.as_ref().ok_or_else(|| {
+            ApiError::Internal("Algorithm storage requires PostgreSQL pool".to_string())
+        })?;
+        let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool.clone()));
+
+        let rows = storage
+            .counts_by_document(tenant_id, workspace_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to count algorithms: {e}")))?;
+
+        let counts = rows
+            .into_iter()
+            .map(|(doc_id, count)| AlgorithmCountEntry {
+                document_id: doc_id,
+                count,
+            })
+            .collect();
+
+        Ok(Json(AlgorithmCountsResponse { counts }))
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (state, tenant_ctx);
+        Err(ApiError::Internal(
+            "Algorithm counts require the postgres feature".to_string(),
+        ))
+    }
 }
 
 #[cfg(feature = "postgres")]

@@ -71,6 +71,18 @@ pub trait AlgorithmStorage: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<Algorithm>, i64), AlgorithmStorageError>;
+
+    /// Count algorithms grouped by document for a workspace.
+    ///
+    /// Returns a `(document_id, count)` list. Used by the document-list UI
+    /// to decide whether to show the per-row "Algorithms" action button —
+    /// fetching one row per doc via `list_algorithms` on N rows is wasteful,
+    /// so we batch.
+    async fn counts_by_document(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<Vec<(String, i64)>, AlgorithmStorageError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -359,6 +371,26 @@ impl AlgorithmStorage for PostgresAlgorithmStorage {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok((algorithms, total))
+    }
+
+    async fn counts_by_document(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<Vec<(String, i64)>, AlgorithmStorageError> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT document_id, COUNT(*)::BIGINT
+            FROM algorithms
+            WHERE tenant_id = $1 AND workspace_id = $2
+            GROUP BY document_id
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        Ok(rows)
     }
 }
 

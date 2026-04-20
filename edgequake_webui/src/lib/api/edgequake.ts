@@ -1948,6 +1948,26 @@ export async function getAlgorithms(
 }
 
 /**
+ * Per-document algorithm counts for the current workspace.
+ *
+ * Used by the document-list UI to decide whether to show the per-row
+ * "Algorithms" action button without firing one `/algorithms/by-document/*`
+ * request per visible row.
+ */
+export interface AlgorithmCountEntry {
+  document_id: string;
+  count: number;
+}
+
+export interface AlgorithmCountsResponse {
+  counts: AlgorithmCountEntry[];
+}
+
+export async function getAlgorithmCounts(): Promise<AlgorithmCountsResponse> {
+  return api.get<AlgorithmCountsResponse>("/algorithms/counts");
+}
+
+/**
  * Search algorithms across the workspace.
  *
  * @param params - Search parameters

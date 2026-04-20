@@ -72,3 +72,14 @@ pub struct AlgorithmSearchResponse {
     pub limit: i64,
     pub offset: i64,
 }
+
+#[derive(Debug, Serialize)]
+pub struct AlgorithmCountEntry {
+    pub document_id: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlgorithmCountsResponse {
+    pub counts: Vec<AlgorithmCountEntry>,
+}
