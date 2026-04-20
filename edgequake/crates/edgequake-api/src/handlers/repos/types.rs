@@ -24,6 +24,13 @@ pub struct DetectReposRequest {
     pub pdf_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AddRepoRequest {
+    /// Repo URL pasted by the user (GitHub/GitLab/Bitbucket). Parsed into
+    /// `host/owner/repo` at the storage layer.
+    pub url: String,
+}
+
 // ── Responses ───────────────────────────────────────────────────────────────
 
 /// Stable, UI-friendly serialisation of a single candidate. We don't serialise
@@ -127,6 +134,7 @@ fn method_str(m: DetectionMethod) -> &'static str {
     match m {
         DetectionMethod::PdfLink => "pdf_link",
         DetectionMethod::WebSearch => "web_search",
+        DetectionMethod::Manual => "manual",
     }
 }
 

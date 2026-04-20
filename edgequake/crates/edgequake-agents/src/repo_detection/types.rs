@@ -49,6 +49,9 @@ impl RepoHost {
 pub enum DetectionMethod {
     PdfLink,
     WebSearch,
+    /// Manually added by the user via the References-tab "Add reference"
+    /// action (migration 049). Skips Layer A / Layer B detection.
+    Manual,
 }
 
 impl DetectionMethod {
@@ -56,6 +59,7 @@ impl DetectionMethod {
         match self {
             DetectionMethod::PdfLink => "pdf_link",
             DetectionMethod::WebSearch => "web_search",
+            DetectionMethod::Manual => "manual",
         }
     }
 
@@ -63,6 +67,7 @@ impl DetectionMethod {
         match s {
             "pdf_link" => Some(DetectionMethod::PdfLink),
             "web_search" => Some(DetectionMethod::WebSearch),
+            "manual" => Some(DetectionMethod::Manual),
             _ => None,
         }
     }

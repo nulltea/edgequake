@@ -8,7 +8,7 @@
 
 export type RepoHost = "github" | "gitlab" | "bitbucket";
 
-export type DetectionMethod = "pdf_link" | "web_search";
+export type DetectionMethod = "pdf_link" | "web_search" | "manual";
 
 export type RepoConfidence = "high" | "medium" | "low";
 

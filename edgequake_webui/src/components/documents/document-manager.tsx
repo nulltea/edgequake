@@ -148,9 +148,14 @@ export function DocumentManager() {
     router.push(`/documents/${doc.id}?tab=algorithms`);
   };
 
-  // Navigate to document's code matches (reference implementation) tab
+  // Navigate to document's References tab (repo detection + approval flow).
+  // WHY not `?tab=code-matches`: the row-level button's gate unions
+  // `document_repos` + `code_artifacts` so it surfaces docs that only
+  // have a detected-but-unapproved repo. Those docs have nothing to show
+  // on the Code Matches tab yet; the user needs to land on References to
+  // approve the repo (and trigger analysis from there).
   const handleViewCodeArtifacts = (doc: Document) => {
-    router.push(`/documents/${doc.id}?tab=code-matches`);
+    router.push(`/documents/${doc.id}?tab=repos`);
   };
 
   // OODA-29: Document queries extracted to useDocumentQueries hook

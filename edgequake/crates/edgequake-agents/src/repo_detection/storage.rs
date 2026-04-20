@@ -82,6 +82,26 @@ pub trait RepoStorage: Send + Sync {
         workspace_id: Uuid,
         document_id: &str,
     ) -> Result<Option<DetectionRun>, RepoStorageError>;
+
+    /// Delete a single candidate. Used by the review flow when a user
+    /// rejects a repo — rather than keep a dangling rejected row, we
+    /// drop it (and cascade to `code_artifacts` via the FK).
+    async fn delete(
+        &self,
+        id: Uuid,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<bool, RepoStorageError>;
+
+    /// Insert a single candidate directly, bypassing detection. Used by the
+    /// "Add reference manually" UI path on the References tab.
+    async fn insert_manual(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+        document_id: &str,
+        url: &str,
+    ) -> Result<DocumentRepo, RepoStorageError>;
 }
 
 #[cfg(feature = "postgres")]
@@ -369,5 +389,106 @@ mod postgres {
             .await?;
             row.map(decode_run).transpose()
         }
+
+        async fn delete(
+            &self,
+            id: Uuid,
+            tenant_id: Uuid,
+            workspace_id: Uuid,
+        ) -> Result<bool, RepoStorageError> {
+            let res = sqlx::query(
+                r#"
+                DELETE FROM document_repos
+                WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3
+                "#,
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .execute(&self.pool)
+            .await?;
+            Ok(res.rows_affected() > 0)
+        }
+
+        async fn insert_manual(
+            &self,
+            tenant_id: Uuid,
+            workspace_id: Uuid,
+            document_id: &str,
+            url: &str,
+        ) -> Result<DocumentRepo, RepoStorageError> {
+            let (host, owner, repo) = parse_repo_url(url)
+                .ok_or_else(|| RepoStorageError::Decode(
+                    format!("cannot parse repo URL: {url}")
+                ))?;
+            let id = Uuid::new_v4();
+            let row = sqlx::query(
+                r#"
+                INSERT INTO document_repos (
+                    id, tenant_id, workspace_id, document_id,
+                    host, owner, repo, url,
+                    detection_method, pdf_page_index, search_rank, source_url,
+                    confidence, status
+                )
+                VALUES (
+                    $1, $2, $3, $4,
+                    $5, $6, $7, $8,
+                    'manual', NULL, NULL, NULL,
+                    'high', 'pending'
+                )
+                ON CONFLICT (tenant_id, workspace_id, document_id, host, owner, repo)
+                DO UPDATE SET
+                    url = EXCLUDED.url,
+                    detection_method = 'manual',
+                    updated_at = NOW()
+                RETURNING
+                    id, tenant_id, workspace_id, document_id,
+                    host, owner, repo, url,
+                    detection_method, pdf_page_index, search_rank, source_url,
+                    confidence, status, created_at, updated_at
+                "#,
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(document_id)
+            .bind(host.as_str())
+            .bind(&owner)
+            .bind(&repo)
+            .bind(url)
+            .fetch_one(&self.pool)
+            .await?;
+            decode_row(row)
+        }
+    }
+
+    /// Parse a GitHub/GitLab/Bitbucket-style URL into `(host, owner, repo)`.
+    /// Strips `https://`, `http://`, trailing `.git`, and anything past the
+    /// `owner/repo` path. Returns `None` for anything we can't recognise.
+    fn parse_repo_url(raw: &str) -> Option<(RepoHost, String, String)> {
+        let s = raw.trim();
+        let s = s
+            .strip_prefix("https://")
+            .or_else(|| s.strip_prefix("http://"))
+            .unwrap_or(s);
+        let s = s.strip_prefix("www.").unwrap_or(s);
+        let (host_part, rest) = s.split_once('/')?;
+        let host = if host_part.contains("github.com") {
+            RepoHost::Github
+        } else if host_part.contains("gitlab.com") {
+            RepoHost::Gitlab
+        } else if host_part.contains("bitbucket.org") {
+            RepoHost::Bitbucket
+        } else {
+            return None;
+        };
+        let mut parts = rest.split('/').filter(|p| !p.is_empty());
+        let owner = parts.next()?.to_string();
+        let repo_raw = parts.next()?;
+        let repo = repo_raw
+            .strip_suffix(".git")
+            .unwrap_or(repo_raw)
+            .to_string();
+        Some((host, owner, repo))
     }
 }

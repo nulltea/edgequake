@@ -2107,6 +2107,17 @@ export async function detectRepos(
   );
 }
 
+/** Manually add a reference repo for a document by pasting a URL. */
+export async function addRepoManual(
+  documentId: string,
+  url: string,
+): Promise<import("@/types/document-repos").RepoCandidate> {
+  return api.post<import("@/types/document-repos").RepoCandidate>(
+    `/repos/by-document/${documentId}/add`,
+    { url },
+  );
+}
+
 // ============================================================================
 // Reference-code analysis (Phase 1)
 // ============================================================================
@@ -2334,6 +2345,7 @@ export const edgequakeApi = {
   getDocumentRepos,
   reviewRepo,
   detectRepos,
+  addRepoManual,
 
   // Reference-code analysis (Phase 1)
   getCodeReferences,

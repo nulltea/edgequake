@@ -21,6 +21,7 @@ pub use types::*;
 pub fn repo_routes() -> Router<AppState> {
     Router::new()
         .route("/by-document/{document_id}", get(list_repos))
+        .route("/by-document/{document_id}/add", post(add_repo_manual))
         .route("/{repo_id}/review", post(review_repo))
         .route("/detect/{document_id}", post(detect_repos))
 }
@@ -77,6 +78,50 @@ pub async fn review_repo(
         let _ = (state, tenant_ctx, repo_id, request);
         Err(ApiError::Internal(
             "Reference-repo review requires the postgres feature".to_string(),
+        ))
+    }
+}
+
+/// Manually add a reference-repo row for a document by pasting a URL.
+/// Bypasses Layer A link-parsing and Layer B web-search.
+pub async fn add_repo_manual(
+    State(state): State<AppState>,
+    tenant_ctx: TenantContext,
+    Path(document_id): Path<String>,
+    Json(request): Json<AddRepoRequest>,
+) -> ApiResult<(StatusCode, Json<RepoCandidateResponse>)> {
+    #[cfg(feature = "postgres")]
+    {
+        use edgequake_agents::repo_detection::{PostgresRepoStorage, RepoStorage};
+
+        let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
+        let pool = state.pg_pool.as_ref().ok_or_else(|| {
+            ApiError::Internal("Reference-repo storage requires PostgreSQL pool".to_string())
+        })?;
+        let storage = PostgresRepoStorage::new(pool.clone());
+
+        let trimmed = request.url.trim();
+        if trimmed.is_empty() {
+            return Err(ApiError::BadRequest("url must not be empty".to_string()));
+        }
+        let row = storage
+            .insert_manual(tenant_id, workspace_id, &document_id, trimmed)
+            .await
+            .map_err(|e| match e {
+                edgequake_agents::repo_detection::RepoStorageError::Decode(msg) => {
+                    ApiError::BadRequest(msg)
+                }
+                other => ApiError::Internal(format!("Failed to add repo: {other}")),
+            })?;
+
+        info!(%document_id, url=%trimmed, "Manually added reference repo");
+        Ok((StatusCode::CREATED, Json(RepoCandidateResponse::from(row))))
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (state, tenant_ctx, document_id, request);
+        Err(ApiError::Internal(
+            "Reference-repo add requires the postgres feature".to_string(),
         ))
     }
 }
@@ -140,13 +185,32 @@ async fn review_repo_impl(
     repo_id: Uuid,
     request: ReviewRepoRequest,
 ) -> ApiResult<Json<RepoReviewResponse>> {
-    use edgequake_agents::repo_detection::{PostgresRepoStorage, RepoStorage};
+    use edgequake_agents::repo_detection::{PostgresRepoStorage, RepoStatus, RepoStorage};
 
     let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
     let pool = state.pg_pool.as_ref().ok_or_else(|| {
         ApiError::Internal("Reference-repo storage requires PostgreSQL pool".to_string())
     })?;
     let storage = PostgresRepoStorage::new(pool.clone());
+
+    // WHY delete on reject: a "rejected" row has no downstream use and
+    // clutters the References tab on every list. Re-detection or manual
+    // add brings the repo back if the user changes their mind.
+    // `code_artifacts.document_repo_id` has ON DELETE CASCADE, so any
+    // analyzer output tied to this repo goes with it.
+    if matches!(request.status, RepoStatus::Rejected) {
+        let deleted = storage
+            .delete(repo_id, tenant_id, workspace_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to delete repo: {e}")))?;
+        if !deleted {
+            return Err(ApiError::NotFound(format!("repo {repo_id} not found")));
+        }
+        return Ok(Json(RepoReviewResponse {
+            id: repo_id,
+            status: types::status_str(RepoStatus::Rejected),
+        }));
+    }
 
     let updated = storage
         .update_status(repo_id, tenant_id, workspace_id, request.status)
@@ -247,10 +311,41 @@ async fn detect_repos_impl(
 
     let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
 
+    // Resolve pdf_id from pdf_documents when the caller didn't supply one.
+    // Without this, the frontend's `detectRepos(documentId)` call landed
+    // here with `pdf_id=None`, the orchestrator skipped Layer A (PDF-link
+    // parsing) entirely, and re-detect just ran Layer B against markdown
+    // — which typically returns nothing new. The fix keeps a user-supplied
+    // override working and only auto-fills when absent.
+    let pdf_id = match request.pdf_id {
+        Some(id) => Some(id),
+        None => {
+            if let Some(pool) = state.pg_pool.as_ref() {
+                let doc_uuid = uuid::Uuid::parse_str(&document_id).ok();
+                if let Some(doc_uuid) = doc_uuid {
+                    sqlx::query_scalar::<_, uuid::Uuid>(
+                        r#"SELECT pdf_id FROM public.pdf_documents
+                           WHERE document_id = $1 AND workspace_id = $2"#,
+                    )
+                    .bind(doc_uuid)
+                    .bind(workspace_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("pdf_id lookup: {e}")))?
+                    .map(|u| u.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    };
+
     let task_data = RepoDetectionData {
         document_id: document_id.clone(),
         workspace_id: workspace_id.to_string(),
-        pdf_id: request.pdf_id,
+        pdf_id,
     };
 
     let task = Task::new(

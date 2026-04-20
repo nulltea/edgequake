@@ -1,15 +1,21 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { detectRepos, getDocumentRepos, reviewRepo } from '@/lib/api/edgequake';
+import {
+  addRepoManual,
+  detectRepos,
+  getDocumentRepos,
+  reviewRepo,
+} from '@/lib/api/edgequake';
 import type {
   DetectionRun,
   RepoCandidate,
 } from '@/types/document-repos';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { GitBranch, Loader2, RefreshCw } from 'lucide-react';
-import { useCallback } from 'react';
+import { GitBranch, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { RepoCard } from './repo-card';
 
@@ -92,6 +98,30 @@ export function DocumentReposTabContent({
     },
   });
 
+  const [addUrl, setAddUrl] = useState('');
+  const addMutation = useMutation({
+    mutationFn: (url: string) => addRepoManual(documentId, url),
+    onSuccess: () => {
+      toast.success('Reference added');
+      setAddUrl('');
+      queryClient.invalidateQueries({ queryKey: ['document-repos', documentId] });
+      queryClient.invalidateQueries({
+        queryKey: ['code-artifact-counts'],
+      });
+    },
+    onError: (err) => {
+      toast.error('Failed to add reference', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    },
+  });
+  const handleAddSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = addUrl.trim();
+    if (!trimmed) return;
+    addMutation.mutate(trimmed);
+  };
+
   const handleApprove = useCallback(
     (id: string) => reviewMutation.mutate({ repoId: id, status: 'approved' }),
     [reviewMutation],
@@ -166,6 +196,35 @@ export function DocumentReposTabContent({
           </Button>
         </div>
       </div>
+
+      {/* Manual-add form: paste a GitHub/GitLab/Bitbucket URL → inserts a
+          `pending` row tagged with detection_method='manual' so the user
+          can approve it and trigger analysis without waiting on Layer B. */}
+      <form
+        onSubmit={handleAddSubmit}
+        className="flex items-center gap-2 rounded-lg border bg-muted/30 p-3"
+      >
+        <Input
+          type="url"
+          placeholder="https://github.com/owner/repo"
+          value={addUrl}
+          onChange={(e) => setAddUrl(e.target.value)}
+          disabled={addMutation.isPending}
+          className="flex-1 h-8 text-sm"
+        />
+        <Button
+          type="submit"
+          size="sm"
+          disabled={addMutation.isPending || addUrl.trim().length === 0}
+        >
+          {addMutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Plus className="h-4 w-4" />
+          )}
+          Add reference
+        </Button>
+      </form>
 
       {/* Empty state */}
       {empty && (
