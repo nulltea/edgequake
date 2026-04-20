@@ -92,6 +92,15 @@ pub trait CodeArtifactStorage: Send + Sync {
         document_id: &str,
         document_repo_id: Uuid,
     ) -> Result<Option<CodeReferenceRun>, CodeStorageError>;
+
+    /// Count code artifacts grouped by document for a workspace. Drives
+    /// the document-list UI's per-row "Code matches" action button
+    /// visibility (like `AlgorithmStorage::counts_by_document`).
+    async fn counts_by_document(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<Vec<(String, i64)>, CodeStorageError>;
 }
 
 #[cfg(feature = "postgres")]
@@ -469,6 +478,43 @@ mod postgres {
             .fetch_optional(&self.pool)
             .await?;
             row.map(decode_run).transpose()
+        }
+
+        async fn counts_by_document(
+            &self,
+            tenant_id: Uuid,
+            workspace_id: Uuid,
+        ) -> Result<Vec<(String, i64)>, CodeStorageError> {
+            // Count a document as "having a reference" if it has EITHER
+            // `code_artifacts` rows (extracted implementations) OR
+            // `document_repos` rows (detected/approved reference repos
+            // awaiting analysis). Without the document_repos side, a doc
+            // whose repo has been detected but whose code-analyzer run
+            // hasn't landed yet would hide the row-level button and the
+            // user has no entry point from the doc list into the Code
+            // Matches tab — where they can approve the repo and trigger
+            // analysis.
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                r#"
+                SELECT document_id, SUM(c)::BIGINT AS total FROM (
+                    SELECT document_id, COUNT(*)::BIGINT AS c
+                    FROM code_artifacts
+                    WHERE tenant_id = $1 AND workspace_id = $2
+                    GROUP BY document_id
+                    UNION ALL
+                    SELECT document_id, COUNT(*)::BIGINT AS c
+                    FROM document_repos
+                    WHERE tenant_id = $1 AND workspace_id = $2
+                    GROUP BY document_id
+                ) merged
+                GROUP BY document_id
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows)
         }
     }
 }

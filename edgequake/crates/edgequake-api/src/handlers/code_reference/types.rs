@@ -107,6 +107,17 @@ pub struct CodeReferenceListResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct CodeArtifactCountEntry {
+    pub document_id: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodeArtifactCountsResponse {
+    pub counts: Vec<CodeArtifactCountEntry>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct CodeArtifactReviewResponse {
     pub id: Uuid,
     pub status: &'static str,

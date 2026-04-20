@@ -1968,6 +1968,26 @@ export async function getAlgorithmCounts(): Promise<AlgorithmCountsResponse> {
 }
 
 /**
+ * Per-document code-artifact counts (Phase 1 Reference Code GraphRAG).
+ *
+ * Sibling of `getAlgorithmCounts` — gates the per-row "Reference code"
+ * button in the document list so it only renders for docs with at least
+ * one extracted code implementation.
+ */
+export interface CodeArtifactCountEntry {
+  document_id: string;
+  count: number;
+}
+
+export interface CodeArtifactCountsResponse {
+  counts: CodeArtifactCountEntry[];
+}
+
+export async function getCodeArtifactCounts(): Promise<CodeArtifactCountsResponse> {
+  return api.get<CodeArtifactCountsResponse>("/code-reference/counts");
+}
+
+/**
  * Search algorithms across the workspace.
  *
  * @param params - Search parameters

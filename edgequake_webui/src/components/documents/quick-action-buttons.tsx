@@ -16,7 +16,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import type { Document } from '@/types';
-import { CodeXml, ExternalLink, Eye, RefreshCw, Sparkles } from 'lucide-react';
+import { CodeXml, ExternalLink, Eye, FileCode2, Network, RefreshCw } from 'lucide-react';
 import * as React from 'react';
 
 /**
@@ -45,6 +45,12 @@ export interface QuickActionButtonsProps {
   /** True when this doc has at least one extracted algorithm row. Gates
    *  the `</>` button so it doesn't show on docs that never produced any. */
   hasAlgorithms?: boolean;
+  /** Handler for "View Reference Code" click — navigates to code-matches tab */
+  onViewCodeArtifacts?: (doc: Document) => void;
+  /** True when this doc has at least one code_artifacts row (any status).
+   *  Gates the "Reference code" button the same way `hasAlgorithms` gates
+   *  the algorithm button. */
+  hasCodeArtifacts?: boolean;
   /** Handler for "Retry" click - reprocesses failed document */
   onRetry: (id: string) => void;
   /** Whether retry operation is in progress */
@@ -100,6 +106,8 @@ export function QuickActionButtons({
   onViewInGraph,
   onViewAlgorithms,
   hasAlgorithms = false,
+  onViewCodeArtifacts,
+  hasCodeArtifacts = false,
   onRetry,
   isRetrying,
   children,
@@ -108,9 +116,10 @@ export function QuickActionButtons({
   const canViewInGraph = GRAPH_VIEWABLE_STATUSES.includes(status);
   const canRetry = RETRYABLE_STATUSES.includes(status);
   const canViewAlgorithms = canViewInGraph && hasAlgorithms;
+  const canViewCodeArtifacts = canViewInGraph && hasCodeArtifacts;
 
   return (
-    <div className="flex items-center gap-1 justify-end">
+    <div className="flex items-center gap-1 justify-start">
       {/* View Details - navigates to document detail page */}
       <ActionButton
         icon={<ExternalLink className="h-4 w-4" />}
@@ -128,11 +137,17 @@ export function QuickActionButtons({
       {/* View in Graph - only for completed documents */}
       {canViewInGraph && (
         <ActionButton
-          icon={<Sparkles className="h-4 w-4" />}
+          icon={<Network className="h-4 w-4" />}
           label="View in Graph"
           onClick={() => onViewInGraph(doc)}
         />
       )}
+
+      {/* Options dropdown (3-dots). Positioned between Graph and Algorithms
+          so the less-frequently-tapped overflow menu splits the primary
+          actions (details/preview/graph) from the content-scoped ones
+          (algorithms/reference-code/retry). */}
+      {children}
 
       {/* View Algorithms - only when the doc has extracted algorithms */}
       {canViewAlgorithms && onViewAlgorithms && (
@@ -140,6 +155,15 @@ export function QuickActionButtons({
           icon={<CodeXml className="h-4 w-4" />}
           label="Algorithms"
           onClick={() => onViewAlgorithms(doc)}
+        />
+      )}
+
+      {/* Reference code - only when code_artifacts exist */}
+      {canViewCodeArtifacts && onViewCodeArtifacts && (
+        <ActionButton
+          icon={<FileCode2 className="h-4 w-4" />}
+          label="Reference code"
+          onClick={() => onViewCodeArtifacts(doc)}
         />
       )}
 
@@ -156,9 +180,6 @@ export function QuickActionButtons({
           className="text-orange-600 hover:text-orange-700 hover:bg-orange-50"
         />
       )}
-
-      {/* Additional actions (e.g., dropdown menu) */}
-      {children}
     </div>
   );
 }

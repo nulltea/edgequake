@@ -138,6 +138,11 @@ export interface DocumentTableRowProps {
   /** True when this doc has at least one extracted algorithm. Gates the
    *  row-level `</>` action button — when false the button is hidden. */
   hasAlgorithms?: boolean;
+  /** Called when View Reference Code action is triggered */
+  onViewCodeArtifacts?: (doc: Document) => void;
+  /** True when this doc has at least one code_artifacts row. Gates the
+   *  row-level "Reference code" button. */
+  hasCodeArtifacts?: boolean;
   /** Whether a retry operation is pending */
   isRetrying: boolean;
   /** Whether a cancel operation is pending */
@@ -166,6 +171,8 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onExtractAlgorithms,
   onViewAlgorithms,
   hasAlgorithms = false,
+  onViewCodeArtifacts,
+  hasCodeArtifacts = false,
   isRetrying,
   isCancelling,
 }: DocumentTableRowProps) {
@@ -238,6 +245,33 @@ export const DocumentTableRow = memo(function DocumentTableRow({
         </div>
       </TableCell>
 
+      {/* Actions — placed before Status so the action cluster is at a fixed
+          left-of-table-status location regardless of row width. */}
+      <TableCell onClick={(e) => e.stopPropagation()}>
+        <QuickActionButtons
+          doc={doc}
+          onViewDetails={onViewDetails}
+          onPreview={onClick}
+          onViewInGraph={onViewInGraph}
+          onViewAlgorithms={onViewAlgorithms}
+          hasAlgorithms={hasAlgorithms}
+          onViewCodeArtifacts={onViewCodeArtifacts}
+          hasCodeArtifacts={hasCodeArtifacts}
+          onRetry={onRetry}
+          isRetrying={isRetrying}
+        >
+          <DocumentActionsMenu
+            doc={doc}
+            onViewPdf={onViewPdf}
+            onCancel={onCancel}
+            onReprocess={onRetry}
+            onDelete={onDelete}
+            onExtractAlgorithms={onExtractAlgorithms}
+            isCancelling={isCancelling}
+          />
+        </QuickActionButtons>
+      </TableCell>
+
       {/* Status Badge */}
       <TableCell>
         <div className="flex flex-col gap-1">
@@ -288,30 +322,6 @@ export const DocumentTableRow = memo(function DocumentTableRow({
         ) : (
           '-'
         )}
-      </TableCell>
-
-      {/* Actions */}
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        <QuickActionButtons
-          doc={doc}
-          onViewDetails={onViewDetails}
-          onPreview={onClick}
-          onViewInGraph={onViewInGraph}
-          onViewAlgorithms={onViewAlgorithms}
-          hasAlgorithms={hasAlgorithms}
-          onRetry={onRetry}
-          isRetrying={isRetrying}
-        >
-          <DocumentActionsMenu
-            doc={doc}
-            onViewPdf={onViewPdf}
-            onCancel={onCancel}
-            onReprocess={onRetry}
-            onDelete={onDelete}
-            onExtractAlgorithms={onExtractAlgorithms}
-            isCancelling={isCancelling}
-          />
-        </QuickActionButtons>
       </TableCell>
     </TableRow>
   );

@@ -29,7 +29,7 @@ import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { getAlgorithmCounts } from '@/lib/api/edgequake';
+import { getAlgorithmCounts, getCodeArtifactCounts } from '@/lib/api/edgequake';
 
 import { useBulkSelection } from '@/hooks/use-bulk-selection';
 import { useDocumentDropzone } from '@/hooks/use-document-dropzone';
@@ -101,6 +101,21 @@ export function DocumentManager() {
     return set;
   }, [algoCountsData]);
 
+  // Per-document code-artifact counts — gates the "Reference code" button.
+  const { data: codeCountsData } = useQuery({
+    queryKey: ['code-artifact-counts', selectedTenantId, selectedWorkspaceId],
+    queryFn: getCodeArtifactCounts,
+    enabled: !!selectedTenantId && !!selectedWorkspaceId,
+    staleTime: 30_000,
+  });
+  const docsWithCodeArtifacts: Set<string> = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of codeCountsData?.counts ?? []) {
+      if (entry.count > 0) set.add(entry.document_id);
+    }
+    return set;
+  }, [codeCountsData]);
+
   // OODA-13: Upload state extracted to useFileUpload hook
   const {
     uploadingFiles,
@@ -131,6 +146,11 @@ export function DocumentManager() {
   // Navigate to document's algorithms tab
   const handleViewAlgorithms = (doc: Document) => {
     router.push(`/documents/${doc.id}?tab=algorithms`);
+  };
+
+  // Navigate to document's code matches (reference implementation) tab
+  const handleViewCodeArtifacts = (doc: Document) => {
+    router.push(`/documents/${doc.id}?tab=code-matches`);
   };
 
   // OODA-29: Document queries extracted to useDocumentQueries hook
@@ -333,6 +353,8 @@ export function DocumentManager() {
         onExtractAlgorithms={handleExtractAlgorithms}
         onViewAlgorithms={handleViewAlgorithms}
         docsWithAlgorithms={docsWithAlgorithms}
+        onViewCodeArtifacts={handleViewCodeArtifacts}
+        docsWithCodeArtifacts={docsWithCodeArtifacts}
         isRetrying={reprocessMutation.isPending}
         isCancelling={cancelMutation.isPending}
         onUploadClick={openFileDialog}

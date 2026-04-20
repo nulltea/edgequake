@@ -78,6 +78,11 @@ export interface DocumentTableSectionProps {
   /** Set of document IDs that have at least one extracted algorithm. Used to
    * gate the row-level `</>` button so it only appears when algos exist. */
   docsWithAlgorithms?: Set<string>;
+  /** Handler for view code artifacts (reference implementations) action */
+  onViewCodeArtifacts?: (doc: Document) => void;
+  /** Set of document IDs with at least one code_artifacts row — gates the
+   *  row-level "Reference code" button the same way. */
+  docsWithCodeArtifacts?: Set<string>;
   /** Whether retrying is in progress */
   isRetrying: boolean;
   /** Whether cancelling is in progress */
@@ -125,6 +130,8 @@ export const DocumentTableSection = memo(function DocumentTableSection({
   onExtractAlgorithms,
   onViewAlgorithms,
   docsWithAlgorithms,
+  onViewCodeArtifacts,
+  docsWithCodeArtifacts,
   isRetrying,
   isCancelling,
   onUploadClick,
@@ -173,12 +180,12 @@ export const DocumentTableSection = memo(function DocumentTableSection({
                       />
                     </TableHead>
                     <TableHead scope="col">{t('documents.table.title', 'Title')}</TableHead>
+                    <TableHead scope="col" className="w-25"><span className="sr-only">{t('documents.table.actions', 'Actions')}</span></TableHead>
                     <TableHead scope="col">{t('documents.table.status', 'Status')}</TableHead>
                     <TableHead scope="col" className="text-center">{t('documents.table.entities', 'Entities')}</TableHead>
                     <TableHead scope="col" className="text-center">{t('documents.table.cost', 'Cost')}</TableHead>
                     <TableHead scope="col">{t('documents.table.created', 'Created')}</TableHead>
                     <TableHead scope="col">{t('documents.table.updated', 'Last Updated')}</TableHead>
-                    <TableHead scope="col" className="w-25"><span className="sr-only">{t('documents.table.actions', 'Actions')}</span></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -202,6 +209,8 @@ export const DocumentTableSection = memo(function DocumentTableSection({
                       onExtractAlgorithms={onExtractAlgorithms}
                       onViewAlgorithms={onViewAlgorithms}
                       hasAlgorithms={docsWithAlgorithms?.has(doc.id) ?? false}
+                      onViewCodeArtifacts={onViewCodeArtifacts}
+                      hasCodeArtifacts={docsWithCodeArtifacts?.has(doc.id) ?? false}
                       isRetrying={isRetrying}
                       isCancelling={isCancelling}
                     />
