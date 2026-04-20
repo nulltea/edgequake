@@ -727,6 +727,12 @@ export interface Workspace {
   /** Algorithm review mode: "auto" or "manual" (default). */
   algorithm_review_mode?: string;
   /**
+   * When true, reference-repo detection keeps non-official candidates
+   * (third-party / unrelated) in the review queue; default false drops
+   * them before persistence. See reference-repo-settings-card.
+   */
+  accept_unofficial_implementations?: boolean;
+  /**
    * Custom entity types for the extraction pipeline.
    * If absent, the server uses the default types (PERSON, ORGANIZATION, etc.).
    * Surfaced from workspace metadata JSONB.

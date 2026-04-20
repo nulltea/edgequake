@@ -104,6 +104,12 @@ mod tests {
             vision_llm_provider: None,
             vision_llm_model: None,
             pdf_parser_backend: None,
+            algorithm_analysis_llm_provider: None,
+            algorithm_analysis_llm_model: None,
+            algorithm_extraction_llm_provider: None,
+            algorithm_extraction_llm_model: None,
+            algorithm_review_mode: None,
+            accept_unofficial_implementations: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -162,6 +168,12 @@ mod tests {
             vision_llm_provider: None,
             vision_llm_model: None,
             pdf_parser_backend: None,
+            algorithm_analysis_llm_provider: None,
+            algorithm_analysis_llm_model: None,
+            algorithm_extraction_llm_provider: None,
+            algorithm_extraction_llm_model: None,
+            algorithm_review_mode: None,
+            accept_unofficial_implementations: None,
             entity_types: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),

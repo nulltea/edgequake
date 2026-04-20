@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use edgequake_agents::repo_detection::{
     Confidence, DetectionMethod, DetectionRun, DetectionRunStatus, DocumentRepo, RepoHost,
-    RepoStatus,
+    RepoStatus, VerificationVerdict,
 };
 
 // ── Requests ────────────────────────────────────────────────────────────────
@@ -52,10 +52,30 @@ pub struct RepoCandidateResponse {
     pub status: &'static str,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// `official` / `third_party` / `unrelated` / `inconclusive` from the
+    /// post-detection LLM verifier. `None` when the verifier hasn't run
+    /// (migration 050 columns are NULL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_verdict: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_rationale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<DateTime<Utc>>,
 }
 
 impl From<DocumentRepo> for RepoCandidateResponse {
     fn from(r: DocumentRepo) -> Self {
+        let (verification_verdict, verification_confidence, verification_rationale) =
+            match r.verification {
+                Some(v) => (
+                    Some(verdict_str(v.verdict)),
+                    Some(v.confidence),
+                    Some(v.rationale),
+                ),
+                None => (None, None, None),
+            };
         Self {
             id: r.id,
             document_id: r.document_id,
@@ -71,6 +91,10 @@ impl From<DocumentRepo> for RepoCandidateResponse {
             status: status_str(r.status),
             created_at: r.created_at,
             updated_at: r.updated_at,
+            verification_verdict,
+            verification_confidence,
+            verification_rationale,
+            verified_at: r.verified_at,
         }
     }
 }
@@ -159,5 +183,14 @@ fn run_status_str(s: DetectionRunStatus) -> &'static str {
         DetectionRunStatus::Running => "running",
         DetectionRunStatus::Complete => "complete",
         DetectionRunStatus::Failed => "failed",
+    }
+}
+
+fn verdict_str(v: VerificationVerdict) -> &'static str {
+    match v {
+        VerificationVerdict::Official => "official",
+        VerificationVerdict::ThirdParty => "third_party",
+        VerificationVerdict::Unrelated => "unrelated",
+        VerificationVerdict::Inconclusive => "inconclusive",
     }
 }

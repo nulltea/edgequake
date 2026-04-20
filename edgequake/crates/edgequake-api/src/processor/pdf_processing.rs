@@ -701,22 +701,18 @@ impl DocumentTaskProcessor {
             .flatten()
             .map(|p| p.pdf_data)
             .unwrap_or_default();
-        let content_key = format!("{}-content", early_doc_id);
-        let markdown_for_detection = self
-            .kv_storage
-            .get_by_id(&content_key)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_default();
+        // `markdown` is the freshly extracted content local to this task —
+        // identical to what we just persisted into `pdf_documents`. Pass it
+        // directly instead of round-tripping through KV (the old
+        // `{doc_id}-content` key is no longer written, so that lookup would
+        // leave Layer B with an empty string and trigger `NoFrontMatter`).
         if let Err(e) = self
             .run_repo_detection_inline(
                 task.tenant_id,
                 task.workspace_id,
                 &early_doc_id,
                 &pdf_data_for_detection,
-                &markdown_for_detection,
+                &markdown,
             )
             .await
         {

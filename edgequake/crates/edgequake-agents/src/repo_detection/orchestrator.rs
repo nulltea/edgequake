@@ -10,8 +10,10 @@ use edgequake_llm::traits::LLMProvider;
 use tracing::{debug, info, warn};
 
 use super::types::{Confidence, DetectionMethod, RepoCandidate, RepoHost};
+use super::verify::{verify_candidate, VerificationVerdict};
 use crate::web_search::{
-    resolve_repo, Crawl4aiClient, RepoResolverConfig, RepoResolverError, SearxngClient,
+    extract_front_matter, resolve_repo, Crawl4aiClient, PaperFrontMatter, RepoResolverConfig,
+    RepoResolverError, SearxngClient,
 };
 
 /// External dependencies for Layer B. If `None`, Layer B is skipped silently
@@ -41,8 +43,13 @@ pub enum RepoDetectionError {
 /// Run Layer A against `pdf_bytes`. If it finds anything, return; otherwise
 /// fall through to Layer B using `paper_markdown` + `web_clients`.
 ///
-/// Never fails if Layer A returned at least one candidate, even when Layer B
-/// would have failed — partial results are fine.
+/// After candidates are gathered (Layer A or B), every candidate is run
+/// through the LLM verifier (when `web_clients` is available — the verifier
+/// re-uses the same LLM + Crawl4AI handles). The verifier never rejects a
+/// candidate; it only attaches a `VerificationReport`. When it marks a
+/// candidate `unrelated`, we also downgrade the candidate's
+/// [`Confidence`] to `Low` per product decision (see the plan doc), so
+/// reviewers don't see a `high`-confidence row flagged as unrelated.
 ///
 /// `pdf_bytes` may be empty (e.g. non-PDF ingestion); in that case we skip
 /// Layer A and only run Layer B.
@@ -57,38 +64,83 @@ pub async fn run_detection(
     } else {
         run_layer_a(pdf_bytes).await?
     };
-    if !layer_a.is_empty() {
+    let (mut candidates, layer_b_attempted) = if !layer_a.is_empty() {
         info!(count = layer_a.len(), "layer_a found reference repos");
-        return Ok(DetectionOutcome {
-            candidates: layer_a,
-            layer_b_attempted: false,
-        });
-    }
-
-    let Some(clients) = web_clients else {
+        (layer_a, false)
+    } else if let Some(clients) = web_clients {
+        debug!("layer_a empty; falling through to layer_b");
+        match run_layer_b(paper_markdown, clients).await {
+            Ok(Some(c)) => {
+                info!("layer_b found a reference repo");
+                (vec![c], true)
+            }
+            Ok(None) => {
+                info!("layer_b found nothing");
+                (Vec::new(), true)
+            }
+            Err(e) => {
+                warn!(error = %e, "layer_b failed");
+                return Err(e.into());
+            }
+        }
+    } else {
         info!("layer_a found nothing; layer_b skipped (no web-search clients configured)");
-        return Ok(DetectionOutcome::default());
+        (Vec::new(), false)
     };
 
-    debug!("layer_a empty; falling through to layer_b");
-    match run_layer_b(paper_markdown, clients).await {
-        Ok(Some(c)) => {
-            info!("layer_b found a reference repo");
-            Ok(DetectionOutcome {
-                candidates: vec![c],
-                layer_b_attempted: true,
-            })
+    // Verification pass — runs for both Layer A and Layer B candidates so
+    // false-positive self-citations (e.g. `langchain` linked from the
+    // paper body) get flagged too. Parses paper metadata once and reuses
+    // it across candidates.
+    if !candidates.is_empty() {
+        match web_clients {
+            Some(clients) => {
+                let paper = extract_front_matter(paper_markdown);
+                run_verification(&mut candidates, paper.as_ref(), clients).await;
+            }
+            None => {
+                debug!("verifier disabled (no web-search clients); skipping verification pass");
+            }
         }
-        Ok(None) => {
-            info!("layer_b found nothing");
-            Ok(DetectionOutcome {
-                candidates: Vec::new(),
-                layer_b_attempted: true,
-            })
-        }
-        Err(e) => {
-            warn!(error = %e, "layer_b failed");
-            Err(e.into())
+    }
+
+    Ok(DetectionOutcome {
+        candidates,
+        layer_b_attempted,
+    })
+}
+
+/// Apply the verifier to each candidate in place. Verifier failures are
+/// logged and swallowed — the candidate persists without verification.
+async fn run_verification(
+    candidates: &mut [RepoCandidate],
+    paper: Option<&PaperFrontMatter>,
+    clients: &WebSearchClients,
+) {
+    let Some(paper) = paper else {
+        debug!("verifier: no front-matter extracted, skipping verification");
+        return;
+    };
+    for c in candidates.iter_mut() {
+        match verify_candidate(c, paper, &clients.crawl4ai, Arc::clone(&clients.llm)).await {
+            Ok(report) => {
+                info!(
+                    url = %c.url,
+                    verdict = report.verdict.as_str(),
+                    confidence = report.confidence,
+                    "verifier report"
+                );
+                // Unrelated → downgrade detection confidence so reviewers
+                // see the row lower in the list (resolved decision #2 in
+                // the plan).
+                if report.verdict == VerificationVerdict::Unrelated {
+                    c.confidence = Confidence::Low;
+                }
+                c.verification = Some(report);
+            }
+            Err(e) => {
+                warn!(url = %c.url, error = %e, "verifier skipped — candidate persists without verification");
+            }
         }
     }
 }
@@ -139,6 +191,7 @@ async fn run_layer_a(pdf_bytes: &[u8]) -> Result<Vec<RepoCandidate>, RepoDetecti
             source_url: None,
             // PDF link in the body = high-confidence self-citation.
             confidence: Confidence::High,
+            verification: None,
         })
         .collect())
 }
@@ -174,6 +227,7 @@ async fn run_layer_b(
                 search_rank: r.source_rank.map(|r| r as i32),
                 source_url: r.source_url,
                 confidence,
+                verification: None,
             }))
         }
         // NotFound / NoFrontMatter are non-errors — just "nothing to return".

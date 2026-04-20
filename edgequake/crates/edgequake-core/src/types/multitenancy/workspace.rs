@@ -148,6 +148,14 @@ pub struct Workspace {
     pub algorithm_extraction_llm_model: Option<String>,
     /// Algorithm review mode: "auto" (auto-approve + embed after extraction) or "manual" (default).
     pub algorithm_review_mode: Option<String>,
+    /// When `Some(true)`, the reference-repo detection pipeline accepts
+    /// candidates the verifier classified as `third_party` or `unrelated`
+    /// (they show up for manual review with their verdict attached).
+    /// When `Some(false)` or `None` (default), non-official candidates
+    /// are dropped before persistence — only `official` and `inconclusive`
+    /// verdicts, plus candidates the verifier couldn't score at all, are
+    /// surfaced for review. Applies to Layer A and Layer B identically.
+    pub accept_unofficial_implementations: Option<bool>,
 }
 
 impl Workspace {
@@ -188,6 +196,7 @@ impl Workspace {
             algorithm_extraction_llm_provider: None,
             algorithm_extraction_llm_model: None,
             algorithm_review_mode: None,
+            accept_unofficial_implementations: None,
         }
     }
 

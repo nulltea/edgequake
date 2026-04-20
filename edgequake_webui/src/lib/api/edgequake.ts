@@ -291,6 +291,12 @@ export interface UpdateWorkspaceRequest {
   algorithm_extraction_llm_model?: string;
   /** Algorithm review mode: "auto" or "manual". */
   algorithm_review_mode?: string;
+  /**
+   * Accept third-party / unrelated reference-repo candidates into the
+   * review queue. Defaults to `false` server-side. When `false`, the
+   * detection pipeline drops non-official candidates before persistence.
+   */
+  accept_unofficial_implementations?: boolean;
 }
 
 /**

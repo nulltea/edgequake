@@ -48,6 +48,7 @@ fn sample_candidate(layer: DetectionMethod, rank: i32) -> RepoCandidate {
             DetectionMethod::PdfLink => None,
         },
         confidence: Confidence::High,
+        verification: None,
     }
 }
 

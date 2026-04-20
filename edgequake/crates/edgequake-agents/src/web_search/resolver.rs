@@ -49,7 +49,12 @@ pub struct RepoResolverConfig {
 impl Default for RepoResolverConfig {
     fn default() -> Self {
         Self {
-            max_pages_to_crawl: 3,
+            // Bumped 3 → 6 to catch third-party reimplementations that sit
+            // below the arxiv/huggingface/semanticscholar pages which
+            // usually dominate the top 3 SearXNG hits. The extra 3 crawls
+            // double Layer B latency but we were missing correct repos
+            // that were just outside the previous cap.
+            max_pages_to_crawl: 6,
             chars_per_page_for_llm: 6_000,
             llm_prompt_char_budget: 16_000,
         }
@@ -101,10 +106,34 @@ pub async fn resolve_repo(
     config: &RepoResolverConfig,
 ) -> Result<ResolvedRepo, RepoResolverError> {
     let fm = extract_front_matter(paper_markdown).ok_or(RepoResolverError::NoFrontMatter)?;
-    let query = build_query(&fm.title, fm.first_author.as_deref());
-    debug!(query, "searxng query");
 
-    let results = searxng.search(&query).await?;
+    // Run two SearXNG queries in parallel and merge results:
+    //
+    // - PRIMARY  : "<author> <title> github" — same as before; good for
+    //              papers whose authors actually released code (title hit
+    //              on arxiv's "Code" sidebar, author's GitHub profile, etc.)
+    // - FALLBACK : "site:github.com <title-core>" — forces all results to
+    //              be actual github.com pages; crucial for third-party
+    //              reimplementations that don't surface in top-N on the
+    //              primary query.
+    //
+    // We merge by URL and keep the best (lowest) rank across the two. The
+    // fast-path / crawl / LLM tie-breaker below see a single combined list,
+    // so no other logic has to change.
+    let primary_q = build_query(&fm.title, fm.first_author.as_deref());
+    let fallback_q = build_site_github_query(&fm.title);
+    debug!(primary = %primary_q, fallback = %fallback_q, "searxng queries");
+
+    let (primary, fallback) = tokio::join!(
+        searxng.search(&primary_q),
+        searxng.search(&fallback_q)
+    );
+    let primary = primary?;
+    // Fallback is best-effort: a failure on it doesn't fail the whole
+    // resolver — the primary query usually carries us.
+    let fallback = fallback.unwrap_or_default();
+
+    let results = merge_searxng_results(primary, fallback);
     if results.is_empty() {
         return Err(RepoResolverError::NotFound);
     }
@@ -184,6 +213,60 @@ fn build_query(title: &str, author: Option<&str>) -> String {
     }
 }
 
+/// Build a `site:github.com`-scoped SearXNG query using just the most
+/// content-bearing words of the title. Many third-party reimplementation
+/// repos don't mention the full title verbatim, so we clip to ~8 tokens
+/// after dropping stopwords. `site:github.com` forces every hit to be a
+/// github page; combined with the fast-path (returns on first parseable
+/// github.com/{owner}/{repo}) this typically surfaces the repo at rank 0.
+fn build_site_github_query(title: &str) -> String {
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "and", "the", "of", "for", "to", "in", "on", "with", "by", "is", "are", "at",
+        "from", "via", "using", "as", "or",
+    ];
+    const MAX_TOKENS: usize = 8;
+
+    let core: Vec<&str> = title
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|t| !t.is_empty())
+        .filter(|t| !STOPWORDS.contains(&t.to_ascii_lowercase().as_str()))
+        .take(MAX_TOKENS)
+        .collect();
+    if core.is_empty() {
+        // Degenerate input — fall back to raw title with the operator.
+        return format!("site:github.com {title}");
+    }
+    format!("site:github.com {}", core.join(" "))
+}
+
+/// Deduplicate SearXNG results across two queries, preserving the best
+/// (lowest) rank of each URL. Primary-query rank wins ties because it
+/// carries the author signal.
+fn merge_searxng_results(
+    primary: Vec<super::searxng::SearxngResult>,
+    fallback: Vec<super::searxng::SearxngResult>,
+) -> Vec<super::searxng::SearxngResult> {
+    use std::collections::HashMap;
+    let mut best_rank: HashMap<String, (usize, super::searxng::SearxngResult)> = HashMap::new();
+    for (rank, r) in primary.into_iter().enumerate() {
+        best_rank.entry(r.url.clone()).or_insert((rank, r));
+    }
+    for (rank, r) in fallback.into_iter().enumerate() {
+        best_rank
+            .entry(r.url.clone())
+            .and_modify(|(existing_rank, _)| {
+                if rank < *existing_rank {
+                    *existing_rank = rank;
+                }
+            })
+            .or_insert((rank, r));
+    }
+    let mut merged: Vec<(usize, super::searxng::SearxngResult)> =
+        best_rank.into_values().collect();
+    merged.sort_by_key(|(r, _)| *r);
+    merged.into_iter().map(|(_, r)| r).collect()
+}
+
 /// Scan free-form markdown for an embedded repo URL.
 ///
 /// We simply re-use the Layer A parser: tokenise on whitespace + punctuation,
@@ -243,9 +326,17 @@ fn build_llm_prompt(
     let mut prompt = String::with_capacity(config.llm_prompt_char_budget + 512);
     prompt.push_str(
         "You are given a research paper's title, author, and excerpts from web pages found via search. \
-        Identify the single canonical GitHub, GitLab, or Bitbucket repository URL that is the paper's \
-        OWN reference implementation (code the authors released). \
-        Ignore repositories merely cited by the paper for comparison, baselines, or data.\n\n",
+        Identify the single best GitHub, GitLab, or Bitbucket repository URL that implements THIS paper's method. \
+        \n\n\
+        Eligible:\n\
+        - Code released by the paper's authors (preferred when present)\n\
+        - A faithful third-party reimplementation whose README explicitly cites this paper by title, arXiv id, or author names\n\
+        \n\
+        NOT eligible (these are tooling / dependencies, not implementations):\n\
+        - Widely-used libraries the paper happens to use or import (langchain, pytorch, numpy, transformers, scikit-learn, tensorflow, jax, …)\n\
+        - Repos of baseline / prior-art methods the paper compares against\n\
+        - Dataset or benchmark repos\n\
+        - An author's generic GitHub profile page (e.g. github.com/username with no repo path)\n\n",
     );
     prompt.push_str("Paper title: ");
     prompt.push_str(title);
@@ -273,7 +364,7 @@ fn build_llm_prompt(
     prompt.push_str(
         "\n--- INSTRUCTIONS ---\n\
         Respond with ONLY the URL in the form https://github.com/OWNER/REPO \
-        (or gitlab.com / bitbucket.org equivalent). If no plausible repository is present, respond with NONE.\n",
+        (or gitlab.com / bitbucket.org equivalent). If no eligible repository is present, respond with NONE.\n",
     );
     prompt
 }
@@ -319,6 +410,72 @@ mod tests {
         let md = "The code is at https://github.com/foo/bar. Thanks!";
         let r = scan_markdown_for_repo(md).unwrap();
         assert_eq!(r.repo, "bar");
+    }
+
+    #[test]
+    fn site_github_query_drops_stopwords_and_clips() {
+        let q = build_site_github_query(
+            "Learning Obfuscations Of LLM Embedding Sequences: Stained Glass Transform",
+        );
+        // Starts with the operator
+        assert!(q.starts_with("site:github.com "));
+        // Common stopwords ("of") are dropped
+        assert!(!q.contains(" Of ") && !q.contains(" of "));
+        // Includes the distinctive words
+        assert!(q.contains("Stained"));
+        assert!(q.contains("Glass"));
+        assert!(q.contains("Transform"));
+    }
+
+    #[test]
+    fn site_github_query_degenerate_title() {
+        let q = build_site_github_query("a, b, c;");
+        // Nothing substantive — falls back to the raw title after the operator
+        assert!(q.starts_with("site:github.com "));
+    }
+
+    #[test]
+    fn merge_preserves_best_rank_across_queries() {
+        use super::super::searxng::SearxngResult;
+        let mk = |u: &str| SearxngResult {
+            url: u.into(),
+            title: u.into(),
+            content: String::new(),
+        };
+        // Primary has foo/bar buried at rank 3; fallback surfaces it at
+        // rank 0. Assertions target the merge contract (dedup + best
+        // rank wins), not the exact tie-break order between same-rank
+        // URLs — HashMap iteration isn't deterministic.
+        let p = vec![
+            mk("https://arxiv.org/abs/1"),
+            mk("https://b"),
+            mk("https://c"),
+            mk("https://github.com/foo/bar"),
+        ];
+        let f = vec![
+            mk("https://github.com/foo/bar"),
+            mk("https://github.com/other/thing"),
+        ];
+        let merged = merge_searxng_results(p, f);
+
+        // foo/bar moved up to rank 0 → it's among the top-1 group
+        // (a rank-0 URL is always in position 0 or 1 of the sorted output
+        // because the only other rank-0 URL is arxiv from primary).
+        let foo_bar_pos = merged
+            .iter()
+            .position(|r| r.url == "https://github.com/foo/bar")
+            .expect("foo/bar should be present");
+        assert!(foo_bar_pos <= 1, "foo/bar at position {foo_bar_pos}");
+
+        // All primary URLs preserved.
+        assert!(merged.iter().any(|r| r.url == "https://arxiv.org/abs/1"));
+        assert!(merged
+            .iter()
+            .any(|r| r.url == "https://github.com/other/thing"));
+
+        // No duplicate URLs.
+        let unique: std::collections::HashSet<_> = merged.iter().map(|r| &r.url).collect();
+        assert_eq!(unique.len(), merged.len());
     }
 
     #[test]

@@ -160,6 +160,22 @@ impl WorkspaceServiceImpl {
         }
     }
 
+    /// Update an optional bool field in both the workspace metadata JSONB
+    /// and the struct field. Any `Some(_)` from the caller is written; a
+    /// `None` leaves the prior value untouched (so partial updates don't
+    /// accidentally clear settings the UI didn't send).
+    fn update_optional_bool_metadata_field(
+        metadata: &mut std::collections::HashMap<String, serde_json::Value>,
+        field: &mut Option<bool>,
+        key: &str,
+        value: Option<bool>,
+    ) {
+        if let Some(v) = value {
+            metadata.insert(key.to_string(), serde_json::json!(v));
+            *field = Some(v);
+        }
+    }
+
     /// Build metadata JSON with tenant configuration.
     ///
     /// Stores all tenant configuration fields in the metadata JSONB column,
@@ -733,6 +749,12 @@ impl WorkspaceService for WorkspaceServiceImpl {
             &mut workspace.algorithm_review_mode,
             "algorithm_review_mode",
             request.algorithm_review_mode,
+        );
+        Self::update_optional_bool_metadata_field(
+            &mut workspace.metadata,
+            &mut workspace.accept_unofficial_implementations,
+            "accept_unofficial_implementations",
+            request.accept_unofficial_implementations,
         );
         workspace.updated_at = chrono::Utc::now();
 
@@ -1555,6 +1577,9 @@ impl WorkspaceRow {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+        let accept_unofficial_implementations = metadata
+            .get("accept_unofficial_implementations")
+            .and_then(|v| v.as_bool());
 
         Workspace {
             workspace_id: self.workspace_id,
@@ -1579,6 +1604,7 @@ impl WorkspaceRow {
             algorithm_extraction_llm_provider,
             algorithm_extraction_llm_model,
             algorithm_review_mode,
+            accept_unofficial_implementations,
         }
     }
 }

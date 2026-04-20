@@ -255,4 +255,12 @@ pub struct UpdateWorkspaceApiRequest {
     /// Algorithm review mode: "auto" (auto-approve + embed) or "manual" (default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub algorithm_review_mode: Option<String>,
+
+    /// When `true`, reference-repo detection keeps third-party / unrelated
+    /// candidates so reviewers see them with the verifier's verdict. When
+    /// `false` or omitted (default), non-official candidates are dropped
+    /// before persistence — the review queue stays focused on likely
+    /// author-released repos.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accept_unofficial_implementations: Option<bool>,
 }

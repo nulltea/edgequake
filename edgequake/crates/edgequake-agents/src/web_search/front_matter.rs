@@ -15,6 +15,17 @@ pub struct PaperFrontMatter {
     /// split into given/surname — the web query works fine with the full string
     /// and it's robust to i18n.
     pub first_author: Option<String>,
+    /// All authors the heuristic could identify. Populated for the verifier
+    /// prompt so the LLM can check whether a repo's owner name matches any
+    /// author. May be empty when author lines fail the heuristic; callers
+    /// must treat absence as "unknown" rather than "no authors".
+    #[serde(default)]
+    pub authors: Vec<String>,
+    /// First ~400 chars of the paper's abstract when the heading or inline
+    /// marker is recognisable. Used as additional context for the verifier.
+    /// `None` when we can't locate an abstract with the simple heuristics.
+    #[serde(default)]
+    pub abstract_excerpt: Option<String>,
 }
 
 /// Scan the first `scan_chars` characters of `markdown` for an H1 followed by
@@ -40,14 +51,20 @@ fn extract_with_limit(markdown: &str, scan_chars: usize) -> Option<PaperFrontMat
         }
     };
 
-    // Step 2: scan a few following lines for an author candidate.
+    // Step 2: scan a few following lines for author candidates. Unlike the
+    // prior version we don't stop on the first hit — many papers list
+    // authors across multiple lines (separate line per affiliation, or
+    // multiple `##` headings) and the verifier wants them all. We still
+    // cap the scan so we don't wander into the body.
     // Some arXiv exports put authors on an H2/H3 heading line (e.g. the
     // SpaceTimePilot paper); we strip leading `#` markers before evaluating.
-    let mut first_author: Option<String> = None;
-    for _ in 0..10 {
+    let mut authors: Vec<String> = Vec::new();
+    for _ in 0..12 {
         let Some(line) = lines.next() else { break };
         let trimmed = line.trim();
         if trimmed.is_empty() {
+            // Keep scanning across blank lines — author lines are often
+            // separated by them.
             continue;
         }
         let candidate = trimmed.trim_start_matches('#').trim();
@@ -57,16 +74,124 @@ fn extract_with_limit(markdown: &str, scan_chars: usize) -> Option<PaperFrontMat
         if is_non_author_line(candidate) {
             continue;
         }
-        if let Some(author) = first_author_from_line(candidate) {
-            first_author = Some(author);
-            break;
+        // `authors_from_line` returns ALL plausible names in the line (e.g.
+        // a comma-separated list) — accumulating across multiple lines
+        // gives us the full author set when papers put each author on
+        // their own line.
+        for a in authors_from_line(candidate) {
+            if !authors.iter().any(|existing| existing == &a) {
+                authors.push(a);
+            }
         }
     }
+
+    let first_author = authors.first().cloned();
+    let abstract_excerpt = extract_abstract(&head);
 
     Some(PaperFrontMatter {
         title,
         first_author,
+        authors,
+        abstract_excerpt,
     })
+}
+
+/// Locate the abstract in the head of a paper and return up to 400 chars.
+/// Recognises three common patterns:
+///   - `## Abstract` / `### Abstract` H2/H3 heading
+///   - `**Abstract**` bold marker (optionally followed by em-dash / period)
+///   - `Abstract—...` / `Abstract.` inline marker at line start
+pub(crate) fn extract_abstract(head: &str) -> Option<String> {
+    const MAX_LEN: usize = 400;
+
+    let lines: Vec<&str> = head.lines().collect();
+    let mut start: Option<usize> = None;
+    let mut inline_remainder: Option<String> = None;
+
+    for (idx, raw) in lines.iter().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // H2/H3 heading exactly "Abstract" (case-insensitive).
+        if let Some(body) = line
+            .strip_prefix("## ")
+            .or_else(|| line.strip_prefix("### "))
+        {
+            if body.trim().eq_ignore_ascii_case("abstract") {
+                start = Some(idx + 1);
+                break;
+            }
+        }
+        // **Abstract**... on its own line — may or may not have text after it.
+        if let Some(rest) = line.strip_prefix("**Abstract**") {
+            let tail = rest
+                .trim_start_matches(['—', '-', '.', ':', ' ', '\u{00A0}'])
+                .trim();
+            if tail.is_empty() {
+                start = Some(idx + 1);
+            } else {
+                inline_remainder = Some(tail.to_string());
+                start = Some(idx + 1);
+            }
+            break;
+        }
+        // Bare "Abstract—..." or "Abstract. ..." inline.
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("abstract—")
+            || lower.starts_with("abstract-")
+            || lower.starts_with("abstract.")
+            || lower.starts_with("abstract:")
+        {
+            // Keep everything after the marker on the same line. Use
+            // `char_indices` so the split point is a valid char boundary —
+            // `—` is a 3-byte UTF-8 codepoint; a naive `+1` slice panics.
+            if let Some((byte_idx, ch)) =
+                line.char_indices().find(|(_, c)| matches!(c, '—' | '-' | '.' | ':'))
+            {
+                let tail = line[byte_idx + ch.len_utf8()..].trim();
+                if !tail.is_empty() {
+                    inline_remainder = Some(tail.to_string());
+                }
+                start = Some(idx + 1);
+                break;
+            }
+        }
+    }
+
+    let start = start?;
+    let mut buf = String::new();
+    if let Some(inline) = inline_remainder {
+        buf.push_str(&inline);
+    }
+    for raw in lines.iter().skip(start) {
+        let line = raw.trim();
+        if line.is_empty() {
+            if buf.is_empty() {
+                continue;
+            }
+            // Blank line ends the abstract paragraph.
+            break;
+        }
+        // Next heading ends the abstract.
+        if line.starts_with('#') {
+            break;
+        }
+        if !buf.is_empty() {
+            buf.push(' ');
+        }
+        buf.push_str(line);
+        if buf.len() >= MAX_LEN {
+            break;
+        }
+    }
+
+    let buf = normalize_whitespace(&buf);
+    if buf.is_empty() {
+        return None;
+    }
+    let clipped: String = buf.chars().take(MAX_LEN).collect();
+    Some(clipped)
 }
 
 fn is_metadata_heading(s: &str) -> bool {
@@ -121,40 +246,55 @@ fn is_section_heading(s: &str) -> bool {
     )
 }
 
-/// Best-effort extract the first author from a line like:
-/// "Alice Smith^1, Bob Jones^2, and Carol Wu^3"
-/// "Alice Smith*, Bob Jones†"
-/// "Alice Smith 1, Bob Jones 2"
-/// "Alice Smith (Google), Bob Jones (Meta)"
-fn first_author_from_line(line: &str) -> Option<String> {
-    // Strip common markdown emphasis that wraps author lists.
+/// Extract every plausible author name from a single line. Splits on
+/// commas and " and " separators, runs the per-chunk validator, and
+/// returns the ones that pass. Empty on any line that isn't an author
+/// list.
+///
+/// Examples handled:
+///   "Alice Smith^1, Bob Jones^2, and Carol Wu^3" → ["Alice Smith", "Bob Jones", "Carol Wu"]
+///   "Alice Smith (Google), Bob Jones (Meta)"     → ["Alice Smith", "Bob Jones"]
+///   "Jay Roberts Protopia AI jay@protopia.ai"    → ["Jay Roberts"]  (email dropped)
+///   "Zhening Huang Hyeonho Jeong Xuelin Chen"    → ["Zhening Huang"] (first 2 tokens)
+fn authors_from_line(line: &str) -> Vec<String> {
     let cleaned = line.trim_matches(|c: char| c == '*' || c == '_');
+    let mut out: Vec<String> = Vec::new();
+    for chunk in cleaned.split([',', ';']) {
+        let chunk = strip_and_and(chunk);
+        if let Some(name) = author_from_chunk(chunk) {
+            out.push(name);
+        }
+    }
+    out
+}
 
-    // Split on comma or " and " — take the first chunk.
-    let first_chunk = cleaned.split([',', ';']).next().unwrap_or(cleaned);
-    let first_chunk = strip_and_and(first_chunk);
+/// Validate a single comma-delimited chunk as an author name and return the
+/// canonicalised form (first 2 tokens when the chunk is a long affiliation-
+/// style run). Shared rules between single-author and multi-author lines.
+fn author_from_chunk(chunk: &str) -> Option<String> {
+    // Drop email-like tokens (contain `@`) before validation — academic
+    // author lists often glue `first.last@affiliation.tld` onto the line,
+    // which breaks `all_titlecase`.
+    let no_email: String = chunk
+        .split_whitespace()
+        .filter(|tok| !tok.contains('@'))
+        .collect::<Vec<_>>()
+        .join(" ");
 
-    let cleaned = strip_author_annotations(first_chunk);
+    let cleaned = strip_author_annotations(&no_email);
     let cleaned = cleaned.trim();
 
-    // A plausible author name has at least 2 letters and contains a space
-    // (given + surname). This rules out orcid IDs, affiliations etc.
     if cleaned.len() < 3 || cleaned.len() > 80 {
         return None;
     }
     if !cleaned.contains(' ') {
         return None;
     }
-    // Must be mostly alphabetic.
     let alpha_ratio = cleaned.chars().filter(|c| c.is_alphabetic()).count() as f32
         / cleaned.chars().count().max(1) as f32;
     if alpha_ratio < 0.6 {
         return None;
     }
-    // Structural check: the line must be all title-case tokens (no lowercase
-    // connective words like "and"), each ≥2 chars. This rejects section
-    // headers like "Space and Time" while accepting "Alice Smith" or a long
-    // "Zhening Huang Hyeonho Jeong Xuelin Chen" co-author line.
     let tokens: Vec<&str> = cleaned.split_whitespace().collect();
     if tokens.len() < 2 {
         return None;
@@ -167,10 +307,14 @@ fn first_author_from_line(line: &str) -> Option<String> {
         return None;
     }
 
-    // If the chunk has many tokens, it's a whitespace-separated author list
-    // (e.g. "Zhening Huang Hyeonho Jeong Xuelin Chen"); take just the first
-    // two tokens as the likely first author.
-    let out = if tokens.len() > 4 {
+    // More than 2 tokens = whitespace-separated co-author list or
+    // name+affiliation glued together (e.g. "Jay Roberts Protopia AI",
+    // or a 5-author run like "Alice Smith Bob Jones Carol Wu Dan Lee Eva
+    // Park"). The first two tokens are the conservative guess for the
+    // name; accepts some loss on 3-token surnames ("Alice von Smith") in
+    // exchange for stripping affiliation runs that otherwise pollute the
+    // SearXNG query and the verifier prompt.
+    let out = if tokens.len() > 2 {
         tokens[..2].join(" ")
     } else {
         cleaned.to_string()
@@ -179,7 +323,17 @@ fn first_author_from_line(line: &str) -> Option<String> {
 }
 
 fn strip_and_and(s: &str) -> &str {
-    s.strip_suffix(" and").unwrap_or(s)
+    // Strip leading/trailing " and " connectives left over from commas
+    // splitting "A, B, and C" → ["A", " B", " and C"]. Both ends, because
+    // authors are sometimes written "X and Y" without the trailing comma.
+    let s = s.trim();
+    let s = s
+        .strip_prefix("and ")
+        .or_else(|| s.strip_prefix("And "))
+        .unwrap_or(s);
+    s.strip_suffix(" and")
+        .or_else(|| s.strip_suffix(" And"))
+        .unwrap_or(s)
 }
 
 /// Drop superscript markers, parenthesised affiliations, digits, and common
@@ -323,5 +477,88 @@ We present...\n\
         let md = "#   Spaced    Out   Title\n\nAlice Smith, Bob Jones\n";
         let fm = extract_front_matter(md).unwrap();
         assert_eq!(fm.title, "Spaced Out Title");
+    }
+
+    #[test]
+    fn collects_all_authors_from_comma_list() {
+        let md = "# Title\n\nAlice Smith, Bob Jones, and Carol Wu\n";
+        let fm = extract_front_matter(md).unwrap();
+        assert_eq!(fm.first_author.as_deref(), Some("Alice Smith"));
+        assert_eq!(fm.authors, vec!["Alice Smith", "Bob Jones", "Carol Wu"]);
+    }
+
+    #[test]
+    fn collects_authors_across_separate_lines_with_emails() {
+        // Mirrors the Stained Glass Transform paper which lists each
+        // author on their own line with an email glued on.
+        let md = "\
+# Learning Obfuscations Of LLM Embedding Sequences: Stained Glass Transform\n\
+\n\
+Jay Roberts Protopia AI jay@protopia.ai\n\
+\n\
+Kyle Mylonakis Protopia AI kyle@protopia.ai\n\
+\n\
+Abstract—We present a thing.\n\
+";
+        let fm = extract_front_matter(md).unwrap();
+        assert_eq!(fm.first_author.as_deref(), Some("Jay Roberts"));
+        assert!(fm.authors.contains(&"Jay Roberts".to_string()));
+        assert!(fm.authors.contains(&"Kyle Mylonakis".to_string()));
+    }
+
+    #[test]
+    fn extracts_abstract_from_h2_heading() {
+        let md = "\
+# Title\n\
+\n\
+Alice Smith, Bob Jones\n\
+\n\
+## Abstract\n\
+\n\
+We present a new method for doing X that achieves Y.\n\
+\n\
+## Introduction\n\
+\n\
+Not in the abstract.\n\
+";
+        let fm = extract_front_matter(md).unwrap();
+        assert_eq!(
+            fm.abstract_excerpt.as_deref(),
+            Some("We present a new method for doing X that achieves Y.")
+        );
+    }
+
+    #[test]
+    fn extracts_abstract_from_inline_marker() {
+        let md = "\
+# Title\n\
+\n\
+Alice Smith\n\
+\n\
+Abstract—The high cost of compute leads to multi-tenant deployments.\n\
+";
+        let fm = extract_front_matter(md).unwrap();
+        assert!(fm.abstract_excerpt.is_some());
+        assert!(fm
+            .abstract_excerpt
+            .as_deref()
+            .unwrap()
+            .starts_with("The high cost of compute"));
+    }
+
+    #[test]
+    fn no_abstract_when_absent() {
+        let md = "# Title\n\nAlice Smith\n\nIntroduction body directly.\n";
+        let fm = extract_front_matter(md).unwrap();
+        assert!(fm.abstract_excerpt.is_none());
+    }
+
+    #[test]
+    fn abstract_truncated_to_cap() {
+        let filler = "a".repeat(600);
+        let md = format!("# T\n\nAlice Smith\n\n## Abstract\n\n{filler}\n");
+        let fm = extract_front_matter(&md).unwrap();
+        let abs = fm.abstract_excerpt.unwrap();
+        assert!(abs.len() <= 400, "got {} chars", abs.len());
     }
 }

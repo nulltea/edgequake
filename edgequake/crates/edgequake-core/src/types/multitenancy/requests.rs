@@ -292,6 +292,9 @@ pub struct UpdateWorkspaceRequest {
     pub algorithm_extraction_llm_model: Option<String>,
     /// Algorithm review mode: "auto" or "manual".
     pub algorithm_review_mode: Option<String>,
+    /// Accept third-party / unrelated reference-repo candidates for manual
+    /// review. Defaults to `false`.
+    pub accept_unofficial_implementations: Option<bool>,
 }
 
 /// Statistics for a workspace.

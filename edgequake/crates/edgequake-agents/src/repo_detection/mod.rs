@@ -13,6 +13,7 @@
 pub mod orchestrator;
 pub mod storage;
 pub mod types;
+pub mod verify;
 
 pub use orchestrator::{
     run_detection, DetectionOutcome, RepoDetectionConfig, RepoDetectionError, WebSearchClients,
@@ -24,3 +25,4 @@ pub use types::{
     Confidence, DetectionMethod, DetectionRun, DetectionRunStatus, DocumentRepo, RepoCandidate,
     RepoHost, RepoStatus,
 };
+pub use verify::{verify_candidate, VerificationReport, VerificationVerdict, VerifyError};

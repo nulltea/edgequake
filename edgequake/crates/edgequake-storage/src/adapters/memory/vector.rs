@@ -1045,6 +1045,7 @@ mod tests {
             document_ids: Some(vec!["doc1".to_string()]),
             tenant_id: Some("t1".to_string()),
             workspace_id: Some("ws1".to_string()),
+            vector_type: None,
         };
         let results = storage
             .query_filtered(&[1.0, 0.0, 0.0], 10, None, Some(&mf))

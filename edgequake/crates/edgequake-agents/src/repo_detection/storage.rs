@@ -111,6 +111,7 @@ pub use postgres::PostgresRepoStorage;
 mod postgres {
     use super::*;
     use crate::repo_detection::types::{Confidence, DetectionMethod, RepoHost};
+    use crate::repo_detection::verify::{VerificationReport, VerificationVerdict};
     use chrono::{DateTime, Utc};
     use sqlx::{postgres::PgRow, PgPool, Row};
 
@@ -139,6 +140,20 @@ mod postgres {
         let status = RepoStatus::parse(&status_s)
             .ok_or_else(|| RepoStorageError::Decode(format!("bad status: {status_s}")))?;
 
+        // Migration 050 — verification columns. All nullable; decode lazily.
+        let verification_verdict: Option<String> = row.try_get("verification_verdict")?;
+        let verification_confidence: Option<f32> = row.try_get("verification_confidence")?;
+        let verification_rationale: Option<String> = row.try_get("verification_rationale")?;
+        let verified_at: Option<DateTime<Utc>> = row.try_get("verified_at")?;
+
+        let verification = verification_verdict.and_then(|v| {
+            Some(VerificationReport {
+                verdict: VerificationVerdict::parse(&v)?,
+                confidence: verification_confidence.unwrap_or(0.0).clamp(0.0, 1.0),
+                rationale: verification_rationale.unwrap_or_default(),
+            })
+        });
+
         Ok(DocumentRepo {
             id: row.try_get("id")?,
             tenant_id: row.try_get("tenant_id")?,
@@ -156,6 +171,8 @@ mod postgres {
             status,
             created_at: row.try_get::<DateTime<Utc>, _>("created_at")?,
             updated_at: row.try_get::<DateTime<Utc>, _>("updated_at")?,
+            verification,
+            verified_at,
         })
     }
 
@@ -194,15 +211,31 @@ mod postgres {
             }
             let mut tx = self.pool.begin().await?;
             for c in candidates {
+                let v_verdict = c.verification.as_ref().map(|v| v.verdict.as_str());
+                let v_confidence = c.verification.as_ref().map(|v| v.confidence);
+                let v_rationale = c.verification.as_ref().map(|v| v.rationale.as_str());
+                // Only stamp verified_at when we actually have a verification
+                // report — NULL otherwise so the column tracks "did we run
+                // the verifier for this row".
+                let v_time = c.verification.as_ref().map(|_| chrono::Utc::now());
+
                 sqlx::query(
                     r#"
                     INSERT INTO document_repos (
                         id, tenant_id, workspace_id, document_id,
                         host, owner, repo, url,
                         detection_method, pdf_page_index, search_rank, source_url,
-                        confidence, status
+                        confidence, status,
+                        verification_verdict, verification_confidence,
+                        verification_rationale, verified_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending')
+                    VALUES (
+                        $1, $2, $3, $4,
+                        $5, $6, $7, $8,
+                        $9, $10, $11, $12,
+                        $13, 'pending',
+                        $14, $15, $16, $17
+                    )
                     ON CONFLICT (tenant_id, workspace_id, document_id, host, owner, repo)
                     DO UPDATE SET
                         url = EXCLUDED.url,
@@ -211,6 +244,13 @@ mod postgres {
                         search_rank = EXCLUDED.search_rank,
                         source_url = EXCLUDED.source_url,
                         confidence = EXCLUDED.confidence,
+                        -- Overwrite verification fields on re-detect so the
+                        -- row reflects the latest verifier run rather than
+                        -- sticking with a stale verdict from a prior attempt.
+                        verification_verdict = EXCLUDED.verification_verdict,
+                        verification_confidence = EXCLUDED.verification_confidence,
+                        verification_rationale = EXCLUDED.verification_rationale,
+                        verified_at = EXCLUDED.verified_at,
                         updated_at = NOW()
                     "#,
                 )
@@ -227,6 +267,10 @@ mod postgres {
                 .bind(c.search_rank)
                 .bind(c.source_url.as_deref())
                 .bind(c.confidence.as_str())
+                .bind(v_verdict)
+                .bind(v_confidence)
+                .bind(v_rationale)
+                .bind(v_time)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -245,7 +289,9 @@ mod postgres {
                 SELECT id, tenant_id, workspace_id, document_id,
                        host, owner, repo, url,
                        detection_method, pdf_page_index, search_rank, source_url,
-                       confidence, status, created_at, updated_at
+                       confidence, status, created_at, updated_at,
+                       verification_verdict, verification_confidence,
+                       verification_rationale, verified_at
                 FROM document_repos
                 WHERE tenant_id = $1 AND workspace_id = $2 AND document_id = $3
                 ORDER BY
@@ -445,7 +491,9 @@ mod postgres {
                     id, tenant_id, workspace_id, document_id,
                     host, owner, repo, url,
                     detection_method, pdf_page_index, search_rank, source_url,
-                    confidence, status, created_at, updated_at
+                    confidence, status, created_at, updated_at,
+                    verification_verdict, verification_confidence,
+                    verification_rationale, verified_at
                 "#,
             )
             .bind(id)

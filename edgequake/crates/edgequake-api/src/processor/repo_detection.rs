@@ -13,7 +13,7 @@
 use super::*;
 use edgequake_agents::repo_detection::{
     run_detection, DetectionOutcome, PostgresRepoStorage, RepoDetectionConfig, RepoStorage,
-    WebSearchClients,
+    VerificationVerdict, WebSearchClients,
 };
 use edgequake_agents::web_search::{Crawl4aiClient, SearxngClient};
 use tokio_util::sync::CancellationToken;
@@ -41,8 +41,13 @@ impl DocumentTaskProcessor {
             .await?;
         task.update_progress("repo_detecting".to_string(), 1, 10);
 
-        // Load PDF bytes if a pdf_id was provided.
-        let pdf_bytes: Vec<u8> = match data.pdf_id.as_ref() {
+        // Load PDF bytes AND the persisted markdown from `pdf_documents` in one
+        // fetch when a pdf_id is provided. Markdown lives on the row
+        // (`markdown_content`) since pipeline refactor; the old `{doc_id}-content`
+        // KV key is no longer populated, so Layer B was silently running with an
+        // empty front-matter input for every PDF and short-circuiting with
+        // `NoFrontMatter`.
+        let (pdf_bytes, markdown): (Vec<u8>, String) = match data.pdf_id.as_ref() {
             Some(pdf_id) => {
                 let uuid = uuid::Uuid::parse_str(pdf_id)
                     .map_err(|e| TaskError::Process(format!("Invalid pdf_id: {e}")))?;
@@ -55,21 +60,10 @@ impl DocumentTaskProcessor {
                     .await
                     .map_err(|e| TaskError::Process(format!("Failed to fetch PDF: {e}")))?
                     .ok_or_else(|| TaskError::NotFound(format!("PDF not found: {pdf_id}")))?;
-                pdf.pdf_data
+                (pdf.pdf_data, pdf.markdown_content.unwrap_or_default())
             }
-            None => Vec::new(),
+            None => (Vec::new(), String::new()),
         };
-
-        // Load the document's markdown content (kv key pattern used across the
-        // processor: `{doc_id}-content`).
-        let content_key = format!("{document_id}-content");
-        let markdown = self
-            .kv_storage
-            .get_by_id(&content_key)
-            .await
-            .map_err(|e| TaskError::Storage(format!("Failed to load content: {e}")))?
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_default();
 
         let outcome = self
             .run_repo_detection_inline(
@@ -121,7 +115,7 @@ impl DocumentTaskProcessor {
         let outcome_result =
             run_detection(pdf_bytes, markdown, web_clients.as_ref(), &config).await;
 
-        let outcome = match outcome_result {
+        let mut outcome = match outcome_result {
             Ok(o) => o,
             Err(e) => {
                 warn!(document_id, error = %e, "repo detection failed");
@@ -133,10 +127,39 @@ impl DocumentTaskProcessor {
             }
         };
 
+        // Workspace-level filter: when `accept_unofficial_implementations`
+        // is off (default), drop candidates the verifier classified as
+        // `third_party` or `unrelated` before persistence so they never
+        // show up in the review queue. Candidates the verifier couldn't
+        // score (verification = None) OR classified as `official` /
+        // `inconclusive` still pass through — we don't auto-reject on
+        // uncertainty, consistent with the existing verifier-failure
+        // policy.
+        let accept_unofficial = self.resolve_accept_unofficial(workspace_id).await;
+        if !accept_unofficial {
+            let before = outcome.candidates.len();
+            outcome.candidates.retain(|c| match &c.verification {
+                Some(v) => !matches!(
+                    v.verdict,
+                    VerificationVerdict::ThirdParty | VerificationVerdict::Unrelated
+                ),
+                None => true,
+            });
+            let dropped = before - outcome.candidates.len();
+            if dropped > 0 {
+                info!(
+                    document_id,
+                    dropped,
+                    "accept_unofficial_implementations=false: dropped unofficial candidates"
+                );
+            }
+        }
+
         info!(
             document_id,
             layer_a = outcome.layer_a_count(),
             layer_b = outcome.layer_b_count(),
+            accept_unofficial,
             "repo detection outcome"
         );
 
@@ -164,6 +187,35 @@ impl DocumentTaskProcessor {
             .ok();
 
         Ok(outcome)
+    }
+
+    /// Look up the workspace setting that gates non-official candidates.
+    /// Defaults to `false` when the workspace-service isn't wired or the
+    /// workspace row is unreachable — safer to drop unofficial than to
+    /// silently persist them.
+    async fn resolve_accept_unofficial(&self, workspace_id: uuid::Uuid) -> bool {
+        let Some(ws_svc) = self.workspace_service.as_ref() else {
+            return false;
+        };
+        match ws_svc.get_workspace(workspace_id).await {
+            Ok(Some(ws)) => ws.accept_unofficial_implementations.unwrap_or(false),
+            Ok(None) => {
+                warn!(
+                    workspace_id = %workspace_id,
+                    "workspace not found while resolving accept_unofficial_implementations; \
+                     defaulting to false"
+                );
+                false
+            }
+            Err(e) => {
+                warn!(
+                    workspace_id = %workspace_id,
+                    error = %e,
+                    "failed to fetch workspace setting; defaulting to accept_unofficial=false"
+                );
+                false
+            }
+        }
     }
 
     /// Build a fresh PostgresRepoStorage using the task's DATABASE_URL. The

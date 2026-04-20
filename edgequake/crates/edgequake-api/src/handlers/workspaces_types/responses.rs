@@ -116,6 +116,11 @@ pub struct WorkspaceResponse {
     pub algorithm_extraction_llm_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub algorithm_review_mode: Option<String>,
+    /// When `true`, reference-repo detection accepts third-party /
+    /// unrelated candidates for manual review. Default (`false` or
+    /// missing) drops them pre-persistence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accept_unofficial_implementations: Option<bool>,
 
     // === Entity Type Configuration (SPEC-085) ===
     /// Custom entity types configured for this workspace.

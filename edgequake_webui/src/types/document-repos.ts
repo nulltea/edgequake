@@ -16,6 +16,19 @@ export type RepoStatus = "pending" | "approved" | "rejected";
 
 export type DetectionRunStatus = "running" | "complete" | "failed";
 
+/**
+ * Post-detection verifier verdict. Set by the LLM verifier that runs after
+ * Layer A or Layer B produces a candidate. All four fields are absent when
+ * the verifier hasn't run (old rows, or a run where the verifier was
+ * disabled / failed). Surfaced purely as an advisory signal in the UI —
+ * reviewers still decide approve/reject.
+ */
+export type VerificationVerdict =
+  | "official"
+  | "third_party"
+  | "unrelated"
+  | "inconclusive";
+
 export interface RepoCandidate {
   id: string;
   document_id: string;
@@ -31,6 +44,14 @@ export interface RepoCandidate {
   status: RepoStatus;
   created_at: string;
   updated_at: string;
+  /** Omitted when the verifier hasn't run for this row. */
+  verification_verdict?: VerificationVerdict;
+  /** 0..1 confidence reported by the verifier LLM. */
+  verification_confidence?: number;
+  /** One-sentence rationale from the verifier. */
+  verification_rationale?: string;
+  /** Timestamp when the verifier last ran for this row. */
+  verified_at?: string;
 }
 
 export interface DetectionRun {

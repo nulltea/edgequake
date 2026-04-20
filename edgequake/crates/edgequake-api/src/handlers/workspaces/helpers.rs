@@ -92,6 +92,7 @@ pub(super) fn workspace_to_response(workspace: &Workspace) -> WorkspaceResponse 
         algorithm_extraction_llm_provider: workspace.algorithm_extraction_llm_provider.clone(),
         algorithm_extraction_llm_model: workspace.algorithm_extraction_llm_model.clone(),
         algorithm_review_mode: workspace.algorithm_review_mode.clone(),
+        accept_unofficial_implementations: workspace.accept_unofficial_implementations,
         // SPEC-085: Entity type configuration (read from workspace metadata)
         entity_types: workspace
             .metadata

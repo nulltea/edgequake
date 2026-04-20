@@ -276,6 +276,7 @@ pub async fn update_workspace(
         algorithm_extraction_llm_provider: request.algorithm_extraction_llm_provider,
         algorithm_extraction_llm_model: request.algorithm_extraction_llm_model,
         algorithm_review_mode: request.algorithm_review_mode,
+        accept_unofficial_implementations: request.accept_unofficial_implementations,
     };
 
     let workspace = state

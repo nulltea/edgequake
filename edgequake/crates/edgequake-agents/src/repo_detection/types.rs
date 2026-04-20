@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::verify::VerificationReport;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RepoHost {
@@ -147,6 +149,14 @@ pub struct DocumentRepo {
     pub status: RepoStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Populated by the post-detection verifier when it runs successfully.
+    /// `None` = verifier hasn't run (migration 050 columns are NULL) or
+    /// verifier failed and was skipped.
+    #[serde(default)]
+    pub verification: Option<VerificationReport>,
+    /// Server-set timestamp when the verifier last ran for this row.
+    #[serde(default)]
+    pub verified_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,4 +204,9 @@ pub struct RepoCandidate {
     pub search_rank: Option<i32>,
     pub source_url: Option<String>,
     pub confidence: Confidence,
+    /// Attached by [`super::verify::verify_candidate`] after the candidate
+    /// is detected but before persistence. `None` when the verifier
+    /// couldn't run (missing front-matter, LLM failure, etc.) — in that
+    /// case the candidate still persists with `confidence` only.
+    pub verification: Option<VerificationReport>,
 }

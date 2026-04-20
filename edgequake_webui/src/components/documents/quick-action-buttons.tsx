@@ -16,7 +16,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip';
 import type { Document } from '@/types';
-import { CodeXml, ExternalLink, Eye, FileCode2, Network, RefreshCw } from 'lucide-react';
+import { CodeXml, ExternalLink, Eye, GitBranch, Network, RefreshCw } from 'lucide-react';
 import * as React from 'react';
 
 /**
@@ -161,7 +161,7 @@ export function QuickActionButtons({
       {/* Reference code - only when code_artifacts exist */}
       {canViewCodeArtifacts && onViewCodeArtifacts && (
         <ActionButton
-          icon={<FileCode2 className="h-4 w-4" />}
+          icon={<GitBranch className="h-4 w-4" />}
           label="Reference code"
           onClick={() => onViewCodeArtifacts(doc)}
         />
