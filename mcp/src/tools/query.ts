@@ -5,16 +5,68 @@
  * relationships from the knowledge graph WITHOUT generating an answer.
  * The calling model synthesizes the answer from the returned context.
  * This saves one LLM call per query.
+ *
+ * In addition to chunks/entities/relationships, the response may include
+ * two curated enrichment blocks:
+ *   - `approved_algorithms` — structured algorithm definitions (steps +
+ *     pseudocode) extracted from the paper.
+ *   - `reference_code` — code implementations of paper algorithms,
+ *     discovered in linked reference repositories.
+ * Both are rendered inline so the chat model can cite them directly.
+ * (The JSON field name `approved_algorithms` is the backend contract —
+ * the consumer-facing section header avoids the workflow term.)
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ApprovedAlgorithm, ReferenceCodeSnippet } from "edgequake-sdk";
 import { z } from "zod";
 import { getClient } from "../client.js";
 import { formatError } from "../errors.js";
 
+function renderAlgorithms(algorithms: ApprovedAlgorithm[]): string {
+  const lines: string[] = ["**Algorithms:**"];
+  algorithms.forEach((a, i) => {
+    const idx = i + 1;
+    const header = `[A${idx}] **${a.name}** (${a.algorithm_type}, confidence: ${a.confidence})`;
+    lines.push(header);
+    if (a.description) lines.push(`_description:_ ${a.description}`);
+    if (a.complexity) lines.push(`_complexity:_ ${a.complexity}`);
+    if (a.steps && a.steps.length > 0) {
+      lines.push("_steps:_");
+      for (const step of a.steps) {
+        const action = (step.action ?? "").trim();
+        const details = (step.details ?? "").trim();
+        lines.push(`  ${step.number}. ${action} ${details}`.trimEnd());
+      }
+    }
+    if (a.pseudocode) {
+      lines.push("_pseudocode:_");
+      lines.push("```\n" + a.pseudocode.replace(/\s+$/, "") + "\n```");
+    }
+  });
+  return lines.join("\n");
+}
+
+function renderReferenceCode(snippets: ReferenceCodeSnippet[]): string {
+  const lines: string[] = ["**Reference code implementations:**"];
+  snippets.forEach((s, i) => {
+    const idx = i + 1;
+    const name = s.algorithm_name || s.algorithm_id;
+    let header = `[C${idx}] **${name}** — \`${s.file_path}:${s.start_line}-${s.end_line}\``;
+    if (s.repo_url && s.repo_commit) {
+      header += ` ([source](${s.repo_url}/blob/${s.repo_commit}/${s.file_path}#L${s.start_line}-L${s.end_line}))`;
+    }
+    lines.push(header);
+    if (s.match_rationale) lines.push(`_rationale:_ ${s.match_rationale}`);
+    const lang = s.language ?? "";
+    lines.push("```" + lang + "\n" + s.snippet + "\n```");
+  });
+  return lines.join("\n");
+}
+
 export function registerQueryTools(server: McpServer): void {
   server.tool(
     "query",
-    "Search the EdgeQuake knowledge graph. Returns retrieved text chunks, entities, and relationships. Use the returned context to answer the user's question. Use 'hybrid' mode (default) for best results.",
+    "Search the EdgeQuake knowledge graph. Returns retrieved text chunks, entities, and relationships, plus any curated algorithm definitions and reference code implementations matched semantically to the question. Use 'hybrid' mode (default) for best results.",
     {
       query: z.string().describe("Natural language question"),
       mode: z
@@ -50,6 +102,9 @@ export function registerQueryTools(server: McpServer): void {
           }
         }
 
+        const approvedAlgorithms = result.approved_algorithms ?? [];
+        const referenceCode = result.reference_code ?? [];
+
         const parts: string[] = [];
         if (chunks.length > 0) {
           parts.push("**Text chunks:**\n" + chunks.slice(0, 10).join("\n\n"));
@@ -61,6 +116,12 @@ export function registerQueryTools(server: McpServer): void {
           parts.push(
             "**Relationships:**\n" + relationships.slice(0, 10).join("\n"),
           );
+        }
+        if (approvedAlgorithms.length > 0) {
+          parts.push(renderAlgorithms(approvedAlgorithms));
+        }
+        if (referenceCode.length > 0) {
+          parts.push(renderReferenceCode(referenceCode));
         }
         if (sourceDocs.size > 0) {
           parts.push("**Source documents:** " + [...sourceDocs].join(", "));

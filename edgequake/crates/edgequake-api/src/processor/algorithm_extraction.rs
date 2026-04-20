@@ -877,12 +877,58 @@ impl DocumentTaskProcessor {
                 .await
                 .map_err(|e| TaskError::Process(format!("Failed to store algorithms: {e}")))?;
 
+            let algorithm_ids: Vec<String> =
+                algorithms.iter().map(|a| a.id.to_string()).collect();
+
             info!(
                 document_id = %document_id,
                 count = count,
                 auto_approve = auto_approve,
                 "Auto algorithm extraction stored in database"
             );
+
+            // Run embedding inline when auto-approved. Without this step the
+            // approved rows never make it into the workspace vector store, so
+            // the query-time algorithm enrichment can't surface them — they
+            // exist in SQL but are invisible to semantic retrieval.
+            if auto_approve && !algorithm_ids.is_empty() {
+                info!(
+                    document_id = %document_id,
+                    count = algorithm_ids.len(),
+                    "Auto-approve (VLM path): embedding algorithms inline"
+                );
+                self.update_document_status(document_id, "algo_embedding", None)
+                    .await
+                    .ok();
+
+                let embed_data = edgequake_tasks::AlgorithmEmbeddingData {
+                    document_id: document_id.to_string(),
+                    workspace_id: workspace_id_uuid.to_string(),
+                    algorithm_ids,
+                };
+
+                match self
+                    .process_algorithm_embedding(
+                        task,
+                        embed_data,
+                        tokio_util::sync::CancellationToken::new(),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        info!(
+                            document_id = %document_id,
+                            "Auto-approve (VLM path): embedding complete"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "Auto-approve (VLM path): embedding failed (non-fatal)"
+                        );
+                    }
+                }
+            }
         }
 
         Ok(count)

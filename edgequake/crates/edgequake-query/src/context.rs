@@ -39,6 +39,16 @@ pub struct QueryContext {
     #[serde(default)]
     pub reference_code: Vec<ReferenceCodeSnippet>,
 
+    /// Approved algorithm definitions (name + description + steps +
+    /// pseudocode) surfaced via semantic vector search against
+    /// algorithm-tagged embeddings in the workspace vector store. Empty when
+    /// the feature is disabled or no approved algorithms match. Distinct
+    /// from `chunks` because structured pseudocode + step lists deserve
+    /// their own renderer — treating them as plain text chunks loses the
+    /// structure.
+    #[serde(default)]
+    pub approved_algorithms: Vec<ApprovedAlgorithmSnippet>,
+
     /// Total token count of the context.
     pub token_count: usize,
 
@@ -47,6 +57,30 @@ pub struct QueryContext {
 
     /// Retrieval metadata.
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// One step in an approved algorithm, ready for the LLM prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovedAlgorithmStep {
+    pub number: usize,
+    pub action: String,
+    pub details: String,
+}
+
+/// A single approved algorithm (reviewer-approved in the Algorithms tab)
+/// matched to the query by semantic similarity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovedAlgorithmSnippet {
+    pub algorithm_id: String,
+    pub document_id: String,
+    pub name: String,
+    pub algorithm_type: String,
+    pub description: Option<String>,
+    pub pseudocode: Option<String>,
+    pub complexity: Option<String>,
+    pub steps: Vec<ApprovedAlgorithmStep>,
+    pub tags: Vec<String>,
+    pub confidence: String,
 }
 
 /// A single approved code snippet associated with a paper algorithm, ready
@@ -137,6 +171,46 @@ impl QueryContext {
             }
         }
 
+        if !self.approved_algorithms.is_empty() {
+            parts.push("### Approved Algorithms (Reviewer-Approved)\n\n".to_string());
+            parts.push(
+                "These are structured definitions of algorithms extracted from the paper \
+                 and approved by a human reviewer. Treat them as authoritative — prefer \
+                 them over paraphrases in Document Chunks when the two disagree.\n\n"
+                    .to_string(),
+            );
+            for (i, a) in self.approved_algorithms.iter().enumerate() {
+                let ref_id = i + 1;
+                parts.push(format!(
+                    "[A{ref_id}] **{name}** ({algo_type}, confidence: {confidence})\n",
+                    name = a.name,
+                    algo_type = a.algorithm_type,
+                    confidence = a.confidence,
+                ));
+                if let Some(desc) = a.description.as_deref().filter(|s| !s.is_empty()) {
+                    parts.push(format!("   _description:_ {desc}\n"));
+                }
+                if let Some(c) = a.complexity.as_deref().filter(|s| !s.is_empty()) {
+                    parts.push(format!("   _complexity:_ {c}\n"));
+                }
+                if !a.steps.is_empty() {
+                    parts.push("   _steps:_\n".to_string());
+                    for step in &a.steps {
+                        parts.push(format!(
+                            "     {}. {} {}\n",
+                            step.number,
+                            step.action.trim(),
+                            step.details.trim()
+                        ));
+                    }
+                }
+                if let Some(pseudo) = a.pseudocode.as_deref().filter(|s| !s.is_empty()) {
+                    parts.push(format!("   _pseudocode:_\n```\n{}\n```\n", pseudo.trim_end()));
+                }
+                parts.push("\n".to_string());
+            }
+        }
+
         if !self.reference_code.is_empty() {
             parts.push("### Reference Code Implementations\n\n".to_string());
             parts.push(
@@ -185,6 +259,7 @@ impl QueryContext {
             && self.entities.is_empty()
             && self.relationships.is_empty()
             && self.reference_code.is_empty()
+            && self.approved_algorithms.is_empty()
     }
 }
 

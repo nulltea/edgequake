@@ -767,6 +767,16 @@ impl VectorStorage for PgVectorStorage {
             param_offset += 1;
         }
 
+        // Vector type (JSONB only — no dedicated column for this).
+        // Needed when the caller wants the HNSW candidate pool to be drawn
+        // only from rare-type rows (e.g. algorithm) that would otherwise be
+        // evicted by the vastly more numerous chunk/entity rows before the
+        // WHERE clause filters them in.
+        if mf.vector_type.is_some() {
+            conditions.push(format!("metadata->>'type' = ${}", param_offset));
+            param_offset += 1;
+        }
+
         let where_clause = if conditions.is_empty() {
             String::new()
         } else {
@@ -818,6 +828,12 @@ impl VectorStorage for PgVectorStorage {
         if let Some(wid) = &mf.workspace_id {
             args.add(wid).map_err(|e| {
                 StorageError::Database(format!("Failed to bind workspace_id: {}", e))
+            })?;
+        }
+
+        if let Some(vt) = &mf.vector_type {
+            args.add(vt).map_err(|e| {
+                StorageError::Database(format!("Failed to bind vector_type: {}", e))
             })?;
         }
 

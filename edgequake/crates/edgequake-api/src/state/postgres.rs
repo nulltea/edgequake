@@ -330,6 +330,19 @@ impl AppState {
             }
         }
 
+        // Approved-algorithm enrichment: unlike code, algorithm embeddings
+        // use the workspace's own embedding provider + table, so this is
+        // cheap to wire up unconditionally. Gate only on the postgres
+        // feature, not on a separate env var.
+        {
+            let algo_store: Arc<dyn edgequake_storage::traits::AlgorithmVectorStorage> =
+                Arc::new(edgequake_storage::PgAlgorithmVectorStorage::new(
+                    pool.clone(),
+                ));
+            tracing::info!("✓ Approved-algorithm enrichment: pg storage wired");
+            sota_builder = sota_builder.with_approved_algorithms(algo_store);
+        }
+
         let sota_engine = Arc::new(sota_builder);
 
         // Create workspace vector registry for per-workspace dimensions

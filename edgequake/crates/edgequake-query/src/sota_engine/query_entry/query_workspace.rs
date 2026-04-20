@@ -237,6 +237,19 @@ impl SOTAQueryEngine {
         )
         .await;
 
+        // Step 5.6: Approved-algorithm enrichment. Re-uses the workspace
+        // embedding computed for main retrieval and the workspace vector
+        // store, so no extra embed call is needed. No-op when the engine
+        // was constructed without an AlgorithmVectorStorage.
+        crate::approved_algorithms_enrichment::enrich_with_approved_algorithms(
+            &mut final_context,
+            &request,
+            &embeddings.query,
+            &vector_storage,
+            self.algorithm_vector_storage(),
+        )
+        .await;
+
         // Step 6: Generate answer
         let (answer, generated_tokens) = if request.context_only {
             (String::new(), 0)
@@ -455,6 +468,17 @@ impl SOTAQueryEngine {
             &request,
             self.code_vector_storage(),
             self.code_embedder(),
+        )
+        .await;
+
+        // Step 5.6: Approved-algorithm enrichment (see the workspace-config
+        // path for the rationale).
+        crate::approved_algorithms_enrichment::enrich_with_approved_algorithms(
+            &mut final_context,
+            &request,
+            &embeddings.query,
+            &vector_storage,
+            self.algorithm_vector_storage(),
         )
         .await;
 

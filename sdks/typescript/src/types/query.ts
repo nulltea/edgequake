@@ -90,6 +90,47 @@ export interface QueryStats {
   llm_model?: string;
 }
 
+// ── Enrichment Types ──────────────────────────────────────────
+
+/** One approved reference-code snippet attached to a query response via
+ *  the Reference Code GraphRAG extension (Phase 1). Matches Rust
+ *  `ReferenceCodeSnippetDto`. */
+export interface ReferenceCodeSnippet {
+  algorithm_id: string;
+  algorithm_name: string;
+  document_id: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  language: string;
+  snippet: string;
+  repo_url?: string;
+  repo_commit: string;
+  match_rationale?: string;
+}
+
+/** One step in an {@link ApprovedAlgorithm}. */
+export interface ApprovedAlgorithmStep {
+  number: number;
+  action: string;
+  details: string;
+}
+
+/** One reviewer-approved algorithm attached to the query response via the
+ *  approved-algorithm enrichment step. Matches Rust `ApprovedAlgorithmDto`. */
+export interface ApprovedAlgorithm {
+  algorithm_id: string;
+  document_id: string;
+  name: string;
+  algorithm_type: string;
+  description?: string;
+  pseudocode?: string;
+  complexity?: string;
+  steps?: ApprovedAlgorithmStep[];
+  tags?: string[];
+  confidence: string;
+}
+
 // ── Response ──────────────────────────────────────────────────
 
 export interface QueryResponse {
@@ -105,6 +146,12 @@ export interface QueryResponse {
   conversation_id?: string;
   /** Whether reranking was applied. */
   reranked?: boolean;
+  /** Approved reference-code snippets surfaced by the enrichment step.
+   *  Omitted when empty. */
+  reference_code?: ReferenceCodeSnippet[];
+  /** Reviewer-approved algorithm definitions surfaced by the enrichment
+   *  step. Omitted when empty. */
+  approved_algorithms?: ApprovedAlgorithm[];
 }
 
 /** @deprecated Use {@link SourceReference} instead. */

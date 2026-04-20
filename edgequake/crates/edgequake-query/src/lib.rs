@@ -52,6 +52,7 @@
 //! - [`crate::truncation`] for token budgeting
 
 pub mod chunk_retrieval;
+pub mod approved_algorithms_enrichment;
 pub mod context;
 pub mod context_filter;
 pub mod engine;

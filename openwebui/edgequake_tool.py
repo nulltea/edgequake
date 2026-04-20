@@ -1,7 +1,7 @@
 """
 title: EdgeQuake RAG
 author: EdgeQuake
-version: 0.3.0
+version: 0.4.1
 description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships.
 """
 
@@ -74,7 +74,8 @@ class Tools:
 
         sources = data.get("sources", [])
         reference_code = data.get("reference_code", [])
-        if not sources and not reference_code:
+        approved_algorithms = data.get("approved_algorithms", [])
+        if not sources and not reference_code and not approved_algorithms:
             return "No relevant context found in the knowledge base."
 
         chunks = []
@@ -106,6 +107,8 @@ class Tools:
             parts.append("**Entities:**\n" + "\n".join(entities[:15]))
         if relationships:
             parts.append("**Relationships:**\n" + "\n".join(relationships[:10]))
+        if approved_algorithms:
+            parts.append(_render_algorithms(approved_algorithms))
         if reference_code:
             parts.append(_render_reference_code(reference_code))
         if seen_docs:
@@ -349,17 +352,60 @@ class Tools:
         return "\n".join(lines)
 
 
-def _render_reference_code(snippets: list) -> str:
-    """Render approved reference-code snippets from the EdgeQuake query API
+def _render_algorithms(algorithms: list) -> str:
+    """Render curated algorithm definitions from the EdgeQuake query API
     into a Markdown block the chat model can treat as authoritative.
 
-    The EdgeQuake backend matches approved code_artifacts against the
-    query via HNSW cosine search over jina-code-embeddings; anything
-    returned here has already been human-reviewed in the Code Matches
-    tab. These are the actual implementations of algorithms in the
-    retrieved papers — higher fidelity than the paper's prose
-    description of the same algorithm."""
-    lines = ["**Reference code implementations (reviewer-approved):**"]
+    EdgeQuake matches algorithm embeddings against the query via cosine
+    search over the workspace vector store. Structured pseudocode + step
+    lists are carried through explicitly so the LLM doesn't have to
+    reconstruct them from paraphrased chunk text — especially useful for
+    crypto protocols where step order matters. (The backend JSON field is
+    still `approved_algorithms`; that workflow term is kept server-side.)"""
+    lines = ["**Algorithms:**"]
+    for i, a in enumerate(algorithms, start=1):
+        name = a.get("name") or a.get("algorithm_id", "?")
+        algo_type = a.get("algorithm_type", "Algorithm")
+        confidence = a.get("confidence", "")
+        header = f"[A{i}] **{name}** ({algo_type}"
+        if confidence:
+            header += f", confidence: {confidence}"
+        header += ")"
+        lines.append(header)
+
+        desc = a.get("description")
+        if desc:
+            lines.append(f"_description:_ {desc}")
+        complexity = a.get("complexity")
+        if complexity:
+            lines.append(f"_complexity:_ {complexity}")
+
+        steps = a.get("steps") or []
+        if steps:
+            lines.append("_steps:_")
+            for s in steps:
+                num = s.get("number", "?")
+                action = (s.get("action") or "").strip()
+                details = (s.get("details") or "").strip()
+                lines.append(f"  {num}. {action} {details}".rstrip())
+
+        pseudocode = a.get("pseudocode")
+        if pseudocode:
+            lines.append("_pseudocode:_")
+            lines.append(f"```\n{pseudocode.rstrip()}\n```")
+
+    return "\n".join(lines)
+
+
+def _render_reference_code(snippets: list) -> str:
+    """Render reference-code snippets from the EdgeQuake query API into a
+    Markdown block the chat model can treat as authoritative.
+
+    EdgeQuake matches code snippets against the query via HNSW cosine
+    search over jina-code-embeddings. These are actual implementations of
+    algorithms in the retrieved papers — higher fidelity than the paper's
+    prose description of the same algorithm."""
+    lines = ["**Reference code implementations:**"]
     for i, s in enumerate(snippets, start=1):
         algo = s.get("algorithm_name") or s.get("algorithm_id", "?")
         file_path = s.get("file_path", "?")

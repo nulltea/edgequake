@@ -262,6 +262,44 @@ pub struct QueryResponse {
     /// code snippets have different renderers and different lifetimes.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub reference_code: Vec<ReferenceCodeSnippetDto>,
+
+    /// Reviewer-approved algorithm definitions (name + description + steps
+    /// + pseudocode) matched to the query via semantic search. Separate
+    /// from `sources[]` because structured algorithm data has its own
+    /// renderer — treating it as a plain text chunk would lose the step
+    /// structure.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub approved_algorithms: Vec<ApprovedAlgorithmDto>,
+}
+
+/// One step in an [`ApprovedAlgorithmDto`].
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ApprovedAlgorithmStepDto {
+    pub number: usize,
+    pub action: String,
+    pub details: String,
+}
+
+/// Public shape of an [`ApprovedAlgorithmSnippet`] for the API. Mirrors
+/// `edgequake_query::context::ApprovedAlgorithmSnippet` so the api crate
+/// doesn't re-export query types in its JSON contract.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ApprovedAlgorithmDto {
+    pub algorithm_id: String,
+    pub document_id: String,
+    pub name: String,
+    pub algorithm_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pseudocode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub complexity: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub steps: Vec<ApprovedAlgorithmStepDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub tags: Vec<String>,
+    pub confidence: String,
 }
 
 /// Public shape of a [`ReferenceCodeSnippet`] for the API.
@@ -549,10 +587,13 @@ mod tests {
             },
             conversation_id: None,
             reranked: false,
+            reference_code: Vec::new(),
+            approved_algorithms: Vec::new(),
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["mode"], "hybrid");
         assert!(json.get("conversation_id").is_none());
         assert!(json.get("reranked").is_none()); // skip_serializing_if
+        assert!(json.get("approved_algorithms").is_none()); // skip_serializing_if (empty)
     }
 }

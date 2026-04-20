@@ -21,7 +21,8 @@ use super::{
     },
 };
 pub use crate::handlers::query_types::{
-    QueryRequest, QueryResponse, QueryStats, ReferenceCodeSnippetDto, SourceReference,
+    ApprovedAlgorithmDto, ApprovedAlgorithmStepDto, QueryRequest, QueryResponse, QueryStats,
+    ReferenceCodeSnippetDto, SourceReference,
 };
 
 /// Execute a RAG query with multi-mode retrieval.
@@ -521,6 +522,36 @@ pub async fn execute_query(
         })
         .collect();
 
+    // Symmetric with reference_code: surface reviewer-approved algorithm
+    // definitions as their own top-level field. Clients that render chat
+    // output themselves (OpenWebUI tool, MCP tool) can show pseudocode +
+    // steps directly rather than parsing it out of the context string.
+    let approved_algorithms: Vec<ApprovedAlgorithmDto> = result
+        .context
+        .approved_algorithms
+        .iter()
+        .map(|a| ApprovedAlgorithmDto {
+            algorithm_id: a.algorithm_id.clone(),
+            document_id: a.document_id.clone(),
+            name: a.name.clone(),
+            algorithm_type: a.algorithm_type.clone(),
+            description: a.description.clone(),
+            pseudocode: a.pseudocode.clone(),
+            complexity: a.complexity.clone(),
+            steps: a
+                .steps
+                .iter()
+                .map(|s| ApprovedAlgorithmStepDto {
+                    number: s.number,
+                    action: s.action.clone(),
+                    details: s.details.clone(),
+                })
+                .collect(),
+            tags: a.tags.clone(),
+            confidence: a.confidence.clone(),
+        })
+        .collect();
+
     let response = QueryResponse {
         answer: result.answer,
         mode: result.mode.to_string(),
@@ -543,6 +574,7 @@ pub async fn execute_query(
         conversation_id,
         reranked,
         reference_code,
+        approved_algorithms,
     };
 
     Ok(Json(response))

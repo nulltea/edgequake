@@ -75,8 +75,9 @@ pub use pdf_storage::{
 // Re-export traits
 pub use error::StorageError;
 pub use traits::{
-    CodeSearchHit, CodeVectorStorage, GraphEdge, GraphNode, GraphStorage, KVStorage,
-    KnowledgeGraph, MetadataFilter, ReferenceCodebaseSearchHit, ReferenceCodebaseVectorStorage,
+    AlgorithmSearchHit, AlgorithmStepSummary, AlgorithmVectorStorage, CodeSearchHit,
+    CodeVectorStorage, GraphEdge, GraphNode, GraphStorage, KVStorage, KnowledgeGraph,
+    MetadataFilter, ReferenceCodebaseSearchHit, ReferenceCodebaseVectorStorage,
     VectorSearchResult, VectorStorage, WorkspaceVectorConfig, WorkspaceVectorRegistry,
 };
 
@@ -88,7 +89,8 @@ pub use adapters::memory::{
 // Conditionally export PostgreSQL adapters
 #[cfg(feature = "postgres")]
 pub use adapters::postgres::{
-    ConversationRow, FolderRow, MessageRow, PgCodeVectorStorage, PgReferenceCodebaseVectorStorage,
-    PgVectorStorage, PgWorkspaceVectorRegistry, PostgresAGEGraphStorage, PostgresConfig,
-    PostgresConversationStorage, PostgresKVStorage, PostgresPdfStorage, PostgresPool,
+    ConversationRow, FolderRow, MessageRow, PgAlgorithmVectorStorage, PgCodeVectorStorage,
+    PgReferenceCodebaseVectorStorage, PgVectorStorage, PgWorkspaceVectorRegistry,
+    PostgresAGEGraphStorage, PostgresConfig, PostgresConversationStorage, PostgresKVStorage,
+    PostgresPdfStorage, PostgresPool,
 };

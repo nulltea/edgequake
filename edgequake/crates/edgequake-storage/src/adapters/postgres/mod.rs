@@ -30,6 +30,7 @@
 //! - [`BR0240`]: Tenant isolation via RLS policies
 //! - [`BR0350`]: Each workspace has isolated vector storage
 
+mod algorithm_vector;
 mod code_vector;
 mod config;
 mod connection;
@@ -43,6 +44,7 @@ pub mod rls;
 mod vector;
 mod workspace_vector;
 
+pub use algorithm_vector::PgAlgorithmVectorStorage;
 pub use code_vector::PgCodeVectorStorage;
 pub use config::PostgresConfig;
 pub use connection::PostgresPool;

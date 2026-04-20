@@ -86,7 +86,9 @@ use crate::truncation::TruncationConfig;
 use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
 use edgequake_llm::Reranker;
-use edgequake_storage::traits::{CodeVectorStorage, GraphStorage, VectorStorage};
+use edgequake_storage::traits::{
+    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, VectorStorage,
+};
 
 /// Configuration for the SOTA query engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +261,9 @@ pub struct SOTAQueryEngine {
     /// Jina code-embedder client used to embed the NL query for the same step.
     /// `None` disables enrichment just like an absent `code_vector_storage`.
     code_embedder: Option<Arc<JinaEmbedder>>,
+    /// Approved-algorithm vector store used by the sibling enrichment pass.
+    /// `None` disables the post-retrieval algorithm-enrichment step.
+    algorithm_vector_storage: Option<Arc<dyn AlgorithmVectorStorage>>,
 }
 
 impl SOTAQueryEngine {
@@ -293,6 +298,7 @@ impl SOTAQueryEngine {
             )),
             code_vector_storage: None,
             code_embedder: None,
+            algorithm_vector_storage: None,
         }
     }
 
@@ -326,6 +332,7 @@ impl SOTAQueryEngine {
             )),
             code_vector_storage: None,
             code_embedder: None,
+            algorithm_vector_storage: None,
         }
     }
 
@@ -361,6 +368,22 @@ impl SOTAQueryEngine {
     /// Accessor for the code embedder (None = feature off).
     pub fn code_embedder(&self) -> Option<&Arc<JinaEmbedder>> {
         self.code_embedder.as_ref()
+    }
+
+    /// Wire in the approved-algorithm vector store used by the
+    /// post-retrieval algorithm enrichment step (symmetric with
+    /// [`Self::with_code_reference`]).
+    pub fn with_approved_algorithms(
+        mut self,
+        storage: Arc<dyn AlgorithmVectorStorage>,
+    ) -> Self {
+        self.algorithm_vector_storage = Some(storage);
+        self
+    }
+
+    /// Accessor for the algorithm vector store (None = feature off).
+    pub fn algorithm_vector_storage(&self) -> Option<&Arc<dyn AlgorithmVectorStorage>> {
+        self.algorithm_vector_storage.as_ref()
     }
 }
 
