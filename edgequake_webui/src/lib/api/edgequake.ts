@@ -622,6 +622,42 @@ export async function uploadPdfDocument(
   });
 }
 
+/**
+ * Request body for {@link uploadPdfFromUrl}. Mirrors
+ * `UploadPdfFromUrlRequest` in `handlers/pdf_upload/upload.rs`.
+ */
+export interface UploadPdfFromUrlOptions {
+  /** Optional override for the initial filename (server otherwise derives
+   *  it from the URL basename). Post-OCR rename will replace this once
+   *  front-matter is extractable. */
+  title?: string;
+  /** Propagate a client-generated track_id so the progress poller can
+   *  correlate immediately; server auto-generates one if omitted. */
+  track_id?: string;
+  /** Opt-in to re-process an already-ingested PDF via the shared dedup
+   *  path. */
+  force_reindex?: boolean;
+}
+
+/**
+ * Upload a PDF identified by URL. The backend HEAD-checks the URL,
+ * downloads it server-side, and feeds the bytes into the same pipeline
+ * as multipart uploads. On success the response shape matches
+ * {@link uploadPdfDocument}, so existing progress/polling plumbing works
+ * unchanged.
+ */
+export async function uploadPdfFromUrl(
+  url: string,
+  options?: UploadPdfFromUrlOptions,
+): Promise<PdfUploadResponse> {
+  return api.post<PdfUploadResponse>("/documents/pdf/from-url", {
+    url,
+    title: options?.title,
+    track_id: options?.track_id,
+    force_reindex: options?.force_reindex,
+  });
+}
+
 // ============================================================================
 // OODA-19: PDF Progress, Retry, Cancel API Functions
 // ============================================================================

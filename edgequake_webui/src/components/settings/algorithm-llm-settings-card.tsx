@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { LLMModelSelector, type LLMSelection } from '@/components/workspace/llm-model-selector';
 import { getWorkspace, updateWorkspace } from '@/lib/api/edgequake';
 import {
@@ -74,6 +75,7 @@ export function AlgorithmLLMSettingsCard() {
   const [analysisLLM, setAnalysisLLM] = useState<LLMSelection | undefined>(undefined);
   const [extractionLLM, setExtractionLLM] = useState<LLMSelection | undefined>(undefined);
   const [reviewMode, setReviewMode] = useState<string>('manual');
+  const [acceptUnofficial, setAcceptUnofficial] = useState<boolean>(false);
 
   const { data: workspace, isLoading } = useQuery({
     queryKey: ['workspace', selectedTenantId, selectedWorkspaceId],
@@ -91,9 +93,10 @@ export function AlgorithmLLMSettingsCard() {
         algorithm_extraction_llm_provider: extractionLLM?.provider ?? '',
         algorithm_extraction_llm_model: extractionLLM?.model ?? '',
         algorithm_review_mode: reviewMode,
+        accept_unofficial_implementations: acceptUnofficial,
       }),
     onSuccess: () => {
-      toast.success('Algorithm configuration updated');
+      toast.success('Extraction configuration updated');
       queryClient.invalidateQueries({
         queryKey: ['workspace', selectedTenantId, selectedWorkspaceId],
       });
@@ -110,6 +113,7 @@ export function AlgorithmLLMSettingsCard() {
     setAnalysisLLM(getWorkspaceAlgorithmAnalysisSelection(workspace));
     setExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
     setReviewMode(workspace?.algorithm_review_mode || 'manual');
+    setAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
     setIsEditing(true);
   };
 
@@ -129,7 +133,7 @@ export function AlgorithmLLMSettingsCard() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <CodeXml className="h-5 w-5 text-violet-600" />
-            <CardTitle>Algorithm Extraction</CardTitle>
+            <CardTitle>Extraction</CardTitle>
           </div>
           {!isEditing && (
             <Button
@@ -143,7 +147,8 @@ export function AlgorithmLLMSettingsCard() {
           )}
         </div>
         <CardDescription>
-          Configure LLM models and review behavior for the algorithm extraction pipeline.
+          Configure LLM models, review behavior, and reference-repo
+          detection for the extraction pipeline.
         </CardDescription>
       </CardHeader>
 
@@ -152,7 +157,7 @@ export function AlgorithmLLMSettingsCard() {
           <Skeleton className="h-28 w-full" />
         ) : isEditing ? (
           <>
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div>
                 <label className="text-sm font-medium mb-1.5 block">
                   Analysis LLM (Stages 1 &amp; 3)
@@ -183,6 +188,23 @@ export function AlgorithmLLMSettingsCard() {
                     ? 'Algorithms will be automatically approved and embedded in the vector database after extraction.'
                     : 'Algorithms require manual approval before being embedded in the vector database.'}
                 </p>
+              </div>
+              <div className="flex items-start justify-between gap-4 p-3 rounded-lg border bg-muted/30">
+                <div className="flex-1">
+                  <label className="text-sm font-medium">
+                    Accept unofficial reference implementations
+                  </label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    When on, third-party and unrelated repos the verifier
+                    flags are still added to the review queue with their
+                    verdict. When off (default), only candidates likely
+                    authored by the paper&apos;s authors reach review.
+                  </p>
+                </div>
+                <Switch
+                  checked={acceptUnofficial}
+                  onCheckedChange={setAcceptUnofficial}
+                />
               </div>
             </div>
             <div className="flex items-center gap-2 pt-2">
@@ -231,6 +253,28 @@ export function AlgorithmLLMSettingsCard() {
               </div>
               <Badge variant={currentReviewMode === 'auto' ? 'default' : 'secondary'}>
                 {currentReviewMode}
+              </Badge>
+            </div>
+            <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+              <div className="flex-1">
+                <div className="text-xs text-muted-foreground mb-0.5">
+                  Accept unofficial reference repos
+                </div>
+                <div className="font-medium">
+                  {workspace.accept_unofficial_implementations ? 'Enabled' : 'Disabled'}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {workspace.accept_unofficial_implementations
+                    ? 'Third-party / unrelated repos appear in review queue with a verdict badge.'
+                    : 'Only author-released (official) repos reach the review queue.'}
+                </div>
+              </div>
+              <Badge
+                variant={
+                  workspace.accept_unofficial_implementations ? 'default' : 'secondary'
+                }
+              >
+                {workspace.accept_unofficial_implementations ? 'on' : 'off'}
               </Badge>
             </div>
           </div>

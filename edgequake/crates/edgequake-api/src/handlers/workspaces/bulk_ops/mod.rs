@@ -175,6 +175,8 @@ pub(super) fn build_pdf_task(
         // the existing document in-place instead of creating a duplicate.
         existing_document_id: Some(doc_id.to_string()),
         pdf_parser_backend: workspace.resolved_pdf_parser_backend(),
+        rename_after_parse: false,
+        source_url: None,
     }
 }
 

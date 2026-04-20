@@ -70,6 +70,22 @@ pub(super) async fn create_pdf_processing_task(
         },
         existing_document_id: None, // Fresh upload — create new document
         pdf_parser_backend: options.resolved_backend(workspace),
+        // Opt-in post-OCR rename + source URL are stashed in the upload
+        // options' metadata by the URL-upload path (`/documents/pdf/from-url`).
+        // Pull them out here so the PDF processor can honour them without
+        // needing to re-read the raw metadata JSON.
+        rename_after_parse: options
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("rename_after_parse"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        source_url: options
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("source_url"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
     };
 
     let track_id = format!("pdf-{}", Uuid::new_v4());

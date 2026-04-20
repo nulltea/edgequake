@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import {
   PdfParserBackendField,
   type PdfParserBackendChoice,
@@ -112,6 +113,9 @@ export default function WorkspacePage() {
   const [selectedAlgoAnalysisLLM, setSelectedAlgoAnalysisLLM] = useState<LLMSelection | undefined>(undefined);
   const [selectedAlgoExtractionLLM, setSelectedAlgoExtractionLLM] = useState<LLMSelection | undefined>(undefined);
   const [selectedAlgoReviewMode, setSelectedAlgoReviewMode] = useState<string>('manual');
+  // Reference-repo detection setting: when off (default), non-official
+  // candidates are dropped before they reach the review queue.
+  const [selectedAcceptUnofficial, setSelectedAcceptUnofficial] = useState<boolean>(false);
 
   // Fetch workspace data
   const {
@@ -172,6 +176,7 @@ export default function WorkspacePage() {
       algorithm_extraction_llm_provider?: string;
       algorithm_extraction_llm_model?: string;
       algorithm_review_mode?: string;
+      accept_unofficial_implementations?: boolean;
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
       _visionChanged?: boolean;
@@ -190,6 +195,7 @@ export default function WorkspacePage() {
         algorithm_extraction_llm_provider: data.algorithm_extraction_llm_provider,
         algorithm_extraction_llm_model: data.algorithm_extraction_llm_model,
         algorithm_review_mode: data.algorithm_review_mode,
+        accept_unofficial_implementations: data.accept_unofficial_implementations,
       }),
     onSuccess: (_result, variables) => {
       toast.success(t('workspace.updateSuccess', 'Workspace updated successfully'));
@@ -287,6 +293,7 @@ export default function WorkspacePage() {
     data.algorithm_extraction_llm_provider = selectedAlgoExtractionLLM?.provider ?? '';
     data.algorithm_extraction_llm_model = selectedAlgoExtractionLLM?.model ?? '';
     data.algorithm_review_mode = selectedAlgoReviewMode;
+    data.accept_unofficial_implementations = selectedAcceptUnofficial;
 
     // Track which models changed for post-save rebuild notification
     data._embeddingChanged = embeddingModelChanged ?? false;
@@ -305,6 +312,7 @@ export default function WorkspacePage() {
     setSelectedAlgoAnalysisLLM(getWorkspaceAlgorithmAnalysisSelection(workspace));
     setSelectedAlgoExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
     setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
+    setSelectedAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
   };
 
   const handleEditStart = () => {
@@ -315,6 +323,7 @@ export default function WorkspacePage() {
     setSelectedAlgoAnalysisLLM(getWorkspaceAlgorithmAnalysisSelection(workspace));
     setSelectedAlgoExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
     setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
+    setSelectedAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
     setIsEditing(true);
   };
 
@@ -763,20 +772,25 @@ export default function WorkspacePage() {
           </CardContent>
         </Card>
 
-        {/* Algorithm Extraction */}
-        <Card>
+        {/* Extraction — algorithm extraction LLMs + reference-repo detection.
+            Spans both columns of the parent config grid so the inner
+            2×2 layout has the full row width to work with. */}
+        <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <CodeXml className="h-5 w-5 text-violet-600" />
-              Algorithm Extraction
+              Extraction
             </CardTitle>
             <CardDescription>
-              LLM models and review behavior for the algorithm extraction pipeline.
+              LLM models, review behavior, and reference-repo detection for
+              the extraction pipeline.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {isEditing ? (
-              <div className="space-y-3">
+              /* 2-col grid fills the available card width; each cell is
+                 one setting so the block reads as a 2×2 matrix on md+. */
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm font-medium mb-1.5 block">Analysis LLM (Stages 1 &amp; 3)</label>
                   <LLMModelSelector value={selectedAlgoAnalysisLLM} onChange={setSelectedAlgoAnalysisLLM} />
@@ -786,7 +800,7 @@ export default function WorkspacePage() {
                   <LLMModelSelector value={selectedAlgoExtractionLLM} onChange={setSelectedAlgoExtractionLLM} />
                 </div>
                 <div>
-                  <label className="text-sm font-medium mb-1.5 block">Review Mode</label>
+                  <label className="text-sm font-medium mb-1.5 block">Algorithm Review Mode</label>
                   <Select value={selectedAlgoReviewMode} onValueChange={setSelectedAlgoReviewMode}>
                     <SelectTrigger className="w-full">
                       <SelectValue />
@@ -797,9 +811,26 @@ export default function WorkspacePage() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="flex items-start justify-between gap-4 p-3 rounded-lg border bg-muted/30">
+                  <div className="flex-1">
+                    <label className="text-sm font-medium">
+                      Accept unofficial reference implementations
+                    </label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      When on, third-party and unrelated repos the verifier
+                      flags are still added to the review queue with their
+                      verdict. When off (default), only candidates likely
+                      authored by the paper&apos;s authors reach review.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={selectedAcceptUnofficial}
+                    onCheckedChange={setSelectedAcceptUnofficial}
+                  />
+                </div>
               </div>
             ) : (
-              <div className="space-y-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
                   {getProviderIcon(workspace.algorithm_analysis_llm_provider)}
                   <div className="flex-1">
@@ -816,13 +847,30 @@ export default function WorkspacePage() {
                 </div>
                 <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
                   <div className="flex-1">
-                    <div className="text-xs text-muted-foreground">Review Mode</div>
+                    <div className="text-xs text-muted-foreground">Algorithm Review Mode</div>
                     <div className="font-medium">
                       {(workspace.algorithm_review_mode || 'manual') === 'auto' ? 'Auto-approve' : 'Manual Review'}
                     </div>
                   </div>
                   <Badge variant={(workspace.algorithm_review_mode || 'manual') === 'auto' ? 'default' : 'secondary'}>
                     {workspace.algorithm_review_mode || 'manual'}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                  <div className="flex-1">
+                    <div className="text-xs text-muted-foreground">Accept unofficial reference repos</div>
+                    <div className="font-medium">
+                      {workspace.accept_unofficial_implementations ? 'Enabled' : 'Disabled'}
+                    </div>
+                  </div>
+                  <Badge
+                    variant={
+                      workspace.accept_unofficial_implementations
+                        ? 'default'
+                        : 'secondary'
+                    }
+                  >
+                    {workspace.accept_unofficial_implementations ? 'on' : 'off'}
                   </Badge>
                 </div>
               </div>

@@ -287,6 +287,28 @@ impl PdfDocumentStorage for PostgresPdfStorage {
         Ok(())
     }
 
+    async fn update_pdf_filename(&self, pdf_id: &Uuid, filename: &str) -> Result<()> {
+        // Runtime-checked query (not `sqlx::query!`) — the repo's sqlx
+        // offline cache would otherwise need a rebuild to register this
+        // new statement; the row shape is trivial enough that compile-
+        // time checking buys us nothing.
+        sqlx::query(
+            r#"
+            UPDATE pdf_documents
+            SET filename = $1
+            WHERE pdf_id = $2
+            "#,
+        )
+        .bind(filename)
+        .bind(pdf_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(format!("Failed to rename PDF: {}", e)))?;
+
+        debug!("Renamed PDF: id={}, filename={}", pdf_id, filename);
+        Ok(())
+    }
+
     async fn link_pdf_to_document(&self, pdf_id: &Uuid, document_id: &Uuid) -> Result<()> {
         sqlx::query!(
             r#"

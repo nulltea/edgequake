@@ -214,6 +214,65 @@ export function registerDocumentTools(server: McpServer): void {
     },
   );
 
+  // document_upload_from_url
+  server.tool(
+    "document_upload_from_url",
+    "Upload a PDF by URL. EdgeQuake downloads it server-side (HEAD content-type check + 100MB streaming cap), deduplicates, and queues it for extraction. After VLM-OCR completes, the filename is auto-renamed to 'Author et al. - Year - Title.pdf' when the paper's front-matter is extractable (arxiv year derived from the URL when applicable).",
+    {
+      url: z
+        .string()
+        .url()
+        .describe(
+          "Direct URL to a PDF (http or https). Examples: https://arxiv.org/pdf/2506.09452",
+        ),
+      title: z
+        .string()
+        .optional()
+        .describe(
+          "Optional initial filename override. The post-OCR rename still runs when successful.",
+        ),
+      force_reindex: z
+        .boolean()
+        .optional()
+        .describe(
+          "Re-process an already-ingested PDF (clears prior graph/vector data).",
+        ),
+    },
+    async (params) => {
+      try {
+        const client = await getClient();
+        const result = await client.documents.pdf.uploadFromUrl(params.url, {
+          title: params.title,
+          force_reindex: params.force_reindex,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  pdf_id: result.pdf_id,
+                  document_id: result.document_id,
+                  status: result.status,
+                  task_id: result.task_id,
+                  track_id: result.track_id,
+                  filename: result.metadata?.filename,
+                  page_count: result.metadata?.page_count,
+                  file_size_bytes: result.metadata?.file_size_bytes,
+                  message: result.message,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (error) {
+        return formatError(error);
+      }
+    },
+  );
+
   // document_list
   server.tool(
     "document_list",

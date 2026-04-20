@@ -1,13 +1,12 @@
 """
 title: EdgeQuake RAG
 author: EdgeQuake
-version: 0.4.1
+version: 0.5.0
 description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships.
 """
 
 import json
 import os
-import tempfile
 import requests
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -286,38 +285,53 @@ class Tools:
     def upload_pdf_from_url(
         self,
         url: str,
-        author: str,
-        year: str,
-        paper_title: str,
+        title: Optional[str] = None,
         __user__: dict = {},
     ) -> str:
         """
-        Download a PDF from a URL and upload it to the EdgeQuake knowledge base.
-        The filename follows academic citation format: "Author et al. - Year - Title.pdf"
+        Upload a PDF by URL. EdgeQuake fetches it server-side (HEAD
+        content-type check + streaming 100 MB cap) and queues it for
+        extraction. After VLM-OCR completes, the filename is renamed
+        automatically to academic citation format ("Author et al. -
+        Year - Title.pdf") when the paper's front-matter is extractable.
+        Year is derived from the arxiv ID when the URL points to arxiv.
 
-        :param url: The URL of the PDF to download.
-        :param author: First author's last name (e.g. "Lin").
-        :param year: Publication year (e.g. "2024").
-        :param paper_title: Full paper title.
+        Prefer this over `upload_pdf` for arxiv / publicly-hosted PDFs —
+        the caller doesn't need to download or name the file.
+
+        :param url: Direct http(s) URL to a PDF.
+        :param title: Optional initial filename override (the post-OCR
+            rename still runs; use this only when auto-rename is unwanted).
         """
+        body: dict = {"url": url}
+        if title:
+            body["title"] = title
         try:
-            r = requests.get(url, timeout=60, stream=True)
-            r.raise_for_status()
-        except Exception as e:
-            return f"Failed to download PDF from URL: {e}"
+            resp = self._api("POST", "/documents/pdf/from-url", json=body)
+        except requests.HTTPError as e:
+            # Surface the server's readable error body when present —
+            # typical causes: bad URL scheme, upstream 404, content-type
+            # not PDF.
+            try:
+                detail = e.response.json().get("message") or e.response.text
+            except Exception:
+                detail = str(e)
+            return f"URL upload failed: {detail}"
 
-        filename = f"{author} et al. - {year} - {paper_title}.pdf"
-
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            for chunk in r.iter_content(chunk_size=8192):
-                tmp.write(chunk)
-            tmp_path = tmp.name
-
-        try:
-            result = self.upload_pdf(tmp_path, title=filename, __user__=__user__)
-        finally:
-            os.unlink(tmp_path)
-        return result
+        pdf_id = resp.get("pdf_id", "")
+        status = resp.get("status", "unknown")
+        filename = resp.get("metadata", {}).get("filename", "")
+        pages = resp.get("metadata", {}).get("page_count", "?")
+        if status == "duplicate":
+            return (
+                f"PDF already in workspace ({pages} pages). "
+                f"ID: `{pdf_id}`, filename: {filename}."
+            )
+        return (
+            f"PDF fetched ({pages} pages) and queued. ID: `{pdf_id}`, "
+            f"filename: {filename}. Processing in background; the title "
+            f"will auto-rename to citation format once extraction completes."
+        )
 
     def search_relationships(
         self,

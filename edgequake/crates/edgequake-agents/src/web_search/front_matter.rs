@@ -256,8 +256,16 @@ fn is_section_heading(s: &str) -> bool {
 ///   "Alice Smith (Google), Bob Jones (Meta)"     → ["Alice Smith", "Bob Jones"]
 ///   "Jay Roberts Protopia AI jay@protopia.ai"    → ["Jay Roberts"]  (email dropped)
 ///   "Zhening Huang Hyeonho Jeong Xuelin Chen"    → ["Zhening Huang"] (first 2 tokens)
+///   "Hongyu Wang $^{*\dagger}$ Shuming Ma $^{*}$ Li Dong" → first three names
+///     (LaTeX `$...$` superscripts stripped; whitespace separators treated
+///     like implicit commas once the math blocks go away).
 fn authors_from_line(line: &str) -> Vec<String> {
-    let cleaned = line.trim_matches(|c: char| c == '*' || c == '_');
+    // Strip inline LaTeX math blocks like `$^{*\dagger\ddagger}$` which
+    // otherwise break the title-case test (tokens start with `$`). PDFs
+    // converted from arxiv preprints routinely embed these where papers
+    // mark affiliation footnotes.
+    let no_math = strip_inline_math(line);
+    let cleaned = no_math.trim_matches(|c: char| c == '*' || c == '_');
     let mut out: Vec<String> = Vec::new();
     for chunk in cleaned.split([',', ';']) {
         let chunk = strip_and_and(chunk);
@@ -265,6 +273,28 @@ fn authors_from_line(line: &str) -> Vec<String> {
             out.push(name);
         }
     }
+    out
+}
+
+/// Strip `$...$` inline math blocks from a line. Dead-simple scan — we
+/// enter/exit whenever we hit an unescaped `$`, dropping everything in
+/// between. Lines like `Hongyu Wang $^{\dagger}$ Shuming Ma ...` → `Hongyu
+/// Wang  Shuming Ma ...`. Unclosed `$` leaves the rest intact.
+fn strip_inline_math(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_math = false;
+    for c in s.chars() {
+        if c == '$' {
+            in_math = !in_math;
+            continue;
+        }
+        if !in_math {
+            out.push(c);
+        }
+    }
+    // If we terminated inside math (unclosed `$`), the tail is already
+    // skipped; also collapse runs of whitespace so the subsequent
+    // splitting logic behaves as if the math blocks had been commas.
     out
 }
 
@@ -551,6 +581,20 @@ Abstract—The high cost of compute leads to multi-tenant deployments.\n\
         let md = "# Title\n\nAlice Smith\n\nIntroduction body directly.\n";
         let fm = extract_front_matter(md).unwrap();
         assert!(fm.abstract_excerpt.is_none());
+    }
+
+    #[test]
+    fn collects_authors_with_latex_superscript_affiliations() {
+        // BitNet-style author line — LaTeX `$^{...}$` blocks between
+        // names (no commas). Previously returned no author because the
+        // `$` tokens broke the title-case check.
+        let md = "\
+# BitNet: Scaling 1-bit Transformers for Large Language Models\n\
+\n\
+Hongyu Wang $^{*\\dagger\\ddagger}$ Shuming Ma $^{*\\dagger}$ Li Dong $^{\\dagger}$\n\
+";
+        let fm = extract_front_matter(md).unwrap();
+        assert_eq!(fm.first_author.as_deref(), Some("Hongyu Wang"));
     }
 
     #[test]

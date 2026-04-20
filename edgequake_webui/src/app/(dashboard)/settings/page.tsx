@@ -4,7 +4,6 @@ import { AdminQuotaSection } from '@/components/settings/admin-quota-section';
 import { AlgorithmLLMSettingsCard } from '@/components/settings/algorithm-llm-settings-card';
 import { ProviderStatusCard } from '@/components/settings/provider-status-card';
 import { PdfParserSettingsCard } from '@/components/settings/pdf-parser-settings-card';
-import { ReferenceRepoSettingsCard } from '@/components/settings/reference-repo-settings-card';
 import { VisionLLMSettingsCard } from '@/components/settings/vision-llm-settings-card';
 import {
   AlertDialog,
@@ -230,11 +229,9 @@ export default function SettingsPage() {
       {/* Vision LLM Configuration (SPEC-040) */}
       <VisionLLMSettingsCard />
 
-      {/* Algorithm LLM Configuration */}
+      {/* Extraction: algorithm LLMs + review mode + reference-repo
+          acceptance. One merged card per user preference. */}
       <AlgorithmLLMSettingsCard />
-
-      {/* Reference-repo detection settings */}
-      <ReferenceRepoSettingsCard />
 
       {/* Workspace Maintenance (SPEC-032) */}
       <RebuildEmbeddingsButton variant="card" />

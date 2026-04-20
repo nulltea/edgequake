@@ -77,6 +77,30 @@ export class PdfResource extends Resource {
     return this.transport.upload("/api/v1/documents/pdf", file, meta);
   }
 
+  /** Upload a PDF identified by URL. The backend HEAD-checks the URL,
+   *  downloads it server-side, and feeds the bytes into the same
+   *  pipeline as {@link upload}. Response shape matches multipart upload
+   *  so progress polling / dedup dialogs work identically.
+   *
+   *  @param url - Direct URL to a PDF (http(s)).
+   *  @param options - Optional title override, track_id, force_reindex.
+   */
+  async uploadFromUrl(
+    url: string,
+    options?: {
+      title?: string;
+      track_id?: string;
+      force_reindex?: boolean;
+    },
+  ): Promise<PdfUploadResponse> {
+    return this._post("/api/v1/documents/pdf/from-url", {
+      url,
+      title: options?.title,
+      track_id: options?.track_id,
+      force_reindex: options?.force_reindex,
+    });
+  }
+
   /** List uploaded PDFs. */
   async list(): Promise<PdfInfo[]> {
     return this._get("/api/v1/documents/pdf");

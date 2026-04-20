@@ -342,6 +342,23 @@ pub trait PdfDocumentStorage: Send + Sync {
     /// * `Err(StorageError)` - If update fails
     async fn update_pdf_processing(&self, request: UpdatePdfProcessingRequest) -> Result<()>;
 
+    /// Rename a PDF row in place (changes `filename` only). Used by the
+    /// post-OCR citation-rename step: once front-matter gives us title
+    /// + authors we replace the upload-time filename (often an opaque
+    /// arxiv ID or URL basename) with a citation-style name. Does NOT
+    /// touch KV metadata — caller is responsible for keeping the two
+    /// surfaces in sync.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Row updated (or no-op if the new name matches)
+    /// * `Err(StorageError)` - If the row doesn't exist or DB update fails
+    async fn update_pdf_filename(
+        &self,
+        pdf_id: &Uuid,
+        filename: &str,
+    ) -> Result<()>;
+
     /// Link PDF to processed document.
     ///
     /// # Arguments

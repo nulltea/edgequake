@@ -536,6 +536,22 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
 
+        // 5.5. Post-OCR rename: if this upload came from the URL path
+        // (which stamps `rename_after_parse=true` + `source_url` on the
+        // task payload), parse front-matter and replace the opaque
+        // upload-time filename with a citation-style name. Best-effort
+        // — on any failure we keep the original filename so the row
+        // doesn't end up with a confusing half-renamed state.
+        let pdf = self
+            .maybe_rename_from_front_matter(
+                &pdf,
+                &markdown,
+                data.rename_after_parse,
+                data.source_url.as_deref(),
+                &pdf_storage,
+            )
+            .await;
+
         // 6. Create document via standard pipeline
         // == Progress: markdown stored, starting entity extraction + indexing ==
         task.update_progress("entity_extraction".to_string(), 4, 50);
@@ -753,5 +769,219 @@ impl DocumentTaskProcessor {
         Err(edgequake_tasks::TaskError::UnsupportedOperation(
             "PDF processing requires postgres feature".to_string(),
         ))
+    }
+
+    /// Post-OCR rename helper. Returns an updated `PdfDocument` with
+    /// either the freshly-composed citation filename or the original one
+    /// untouched. **Never fails** — the caller continues regardless so
+    /// a broken rename can't wedge ingestion.
+    ///
+    /// Behavior is gated by the opt-in flag `rename_after_parse = true`
+    /// stamped into the PDF metadata JSON by callers that want automatic
+    /// renaming (today: the `/documents/pdf/from-url` endpoint). All
+    /// other uploads short-circuit immediately.
+    #[cfg(feature = "postgres")]
+    async fn maybe_rename_from_front_matter(
+        &self,
+        pdf: &edgequake_storage::PdfDocument,
+        markdown: &str,
+        rename_requested: bool,
+        source_url: Option<&str>,
+        pdf_storage: &std::sync::Arc<dyn edgequake_storage::PdfDocumentStorage>,
+    ) -> edgequake_storage::PdfDocument {
+        use edgequake_agents::web_search::extract_front_matter;
+
+        if !rename_requested {
+            return pdf.clone();
+        }
+
+        let Some(fm) = extract_front_matter(markdown) else {
+            info!(
+                pdf_id = %pdf.pdf_id,
+                "rename skipped: no front-matter extractable"
+            );
+            return pdf.clone();
+        };
+
+        let Some(author) = fm.first_author.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        else {
+            info!(
+                pdf_id = %pdf.pdf_id,
+                "rename skipped: front-matter has no first author"
+            );
+            return pdf.clone();
+        };
+
+        let year = source_url.and_then(derive_arxiv_year);
+
+        let new_filename = format_citation_filename(author, year.as_deref(), &fm.title);
+        if new_filename == pdf.filename {
+            return pdf.clone();
+        }
+
+        if let Err(e) = pdf_storage
+            .update_pdf_filename(&pdf.pdf_id, &new_filename)
+            .await
+        {
+            warn!(
+                pdf_id = %pdf.pdf_id,
+                error = %e,
+                "rename failed at storage — keeping original filename"
+            );
+            return pdf.clone();
+        }
+
+        info!(
+            pdf_id = %pdf.pdf_id,
+            old = %pdf.filename,
+            new = %new_filename,
+            "post-OCR rename applied"
+        );
+
+        // Clone-with-override so the caller's downstream metadata blob
+        // picks up the new filename.
+        let mut updated = pdf.clone();
+        updated.filename = new_filename;
+        updated
+    }
+}
+
+/// Derive a 4-digit year from an arxiv id embedded in `source_url` (e.g.
+/// `.../pdf/2506.09452` → `"2025"`). Returns `None` when the URL isn't an
+/// arxiv link or the id is malformed.
+#[cfg(feature = "postgres")]
+fn derive_arxiv_year(source_url: &str) -> Option<String> {
+    if source_url.is_empty() {
+        return None;
+    }
+    // Arxiv ids look like `YYMM.NNNNN` where YY is the 2-digit year.
+    // Scan the whole URL because the id can live in the path (arxiv.org)
+    // or a query fragment (semanticscholar, etc.).
+    let mut chars = source_url.chars().peekable();
+    while chars.peek().is_some() {
+        let mut digits = String::new();
+        while let Some(&c) = chars.peek() {
+            if c.is_ascii_digit() {
+                digits.push(c);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if digits.len() == 4 {
+            // Expect `.NNNNN` immediately after.
+            if chars.peek() == Some(&'.') {
+                chars.next();
+                let post: String = chars.by_ref().take(5).collect();
+                if post.chars().all(|c| c.is_ascii_digit()) {
+                    let yy: u32 = digits[..2].parse().ok()?;
+                    // arxiv introduced the new-format ids in 2007; a YY
+                    // of `07..=99` → 2007..2099, `00..=06` → 2100+ which
+                    // would be future — but stick to the simple 20xx
+                    // mapping because arxiv won't hit 2100 this decade.
+                    return Some(format!("20{yy:02}"));
+                }
+            }
+        }
+        // Advance past a non-digit if no match
+        if chars.peek().is_some_and(|c| !c.is_ascii_digit()) {
+            chars.next();
+        }
+    }
+    None
+}
+
+/// Compose `"{author} et al. - {year} - {title}.pdf"`, dropping the
+/// `{year} - ` segment when year is absent. Title is truncated to 120
+/// chars and path-unsafe characters are replaced with `_` so the result
+/// is safe for filesystems and display.
+#[cfg(feature = "postgres")]
+fn format_citation_filename(author: &str, year: Option<&str>, title: &str) -> String {
+    const TITLE_CAP: usize = 120;
+
+    let clean_author = sanitize_filename_segment(author);
+    let clean_title = sanitize_filename_segment(title);
+    let trimmed_title: String = clean_title.chars().take(TITLE_CAP).collect();
+
+    match year {
+        Some(y) if !y.is_empty() => format!("{clean_author} et al. - {y} - {trimmed_title}.pdf"),
+        _ => format!("{clean_author} et al. - {trimmed_title}.pdf"),
+    }
+}
+
+/// Replace filesystem-hostile characters with `_` and collapse runs of
+/// whitespace. Preserves unicode (we want author names like `Özkan` to
+/// survive). Also strips leading/trailing whitespace and `.`.
+#[cfg(feature = "postgres")]
+fn sanitize_filename_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*' => out.push('_'),
+            c if c.is_control() => out.push('_'),
+            c => out.push(c),
+        }
+    }
+    // Collapse whitespace runs to single spaces.
+    let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed.trim_matches('.').to_string()
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod rename_tests {
+    use super::*;
+
+    #[test]
+    fn year_from_arxiv_pdf_url() {
+        assert_eq!(
+            derive_arxiv_year("https://arxiv.org/pdf/2506.09452"),
+            Some("2025".to_string())
+        );
+        assert_eq!(
+            derive_arxiv_year("https://arxiv.org/abs/2312.01234v2"),
+            Some("2023".to_string())
+        );
+    }
+
+    #[test]
+    fn year_none_for_non_arxiv() {
+        assert_eq!(derive_arxiv_year("https://example.com/paper.pdf"), None);
+        assert_eq!(derive_arxiv_year(""), None);
+    }
+
+    #[test]
+    fn format_with_year() {
+        assert_eq!(
+            format_citation_filename("Roberts", Some("2025"), "Stained Glass Transform"),
+            "Roberts et al. - 2025 - Stained Glass Transform.pdf"
+        );
+    }
+
+    #[test]
+    fn format_without_year() {
+        assert_eq!(
+            format_citation_filename("Smith", None, "Paper Title"),
+            "Smith et al. - Paper Title.pdf"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_forbidden_chars() {
+        assert_eq!(sanitize_filename_segment("A/B\\C:D?E*F"), "A_B_C_D_E_F");
+        assert_eq!(sanitize_filename_segment("  spaces   out  "), "spaces out");
+    }
+
+    #[test]
+    fn truncates_long_title() {
+        let long = "a".repeat(200);
+        let f = format_citation_filename("X", Some("2020"), &long);
+        // "{author} et al. - {year} - " is 17 chars ("X et al. - 2020 - ");
+        // title is capped at 120; total = "X et al. - 2020 - " + 120 + ".pdf"
+        assert!(f.ends_with(".pdf"));
+        let title_part = f
+            .strip_prefix("X et al. - 2020 - ")
+            .and_then(|s| s.strip_suffix(".pdf"))
+            .unwrap();
+        assert_eq!(title_part.len(), 120);
     }
 }

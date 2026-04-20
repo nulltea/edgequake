@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::Json;
 use axum_extra::extract::Multipart;
+use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use super::helpers::{
@@ -15,6 +16,16 @@ use edgequake_pdf::PdfParserBackend;
 use edgequake_storage::{
     calculate_pdf_checksum, validate_pdf_data, CreatePdfRequest, PdfProcessingStatus,
 };
+
+/// Upper bound on the bytes we'll pull from a remote URL in the
+/// `from-url` ingestion path. Matches the practical cap of the multipart
+/// route (100 MB) and guards against adversarial hosts returning huge
+/// streams.
+const MAX_URL_FETCH_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Magic bytes every PDF must start with. Used after HEAD-check to reject
+/// servers that report `application/pdf` but actually ship HTML / garbage.
+const PDF_MAGIC: &[u8] = b"%PDF-";
 
 // ============================================================================
 // Handlers
@@ -160,6 +171,23 @@ pub async fn upload_pdf_document(
         ApiError::BadRequest("Missing 'file' field in multipart request".to_string())
     })?;
 
+    // Delegate to the shared ingestion flow — everything below used to
+    // live inline here and is identical for the `from-url` path, which
+    // also arrives as `(bytes, filename, options)`.
+    ingest_pdf_bytes(state, context, file_data, filename, options).await
+}
+
+/// Shared ingestion path for any already-buffered PDF bytes, regardless
+/// of how they were obtained (multipart upload vs. server-side URL
+/// fetch). Performs validation → dedup → storage → task creation and
+/// returns the standard `PdfUploadResponse`.
+async fn ingest_pdf_bytes(
+    state: AppState,
+    context: TenantContext,
+    file_data: Vec<u8>,
+    filename: String,
+    mut options: PdfUploadOptions,
+) -> ApiResult<Json<PdfUploadResponse>> {
     validate_pdf_data(&file_data)
         .map_err(|e| ApiError::BadRequest(format!("Invalid PDF: {}", e)))?;
 
@@ -485,4 +513,405 @@ pub async fn upload_pdf_document(
         },
         duplicate_of: None,
     }))
+}
+
+// ============================================================================
+// URL Upload
+// ============================================================================
+
+/// JSON body for `POST /api/v1/documents/pdf/from-url`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct UploadPdfFromUrlRequest {
+    /// Direct URL to a PDF. Must be `http(s)`. Will be HEAD-checked for
+    /// `application/pdf` (or `application/octet-stream` + `.pdf` path)
+    /// before downloading.
+    pub url: String,
+    /// Optional override for the initial filename. If absent, we derive
+    /// from the URL's basename (falling back to `Paper-<hash>.pdf`).
+    /// The post-OCR rename step will replace this with a citation-style
+    /// name once the paper's front-matter is extractable.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Opt-in force-reindex for the shared dedup/reprocessing path.
+    #[serde(default)]
+    pub force_reindex: bool,
+    /// Propagated to the task so the front-end progress poller can
+    /// correlate. Server auto-generates one if absent.
+    #[serde(default)]
+    pub track_id: Option<String>,
+}
+
+/// Upload a PDF identified by URL.
+///
+/// # Flow
+///
+/// 1. Validate URL (scheme + SSRF guard)
+/// 2. HEAD → verify `Content-Type` is PDF-ish (best-effort; falls through
+///    to magic-byte check when HEAD is unsupported)
+/// 3. GET → stream into memory with a hard size cap
+/// 4. Magic-byte check (`%PDF-`)
+/// 5. Delegate to the shared [`ingest_pdf_bytes`] path with
+///    `rename_after_parse = true` and `source_url` in metadata so the
+///    post-OCR step can rename to a citation-style filename.
+#[utoipa::path(
+    post,
+    path = "/api/v1/documents/pdf/from-url",
+    request_body = UploadPdfFromUrlRequest,
+    responses(
+        (status = 200, description = "PDF fetched and queued", body = PdfUploadResponse),
+        (status = 400, description = "Invalid URL, non-PDF content, upstream fetch failure, or payload too large"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "Documents"
+)]
+pub async fn upload_pdf_from_url(
+    State(state): State<AppState>,
+    context: TenantContext,
+    Json(request): Json<UploadPdfFromUrlRequest>,
+) -> ApiResult<Json<PdfUploadResponse>> {
+    info!(
+        url = %request.url,
+        workspace = ?context.workspace_id,
+        tenant = ?context.tenant_id,
+        "PDF upload-from-url request"
+    );
+
+    // 1. URL sanity + SSRF guard.
+    let url = validate_external_http_url(&request.url)?;
+
+    // HTTP client with tight timeouts — 10s for HEAD, 60s for the body
+    // fetch. Buffered into a local `Vec<u8>` but bounded.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .user_agent("edgequake-pdf-fetcher/1.0")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {e}")))?;
+
+    // 2. HEAD check — best-effort. Skipped silently when the server
+    //    returns 405 / connection reset / anything else we can't read —
+    //    the magic-byte check in step 4 is the hard gate.
+    head_check_pdf_content_type(&client, url.as_str()).await?;
+
+    // 3. Download with size cap.
+    let file_data = stream_pdf_bytes(&client, url.as_str(), MAX_URL_FETCH_BYTES).await?;
+
+    // 4. Magic-byte gate. `validate_pdf_data` inside `ingest_pdf_bytes`
+    //    will also reject non-PDF bytes, but checking here gives a
+    //    clearer error message distinguishing "server lied about
+    //    content-type" from "PDF parser rejected the bytes".
+    if !file_data.starts_with(PDF_MAGIC) {
+        return Err(ApiError::BadRequest(format!(
+            "URL content is not a PDF (expected magic '%PDF-', got {:?})",
+            String::from_utf8_lossy(&file_data[..file_data.len().min(8)])
+        )));
+    }
+
+    // 5. Derive the initial filename.
+    let filename = derive_initial_filename(&request.title, &url, &file_data);
+
+    // 6. Build options. Signal to the post-OCR rename step via metadata
+    //    that we'd like a citation-style rename; include the source URL
+    //    so the rename can parse arxiv-id → year when applicable.
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("rename_after_parse".to_string(), serde_json::json!(true));
+    metadata.insert("source_url".to_string(), serde_json::json!(url.as_str()));
+    let options = PdfUploadOptions {
+        enable_vision: true,
+        vision_provider: None,
+        vision_model: None,
+        title: request.title,
+        metadata: Some(serde_json::Value::Object(metadata)),
+        track_id: request.track_id,
+        force_reindex: request.force_reindex,
+        pdf_parser_backend: None,
+    };
+
+    ingest_pdf_bytes(state, context, file_data, filename, options).await
+}
+
+/// Parse and sanity-check a user-supplied URL before we hit the network.
+/// Rejects non-`http(s)` schemes and private / loopback / link-local
+/// hostnames (best-effort SSRF guard — not a replacement for network-
+/// level egress controls, but catches the obvious mistakes).
+fn validate_external_http_url(raw: &str) -> ApiResult<reqwest::Url> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::BadRequest("URL is empty".to_string()));
+    }
+    let url = reqwest::Url::parse(trimmed)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid URL: {e}")))?;
+    match url.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(ApiError::BadRequest(format!(
+                "URL scheme '{other}' not allowed — only http(s)"
+            )));
+        }
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| ApiError::BadRequest("URL has no host".to_string()))?;
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost"
+        || lower.ends_with(".localhost")
+        || lower.starts_with("127.")
+        || lower == "0.0.0.0"
+        || lower.starts_with("10.")
+        || lower.starts_with("192.168.")
+        || lower.starts_with("169.254.")
+        || lower == "::1"
+        || lower.starts_with("[::1")
+        || lower.starts_with("fe80")
+    {
+        return Err(ApiError::BadRequest(format!(
+            "URL points to a private or loopback host ('{host}')"
+        )));
+    }
+    // Also reject the 172.16/12 private range (rough — accept when first
+    // octet mismatches). Only enforced for plain-dotted IPv4 literals.
+    if let Some(rest) = lower.strip_prefix("172.") {
+        if let Some((second, _)) = rest.split_once('.') {
+            if let Ok(n) = second.parse::<u32>() {
+                if (16..=31).contains(&n) {
+                    return Err(ApiError::BadRequest(format!(
+                        "URL points to a private host ('{host}')"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(url)
+}
+
+/// Best-effort HEAD check. Returns `Ok(())` when the response headers
+/// look like a PDF OR when HEAD is unsupported; returns an error only
+/// when the server explicitly replies with non-PDF content. The magic-
+/// byte check downstream is the non-negotiable gate.
+async fn head_check_pdf_content_type(
+    client: &reqwest::Client,
+    url: &str,
+) -> ApiResult<()> {
+    let resp = match client
+        .head(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // Network error on HEAD — don't fail the whole request; the
+            // subsequent GET will surface the same issue with a clearer
+            // error.
+            debug!(error = %e, "HEAD request failed; proceeding to GET");
+            return Ok(());
+        }
+    };
+
+    if resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED || !resp.status().is_success() {
+        debug!(status = %resp.status(), "HEAD inconclusive; proceeding to GET");
+        return Ok(());
+    }
+
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let path = reqwest::Url::parse(url).ok().map(|u| u.path().to_string());
+    let path_ends_pdf = path
+        .as_deref()
+        .map(|p| p.to_ascii_lowercase().ends_with(".pdf"))
+        .unwrap_or(false);
+
+    if ctype.starts_with("application/pdf") {
+        return Ok(());
+    }
+    if ctype.starts_with("application/octet-stream") && path_ends_pdf {
+        return Ok(());
+    }
+    if ctype.is_empty() {
+        // Some CDNs omit Content-Type on HEAD — defer to magic bytes.
+        return Ok(());
+    }
+    Err(ApiError::BadRequest(format!(
+        "URL content-type is '{ctype}', not application/pdf"
+    )))
+}
+
+/// Stream `url` into a `Vec<u8>`, aborting if the accumulated size
+/// exceeds `max_bytes`. Uses chunked reads so we don't allocate the full
+/// payload when the response is already rejected by HEAD / redirect.
+async fn stream_pdf_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: u64,
+) -> ApiResult<Vec<u8>> {
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to fetch URL: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::BadRequest(format!(
+            "Upstream returned {} for {url}",
+            resp.status()
+        )));
+    }
+
+    // Honour Content-Length when provided — lets us reject huge payloads
+    // before we read a single byte.
+    if let Some(len) = resp.content_length() {
+        if len > max_bytes {
+            return Err(ApiError::BadRequest(format!(
+                "URL content length {len} exceeds {} byte cap",
+                max_bytes
+            )));
+        }
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Stream read failed: {e}")))?
+    {
+        if (buf.len() as u64).saturating_add(chunk.len() as u64) > max_bytes {
+            return Err(ApiError::BadRequest(format!(
+                "URL body exceeds {max_bytes} byte cap; aborting download"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    if buf.is_empty() {
+        return Err(ApiError::BadRequest("Upstream returned empty body".to_string()));
+    }
+    Ok(buf)
+}
+
+/// Pick a reasonable initial filename for the stored PDF:
+///   1. Caller-supplied `title` wins (user knows best).
+///   2. Else the URL's last path segment, if it ends `.pdf`.
+///   3. Else `Paper-<checksum[..8]>.pdf` so every row still has a name.
+fn derive_initial_filename(
+    title_override: &Option<String>,
+    url: &reqwest::Url,
+    file_data: &[u8],
+) -> String {
+    if let Some(t) = title_override.as_deref() {
+        let trimmed = t.trim();
+        if !trimmed.is_empty() {
+            return if trimmed.to_ascii_lowercase().ends_with(".pdf") {
+                trimmed.to_string()
+            } else {
+                format!("{trimmed}.pdf")
+            };
+        }
+    }
+    if let Some(last_segment) = url.path_segments().and_then(|segs| segs.last()) {
+        let decoded = percent_decode(last_segment);
+        let lower = decoded.to_ascii_lowercase();
+        if lower.ends_with(".pdf") && decoded.len() > 4 {
+            return decoded;
+        }
+    }
+    let checksum = calculate_pdf_checksum(file_data);
+    format!("Paper-{}.pdf", &checksum[..checksum.len().min(8)])
+}
+
+/// Very small percent-decoder for path segments. Good enough for arxiv
+/// (`%20` → space) without pulling in a dependency.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_non_http_scheme() {
+        assert!(validate_external_http_url("file:///etc/passwd").is_err());
+        assert!(validate_external_http_url("data:application/pdf,abc").is_err());
+        assert!(validate_external_http_url("ftp://host/file.pdf").is_err());
+    }
+
+    #[test]
+    fn reject_loopback_and_private_hosts() {
+        for url in [
+            "http://127.0.0.1/x.pdf",
+            "https://localhost/x.pdf",
+            "http://10.0.0.5/x.pdf",
+            "http://192.168.1.2/x.pdf",
+            "http://172.16.5.5/x.pdf",
+            "http://172.31.1.1/x.pdf",
+            "http://169.254.169.254/x.pdf", // AWS metadata
+        ] {
+            assert!(
+                validate_external_http_url(url).is_err(),
+                "should reject {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_public_host() {
+        assert!(validate_external_http_url("https://arxiv.org/pdf/2506.09452").is_ok());
+        assert!(validate_external_http_url("https://example.com/paper.pdf").is_ok());
+        // 172.15.x is outside the private range
+        assert!(validate_external_http_url("http://172.15.1.1/x.pdf").is_ok());
+    }
+
+    #[test]
+    fn derive_filename_prefers_title() {
+        let u = reqwest::Url::parse("https://arxiv.org/pdf/2506.09452").unwrap();
+        let f = derive_initial_filename(
+            &Some("Smith - 2024 - X.pdf".to_string()),
+            &u,
+            b"%PDF-1.7 ...",
+        );
+        assert_eq!(f, "Smith - 2024 - X.pdf");
+    }
+
+    #[test]
+    fn derive_filename_title_without_extension() {
+        let u = reqwest::Url::parse("https://arxiv.org/pdf/2506.09452").unwrap();
+        let f =
+            derive_initial_filename(&Some("MyPaper".to_string()), &u, b"%PDF-1.7 ...");
+        assert_eq!(f, "MyPaper.pdf");
+    }
+
+    #[test]
+    fn derive_filename_from_url_basename() {
+        let u = reqwest::Url::parse("https://example.com/papers/Hello%20World.pdf").unwrap();
+        let f = derive_initial_filename(&None, &u, b"%PDF-1.7 ...");
+        assert_eq!(f, "Hello World.pdf");
+    }
+
+    #[test]
+    fn derive_filename_fallback_to_hash() {
+        // URL basename doesn't end in .pdf
+        let u = reqwest::Url::parse("https://arxiv.org/abs/2506.09452").unwrap();
+        let f = derive_initial_filename(&None, &u, b"%PDF-1.7 hello");
+        assert!(f.starts_with("Paper-"));
+        assert!(f.ends_with(".pdf"));
+    }
 }

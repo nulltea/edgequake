@@ -241,6 +241,11 @@ pub async fn reprocess_failed(
                             // FIX-REBUILD: Reuse existing document ID
                             existing_document_id: Some(doc_id.clone()),
                             pdf_parser_backend,
+                            // Reprocess path — don't rewrite filenames
+                            // on existing rows; user may have renamed
+                            // them manually.
+                            rename_after_parse: false,
+                            source_url: None,
                         };
 
                         let task = Task::new(
@@ -432,6 +437,8 @@ pub async fn reprocess_failed(
                     vision_model: vision_model.clone(),
                     existing_document_id: pdf.document_id.map(|id| id.to_string()),
                     pdf_parser_backend,
+                    rename_after_parse: false,
+                    source_url: None,
                 };
 
                 let track_id = format!("pdf-{}", Uuid::new_v4());

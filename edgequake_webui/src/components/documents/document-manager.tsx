@@ -24,12 +24,17 @@
 import { useTenantStore } from '@/stores/use-tenant-store';
 import type { Document } from '@/types';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { getAlgorithmCounts, getCodeArtifactCounts } from '@/lib/api/edgequake';
+import {
+  getAlgorithmCounts,
+  getCodeArtifactCounts,
+  uploadPdfFromUrl,
+} from '@/lib/api/edgequake';
+import { toast as sonnerToast } from 'sonner';
 
 import { useBulkSelection } from '@/hooks/use-bulk-selection';
 import { useDocumentDropzone } from '@/hooks/use-document-dropzone';
@@ -57,6 +62,7 @@ export function DocumentManager() {
 
   // Get tenant context for query key
   const { selectedTenantId, selectedWorkspaceId } = useTenantStore();
+  const queryClient = useQueryClient();
 
   // Selected document for preview panel
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
@@ -146,6 +152,36 @@ export function DocumentManager() {
   // Navigate to document's algorithms tab
   const handleViewAlgorithms = (doc: Document) => {
     router.push(`/documents/${doc.id}?tab=algorithms`);
+  };
+
+  // URL-initiated PDF upload. Server-side fetch + ingestion — the row
+  // appears in the list when the normal polling picks it up, so there's
+  // no per-file progress in the uploads strip. The toast here is the
+  // only feedback; the post-OCR rename kicks in a few seconds later.
+  const handleUrlUpload = async (url: string) => {
+    setStatusFilter('all');
+    try {
+      const resp = await uploadPdfFromUrl(url);
+      if (resp.status === 'duplicate') {
+        sonnerToast.info('PDF already in workspace', {
+          description: 'Existing document preserved.',
+        });
+      } else {
+        sonnerToast.success('PDF queued', {
+          description: 'Processing will finish in the background.',
+        });
+      }
+      // Invalidate the documents list so the new row (or status change
+      // on a reprocess) shows up immediately; all other list-related
+      // queries already key off "documents" as the first segment.
+      queryClient.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === 'documents',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      sonnerToast.error('URL upload failed', { description: msg });
+      throw err; // let the Dropzone's form see the failure
+    }
   };
 
   // Navigate to document's References tab (repo detection + approval flow).
@@ -322,6 +358,7 @@ export function DocumentManager() {
             openFileDialog={openFileDialog}
             pdfParserBackend={pdfParserBackend}
             onPdfParserBackendChange={setPdfParserBackend}
+            onUrlSubmit={handleUrlUpload}
             selectedCount={selectedCount}
             onBulkReprocess={handleBulkReprocess}
             onBulkDelete={handleBulkDelete}

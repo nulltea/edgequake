@@ -61,6 +61,21 @@ pub struct PdfProcessingData {
     /// Old queued tasks omit this field and therefore default to Vision.
     #[serde(default)]
     pub pdf_parser_backend: PdfParserBackend,
+
+    /// When `true`, the post-OCR stage will attempt to rename the PDF
+    /// to a citation-style filename (`"Author et al. - Year - Title.pdf"`)
+    /// using front-matter parsed from the extracted markdown. Silently
+    /// skipped when front-matter isn't extractable. Set by the
+    /// `/documents/pdf/from-url` endpoint for URL-initiated uploads;
+    /// file uploads default to `false` so user-chosen filenames survive.
+    #[serde(default)]
+    pub rename_after_parse: bool,
+
+    /// Source URL the PDF was fetched from (only set for URL uploads).
+    /// The rename step parses the arxiv-id regex off this to derive a
+    /// publication year when the URL points to arxiv.
+    #[serde(default)]
+    pub source_url: Option<String>,
 }
 
 /// Text insert task payload

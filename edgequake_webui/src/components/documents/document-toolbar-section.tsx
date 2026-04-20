@@ -44,7 +44,9 @@ export interface DocumentToolbarSectionProps {
   openFileDialog: () => void;
   pdfParserBackend: 'default' | 'vision' | 'edgeparse' | 'vlmocr';
   onPdfParserBackendChange: (value: 'default' | 'vision' | 'edgeparse' | 'vlmocr') => void;
-  
+  /** URL-upload handler exposed on the Dropzone (shows the URL input row). */
+  onUrlSubmit?: (url: string) => Promise<void>;
+
   // Bulk actions
   selectedCount: number;
   onBulkReprocess: () => void;
@@ -78,6 +80,7 @@ export function DocumentToolbarSection({
   openFileDialog,
   pdfParserBackend,
   onPdfParserBackendChange,
+  onUrlSubmit,
   selectedCount,
   onBulkReprocess,
   onBulkDelete,
@@ -124,6 +127,7 @@ export function DocumentToolbarSection({
         openFileDialog={openFileDialog}
         pdfParserBackend={pdfParserBackend}
         onPdfParserBackendChange={onPdfParserBackendChange}
+        onUrlSubmit={onUrlSubmit}
       />
 
       {/* Bulk Actions Bar */}
