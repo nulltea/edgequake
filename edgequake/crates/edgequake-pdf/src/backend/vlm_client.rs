@@ -26,6 +26,32 @@ pub struct VlmClientConfig {
     pub timeout_secs: u64,
     /// JPEG quality for image encoding (default 90).
     pub jpeg_quality: u8,
+    /// OpenAI-compatible `frequency_penalty`. Default 0.0 — empirical
+    /// sweep against GLM-OCR showed the backend ignores this knob
+    /// (identical output at 0.0 vs 0.3 on a runaway-inducing page),
+    /// and backends that DO honour it (e.g. vLLM) distort legitimate
+    /// math formatting at positive values. Leave neutral by default;
+    /// operators on OpenAI-compatible backends can raise via env if
+    /// they observe loops the `stop` array doesn't catch.
+    pub frequency_penalty: f32,
+    /// llama.cpp-native `repeat_penalty`. Default 1.0 (off) for the
+    /// same reason as `frequency_penalty`: GLM-OCR ignores it and
+    /// backends that honour it warp dense-text pages at >1.0.
+    pub repeat_penalty: f32,
+    /// OpenAI-compatible `presence_penalty`. Default 0.0 (off).
+    pub presence_penalty: f32,
+    /// Optional `stop` array sent on every request. The primary loop
+    /// guard for GLM-OCR, which respects `stop` but ignores the three
+    /// penalty knobs above. Default contains the pathological
+    /// vector-expansion pattern `"0, \\ldots, 0, \\ldots, 0, \\ldots"`
+    /// that GLM-OCR emits when transcribing
+    /// `(\underbrace{1, \ldots, 0, \ldots})` figures — the 3-rep
+    /// threshold aborts the loop after the model has clearly
+    /// committed to the pathological path, and a full-paper sweep
+    /// confirmed zero impact on Algorithm 2/3 output on the same
+    /// page. Appending more entries is safe; backends ignoring
+    /// `stop` treat the field as an unknown param.
+    pub stop_sequences: Vec<String>,
 }
 
 impl Default for VlmClientConfig {
@@ -35,6 +61,10 @@ impl Default for VlmClientConfig {
             model: None,
             timeout_secs: 120,
             jpeg_quality: 90,
+            frequency_penalty: 0.0,
+            repeat_penalty: 1.0,
+            presence_penalty: 0.0,
+            stop_sequences: vec!["0, \\ldots, 0, \\ldots, 0, \\ldots".to_string()],
         }
     }
 }
@@ -43,14 +73,52 @@ impl VlmClientConfig {
     /// Build config from environment variables (fallback only).
     ///
     /// Prefer passing base_url and model explicitly from workspace vision settings.
+    /// Environment overrides:
+    ///   - `EDGEQUAKE_VLM_FREQUENCY_PENALTY` — override `frequency_penalty`
+    ///   - `EDGEQUAKE_VLM_PRESENCE_PENALTY`  — override `presence_penalty`
+    ///   - `EDGEQUAKE_VLM_REPEAT_PENALTY`    — override `repeat_penalty`
+    ///   - `EDGEQUAKE_VLM_STOP_SEQUENCES`    — `|`-separated stop strings
+    ///     (pipe, not comma, because arxiv titles can contain commas).
+    ///     When set, REPLACES the default stop list (does not append).
+    ///     Set to a single literal `none` to disable all stops.
     pub fn from_env() -> Self {
         let base_url = std::env::var("OPENAI_COMPATIBLE_BASE_URL")
             .or_else(|_| std::env::var("OPENAI_BASE_URL"))
             .unwrap_or_else(|_| "http://localhost:8081".into());
-        Self {
+        let mut cfg = Self {
             base_url,
             ..Default::default()
+        };
+        if let Ok(v) = std::env::var("EDGEQUAKE_VLM_FREQUENCY_PENALTY") {
+            if let Ok(p) = v.parse::<f32>() {
+                cfg.frequency_penalty = p;
+            }
         }
+        if let Ok(v) = std::env::var("EDGEQUAKE_VLM_PRESENCE_PENALTY") {
+            if let Ok(p) = v.parse::<f32>() {
+                cfg.presence_penalty = p;
+            }
+        }
+        if let Ok(v) = std::env::var("EDGEQUAKE_VLM_REPEAT_PENALTY") {
+            if let Ok(p) = v.parse::<f32>() {
+                cfg.repeat_penalty = p;
+            }
+        }
+        if let Ok(v) = std::env::var("EDGEQUAKE_VLM_STOP_SEQUENCES") {
+            if v.trim() == "none" {
+                cfg.stop_sequences = Vec::new();
+            } else {
+                let stops: Vec<String> = v
+                    .split('|')
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !stops.is_empty() {
+                    cfg.stop_sequences = stops;
+                }
+            }
+        }
+        cfg
     }
 }
 
@@ -102,9 +170,17 @@ impl VlmClientBackend {
             format!("{}/v1/chat/completions", base)
         };
 
+        // Repetition-loop guards — OpenAI + llama.cpp variants are sent
+        // in parallel because we don't know which backend is behind the
+        // URL (OpenAI-compat proxy vs native llama.cpp vs Ollama vs
+        // Aperture-fronted GLM-OCR). Backends that don't recognise a
+        // param simply ignore it; setting both covers the spread.
         let mut body = json!({
             "max_tokens": max_tokens,
             "temperature": 0.0,
+            "frequency_penalty": self.config.frequency_penalty,
+            "presence_penalty": self.config.presence_penalty,
+            "repeat_penalty": self.config.repeat_penalty,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -119,6 +195,9 @@ impl VlmClientBackend {
                 ]
             }]
         });
+        if !self.config.stop_sequences.is_empty() {
+            body["stop"] = json!(self.config.stop_sequences);
+        }
 
         if let Some(model) = &self.config.model {
             body["model"] = Value::String(model.clone());

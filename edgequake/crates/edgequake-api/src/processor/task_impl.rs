@@ -79,7 +79,7 @@ impl TaskProcessor for DocumentTaskProcessor {
                         ))
                     })?;
 
-                self.process_algorithm_embedding(task, data, cancel_token)
+                self.process_algorithm_embedding(task, data, cancel_token, true)
                     .await
             }
             TaskType::RepoDetection => {

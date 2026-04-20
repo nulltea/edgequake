@@ -8,11 +8,21 @@ use tokio_util::sync::CancellationToken;
 
 impl DocumentTaskProcessor {
     /// Process an algorithm embedding task — generate and store vector embeddings.
+    ///
+    /// `finalize_status = true` is the default for standalone task invocation
+    /// (top-level AlgorithmEmbedding task + the review-flow submit path): when
+    /// embedding is the last step, this is responsible for stamping
+    /// `status=completed` on the document. Callers that embed inline as part
+    /// of a larger pipeline — specifically `run_algorithm_pass2_pass3` invoked
+    /// from `process_pdf_processing` — pass `false` so the document doesn't
+    /// get prematurely marked complete before `process_text_insert` (chunking
+    /// + entity extraction) has even started.
     pub(super) async fn process_algorithm_embedding(
         &self,
         task: &mut Task,
         data: edgequake_tasks::AlgorithmEmbeddingData,
         cancel_token: CancellationToken,
+        finalize_status: bool,
     ) -> TaskResult<serde_json::Value> {
         let document_id = &data.document_id;
 
@@ -161,11 +171,16 @@ impl DocumentTaskProcessor {
             );
         }
 
-        // Restore document to completed status
-        self.update_document_status(document_id, "completed", None)
-            .await
-            .ok();
-        task.update_progress("completed".to_string(), 1, 100);
+        // Restore document to completed status ONLY when this is the last
+        // step. When embedding runs inline during PDF ingestion, the PDF
+        // pipeline still has reference-repo detection + entity extraction
+        // to run after us; `process_text_insert` owns the final status.
+        if finalize_status {
+            self.update_document_status(document_id, "completed", None)
+                .await
+                .ok();
+            task.update_progress("completed".to_string(), 1, 100);
+        }
 
         Ok(json!({
             "document_id": document_id,

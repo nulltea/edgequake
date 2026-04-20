@@ -917,4 +917,280 @@ mod layout_model_comparison {
             }
         }
     }
+
+    /// VLM penalty-sweep harness. Runs the full `VlmOcrConverter` pipeline
+    /// (PP-DocLayoutV2 + remote VLM per layout element) on the whole PDF
+    /// for each candidate penalty configuration. Each config's full
+    /// markdown lands in `/tmp/sweep-<label>-full.md`; a summary table
+    /// prints at the end.
+    ///
+    /// Configs exercised via env vars picked up by `VlmClientConfig::from_env`:
+    ///   - `EDGEQUAKE_VLM_FREQUENCY_PENALTY`
+    ///   - `EDGEQUAKE_VLM_PRESENCE_PENALTY`
+    ///   - `EDGEQUAKE_VLM_REPEAT_PENALTY`
+    ///   - `EDGEQUAKE_VLM_STOP_SEQUENCES` (pipe-separated)
+    /// Set inside the loop per config; restored after each run.
+    ///
+    /// Goal: find a config that kills Algorithm 1's `(\underbrace{1, \ldots,
+    /// 0, \ldots, ...}` runaway without distorting other algorithms.
+    ///
+    /// Run with:
+    ///   OPENAI_COMPATIBLE_BASE_URL=https://ai.tail59ea6b.ts.net/v1 \
+    ///   EDGEQUAKE_TEST_VLM_MODEL=GLM-OCR \
+    ///   EDGEQUAKE_OAR_OCR_MODEL_DIR=/home/timo/.edgequake/oar-ocr-models \
+    ///   EDGEQUAKE_TEST_PDF=/tmp/euston.pdf \
+    ///   cargo test -p edgequake-pdf --release --lib \
+    ///     layout_model_comparison::vlm_penalty_sweep -- --ignored --nocapture
+    ///
+    /// Expect ~5–10 min per config on a 20-page paper (20 pages × ~10
+    /// layout elements × ~2–6 s per VLM call, concurrency-limited by
+    /// `EDGEQUAKE_PDF_CONCURRENCY`). 4 configs → 20–40 min total.
+    #[test]
+    #[ignore]
+    fn vlm_penalty_sweep() {
+        use super::super::PdfConversionConfig;
+        use std::sync::Arc;
+
+        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
+            .unwrap_or_else(|_| "/tmp/euston.pdf".to_string());
+        let vlm_model = std::env::var("EDGEQUAKE_TEST_VLM_MODEL").ok();
+        let vlm_base_url = std::env::var("OPENAI_COMPATIBLE_BASE_URL")
+            .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+            .ok();
+        let pdf_bytes = std::fs::read(&pdf_path).expect("read PDF");
+
+        eprintln!(
+            "[sweep] pdf={pdf_path} bytes={} model={vlm_model:?} base_url={vlm_base_url:?}",
+            pdf_bytes.len()
+        );
+
+        // Kept small (4 configs) so the whole sweep on a 20-page paper
+        // finishes in ~30 min. Each tuple: (label, freq, pres, repeat,
+        // stops) — 4 candidates chosen to cover the search space:
+        //   - baseline      : reference (no penalties)
+        //   - presence-mid  : OpenAI presence_penalty@0.3 (binary, less
+        //                     destructive than frequency on legit math
+        //                     repetition like `\ldots` enumerations)
+        //   - light-repeat  : llama.cpp repeat_penalty@1.03 (native;
+        //                     independent knob if GLM-OCR backend
+        //                     respects llama.cpp flags over OpenAI ones)
+        //   - stop-runaway  : no penalty, just a hard `stop` on the
+        //                     exact pathological 3-rep pattern — the
+        //                     least-invasive option if the backend
+        //                     honours `stop` arrays
+        let configs: Vec<(&str, f32, f32, f32, Vec<String>)> = vec![
+            ("baseline",     0.0, 0.0, 1.0,  vec![]),
+            ("presence-mid", 0.0, 0.3, 1.0,  vec![]),
+            ("light-repeat", 0.0, 0.0, 1.03, vec![]),
+            ("stop-runaway", 0.0, 0.0, 1.0,  vec![
+                "0, \\ldots, 0, \\ldots, 0, \\ldots".to_string(),
+            ]),
+        ];
+
+        #[derive(Debug)]
+        struct Metric {
+            label: &'static str,
+            chars: usize,
+            ldots_count: usize,
+            longest_ldots_run: usize,
+            display_math_blocks: usize,
+            for_loops: usize,
+            has_algo1_heading: bool,
+            has_algo2_heading: bool,
+            has_algo3_heading: bool,
+            elapsed_secs: f32,
+        }
+
+        let mut metrics: Vec<Metric> = Vec::new();
+
+        // Shared tokio runtime — reuse across configs.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        for (label, freq, pres, repeat, stops) in &configs {
+            // Per-config env vars — VlmClientConfig::from_env picks them
+            // up inside `VlmOcrConverter::convert`. Preserve originals so
+            // subsequent configs don't leak state.
+            let orig_freq = std::env::var("EDGEQUAKE_VLM_FREQUENCY_PENALTY").ok();
+            let orig_pres = std::env::var("EDGEQUAKE_VLM_PRESENCE_PENALTY").ok();
+            let orig_rep = std::env::var("EDGEQUAKE_VLM_REPEAT_PENALTY").ok();
+            let orig_stop = std::env::var("EDGEQUAKE_VLM_STOP_SEQUENCES").ok();
+
+            // SAFETY: test runs single-threaded by default (Cargo serial
+            // test) and the env mutation is scoped to one iteration.
+            unsafe {
+                std::env::set_var("EDGEQUAKE_VLM_FREQUENCY_PENALTY", freq.to_string());
+                std::env::set_var("EDGEQUAKE_VLM_PRESENCE_PENALTY", pres.to_string());
+                std::env::set_var("EDGEQUAKE_VLM_REPEAT_PENALTY", repeat.to_string());
+                if stops.is_empty() {
+                    std::env::remove_var("EDGEQUAKE_VLM_STOP_SEQUENCES");
+                } else {
+                    std::env::set_var("EDGEQUAKE_VLM_STOP_SEQUENCES", stops.join("|"));
+                }
+            }
+
+            eprintln!(
+                "\n[sweep] ============================================================"
+            );
+            eprintln!(
+                "[sweep] {label}: freq={freq} pres={pres} repeat={repeat} stops={stops:?}"
+            );
+
+            let converter = VlmOcrConverter;
+            let cfg = PdfConversionConfig {
+                vlm_base_url: vlm_base_url.clone(),
+                vlm_model: vlm_model.clone(),
+                vision: None,
+                algorithm_block_sink: None,
+                ..Default::default()
+            };
+
+            let t0 = std::time::Instant::now();
+            let md = match rt.block_on(converter.convert(&pdf_bytes, &cfg)) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[sweep] {label}: convert FAILED: {e}");
+                    // Restore env before aborting.
+                    restore_env("EDGEQUAKE_VLM_FREQUENCY_PENALTY", orig_freq);
+                    restore_env("EDGEQUAKE_VLM_PRESENCE_PENALTY", orig_pres);
+                    restore_env("EDGEQUAKE_VLM_REPEAT_PENALTY", orig_rep);
+                    restore_env("EDGEQUAKE_VLM_STOP_SEQUENCES", orig_stop);
+                    continue;
+                }
+            };
+            let elapsed = t0.elapsed();
+
+            // Restore env for next iteration.
+            restore_env("EDGEQUAKE_VLM_FREQUENCY_PENALTY", orig_freq);
+            restore_env("EDGEQUAKE_VLM_PRESENCE_PENALTY", orig_pres);
+            restore_env("EDGEQUAKE_VLM_REPEAT_PENALTY", orig_rep);
+            restore_env("EDGEQUAKE_VLM_STOP_SEQUENCES", orig_stop);
+
+            let out_path = format!("/tmp/sweep-{label}-full.md");
+            std::fs::write(&out_path, &md).expect("write sweep output");
+
+            let ldots_total = md.matches("\\ldots").count();
+            let (longest_run, _) = longest_runaway_run(&md);
+            let display_math = md.matches("$$").count();
+            let for_loops = md.matches("for ").count() + md.matches("**for**").count();
+            let has_algo1 = md.contains("Algorithm 1 Component");
+            let has_algo2 = md.contains("Algorithm 2 Homomorphic");
+            let has_algo3 = md.contains("Algorithm 3 Homomorphic");
+
+            eprintln!(
+                "[sweep] {label}: elapsed={:.0}s chars={} ldots={} longest_run={} $$={} for={} algo1={} algo2={} algo3={} → {}",
+                elapsed.as_secs_f32(),
+                md.len(),
+                ldots_total,
+                longest_run,
+                display_math,
+                for_loops,
+                has_algo1,
+                has_algo2,
+                has_algo3,
+                out_path
+            );
+
+            metrics.push(Metric {
+                label: Box::leak(label.to_string().into_boxed_str()),
+                chars: md.len(),
+                ldots_count: ldots_total,
+                longest_ldots_run: longest_run,
+                display_math_blocks: display_math,
+                for_loops,
+                has_algo1_heading: has_algo1,
+                has_algo2_heading: has_algo2,
+                has_algo3_heading: has_algo3,
+                elapsed_secs: elapsed.as_secs_f32(),
+            });
+        }
+
+        let _ = Arc::new(rt); // keep rt alive until after the loop
+
+        println!("\n========== VLM penalty sweep summary ==========\n");
+        println!(
+            "{:<14} | {:>5} | {:>7} | {:>6} | {:>12} | {:>5} | {:>5} | {:>2} {:>2} {:>2}",
+            "config", "t(s)", "chars", "\\ldots", "longest_run", "$$blk", "for", "a1", "a2", "a3"
+        );
+        println!("{:-<90}", "");
+        for m in &metrics {
+            println!(
+                "{:<14} | {:>5.0} | {:>7} | {:>6} | {:>12} | {:>5} | {:>5} | {:>2} {:>2} {:>2}",
+                m.label,
+                m.elapsed_secs,
+                m.chars,
+                m.ldots_count,
+                m.longest_ldots_run,
+                m.display_math_blocks,
+                m.for_loops,
+                m.has_algo1_heading as u8,
+                m.has_algo2_heading as u8,
+                m.has_algo3_heading as u8,
+            );
+        }
+        println!(
+            "\n(Full per-config markdown: /tmp/sweep-<label>-full.md — diff any two with `diff -u`.)"
+        );
+    }
+
+    fn restore_env(key: &str, original: Option<String>) {
+        // SAFETY: same constraints as the set_var above — test is single-
+        // threaded.
+        unsafe {
+            match original {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    /// Return the longest unbroken run of `X, \ldots,` patterns in `s`
+    /// (counts reps). Used by the penalty sweep to quantify runaway
+    /// severity per config. Threshold-free: baseline hits ≥500 reps,
+    /// a healthy config drops to single digits.
+    fn longest_runaway_run(s: &str) -> (usize, usize) {
+        // Slide through the string looking for `(0|1), \ldots, ` tokens
+        // chained back-to-back. `best` = longest run found; `best_start`
+        // = byte offset of its first token.
+        let needle_0 = "0, \\ldots, ";
+        let needle_1 = "1, \\ldots, ";
+        let mut best = 0usize;
+        let mut best_start = 0usize;
+        let mut i = 0;
+        while i < s.len() {
+            let at = &s[i..];
+            if at.starts_with(needle_0) || at.starts_with(needle_1) {
+                let start = i;
+                let mut count = 0;
+                let mut j = i;
+                while j < s.len() {
+                    let seg = &s[j..];
+                    if seg.starts_with(needle_0) {
+                        count += 1;
+                        j += needle_0.len();
+                    } else if seg.starts_with(needle_1) {
+                        count += 1;
+                        j += needle_1.len();
+                    } else {
+                        break;
+                    }
+                }
+                if count > best {
+                    best = count;
+                    best_start = start;
+                }
+                i = j.max(i + 1);
+            } else {
+                // Advance by one char (UTF-8 safe).
+                i += s[i..]
+                    .chars()
+                    .next()
+                    .map(|c| c.len_utf8())
+                    .unwrap_or(1);
+            }
+        }
+        (best, best_start)
+    }
 }

@@ -304,32 +304,65 @@ pub fn repair_missing_inner_bracket(s: &str) -> String {
 // 2c. GLM-OCR fake LaTeX code-fence wrapper around math blocks
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn fake_latex_fence_open_regex() -> &'static Regex {
+fn fake_latex_fence_open_inline_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    // `$$```latex\\$$` — GLM-OCR wraps a `$$...$$` math block in a fake
-    // triple-backtick latex code fence whose opening line ends with a
-    // literal `\\` then `$$`. Collapse the whole marker to a single `$$`.
+    // B2A-style inline variant: `$$```latex\\$$` on a single line.
     RE.get_or_init(|| {
-        Regex::new(r"\$\$```latex\\+\$\$").expect("fake_latex_fence_open compiles")
+        Regex::new(r"\$\$```\w+\\+\$\$").expect("fake_latex_fence_open_inline compiles")
     })
 }
 
-fn fake_latex_fence_close_regex() -> &'static Regex {
+fn fake_latex_fence_open_multiline_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    // Matching closing artefact ` ``` $$$$` (three backticks then four
-    // dollar signs). Collapse to `$$`.
+    // Euston-style multi-line variant:
+    //   $$```latex\
+    //   <content>
+    //   ```$$
+    // The opening line ends with backslashes + newline (no closing `$$`
+    // on the open line). Also accepts other language tags the VLM emits
+    // (`mathematica`, `text`, `markdown`, or none at all).
     RE.get_or_init(|| {
-        Regex::new(r"```\$\$\$\$").expect("fake_latex_fence_close compiles")
+        Regex::new(r"\$\$```\w*\\*\n").expect("fake_latex_fence_open_multiline compiles")
     })
 }
 
-/// Strip the fake ```` ```latex ```` fence GLM-OCR occasionally wraps around
-/// a `$$...$$` display-math block. Idempotent: after rewrite the markers
-/// are gone and the regex no longer fires.
+fn fake_latex_fence_close_four_dollar_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // B2A-style: ``` followed by four dollars (result of an inflated
+    // balance pass).
+    RE.get_or_init(|| {
+        Regex::new(r"```\$\$\$\$").expect("fake_latex_fence_close_four_dollar compiles")
+    })
+}
+
+fn fake_latex_fence_close_two_dollar_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    // Euston-style: ``` followed by two dollars on its own line. We
+    // require a preceding newline so we don't match a legitimate fenced
+    // code block whose body happens to contain ```$$ mid-line. Also
+    // cover the trailing-newline form.
+    RE.get_or_init(|| {
+        Regex::new(r"\n```\$\$").expect("fake_latex_fence_close_two_dollar compiles")
+    })
+}
+
+/// Strip the fake ```` ```latex ```` (or `mathematica`, `text`, etc.)
+/// fence GLM-OCR occasionally wraps around a `$$...$$` display-math
+/// block. Handles both the inline single-line variant (B2A paper) and
+/// the multi-line newline-separated variant (Euston paper). Idempotent:
+/// after rewrite the markers are gone and the regexes no longer fire.
 pub fn strip_fake_latex_codefence(s: &str) -> String {
-    let s = fake_latex_fence_open_regex().replace_all(s, "$$$$").into_owned();
-    fake_latex_fence_close_regex()
+    let s = fake_latex_fence_open_inline_regex()
+        .replace_all(s, "$$$$")
+        .into_owned();
+    let s = fake_latex_fence_open_multiline_regex()
+        .replace_all(&s, "$$$$\n")
+        .into_owned();
+    let s = fake_latex_fence_close_four_dollar_regex()
         .replace_all(&s, "$$$$")
+        .into_owned();
+    fake_latex_fence_close_two_dollar_regex()
+        .replace_all(&s, "\n$$$$")
         .into_owned()
 }
 
@@ -869,6 +902,36 @@ mod tests {
     fn strip_fake_latex_fence_is_idempotent_on_clean_math() {
         let input = "$$\n\\beta_i = m_i \\oplus x_{i,2}\n$$";
         assert_eq!(strip_fake_latex_codefence(input), input);
+    }
+
+    #[test]
+    fn strip_fake_latex_fence_multiline_euston_variant() {
+        // Euston paper emits:
+        //   $$```latex\
+        //   <math>\\
+        //   ```$$
+        // Both open and close markers must disappear, leaving a clean
+        // `$$...$$` block.
+        let input = "prose\n\n$$```latex\\\n\\mu = \\frac{1}{n} \\sum_{i=1}^{n} x_i\\\\\n```$$\n\nmore";
+        let out = strip_fake_latex_codefence(input);
+        assert!(!out.contains("```latex"), "got: {out:?}");
+        assert!(!out.contains("```$$"), "got: {out:?}");
+        assert!(out.contains("$$\n\\mu"), "got: {out:?}");
+        assert_eq!(strip_fake_latex_codefence(&out), out, "not idempotent");
+    }
+
+    #[test]
+    fn strip_fake_latex_fence_accepts_other_lang_tags() {
+        // Seen in the wild: mathematica, text, markdown, or no tag.
+        for lang in ["latex", "mathematica", "text", "markdown", ""] {
+            let input = format!("pre\n$$```{lang}\\\ncontent\n```$$\npost");
+            let out = strip_fake_latex_codefence(&input);
+            assert!(
+                !out.contains("```"),
+                "lang={lang} leftover backticks in: {out:?}"
+            );
+            assert!(out.contains("$$\ncontent\n$$"), "lang={lang} got: {out:?}");
+        }
     }
 
     // ─── strip_ocr_math_boundary_artefacts ──────────────────────────────────

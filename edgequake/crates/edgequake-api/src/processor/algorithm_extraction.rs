@@ -500,10 +500,11 @@ impl DocumentTaskProcessor {
                     algorithm_ids,
                 };
 
-                // Reuse the embedding processor method via a sub-task
-                // We run it inline since the processor is already active
+                // Reuse the embedding processor method via a sub-task.
+                // Standalone extraction task owns the final status, so pass
+                // finalize_status=true.
                 match self
-                    .process_algorithm_embedding(task, embed_data, cancel_token.clone())
+                    .process_algorithm_embedding(task, embed_data, cancel_token.clone(), true)
                     .await
                 {
                     Ok(_) => {
@@ -654,12 +655,18 @@ impl DocumentTaskProcessor {
     /// Called from PDF processing when VLM-OCR detects algorithm blocks during
     /// conversion. Skips Pass 1 (already done via layout detection).
     /// Returns the number of algorithms stored.
+    /// `finalize_status`: when true (standalone extraction task), the
+    /// nested algorithm-embedding step stamps `status=completed` at exit.
+    /// When false (called inline during PDF ingestion), the surrounding
+    /// PDF pipeline still has reference-repo detection + entity extraction
+    /// to run, so we must not mark the document complete here.
     pub(super) async fn run_algorithm_pass2_pass3(
         &self,
         document_id: &str,
         workspace_id: Option<&str>,
         blocks: &[edgequake_pdf::AlgorithmBlock],
         task: &mut Task,
+        finalize_status: bool,
     ) -> TaskResult<usize> {
         use futures::stream::{self, StreamExt};
 
@@ -912,6 +919,7 @@ impl DocumentTaskProcessor {
                         task,
                         embed_data,
                         tokio_util::sync::CancellationToken::new(),
+                        finalize_status,
                     )
                     .await
                 {

@@ -536,25 +536,116 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
 
-        // 5.5. Post-OCR rename: if this upload came from the URL path
-        // (which stamps `rename_after_parse=true` + `source_url` on the
-        // task payload), parse front-matter and replace the opaque
-        // upload-time filename with a citation-style name. Best-effort
-        // — on any failure we keep the original filename so the row
-        // doesn't end up with a confusing half-renamed state.
+        // 5.5. Post-OCR rename: parse front-matter and replace the
+        // upload-time filename with a citation-style name ("Author et al.
+        // - Year - Title.pdf"). Applies to all PDF uploads (multipart +
+        // URL) — only skipped when front-matter extraction fails or the
+        // new name matches the old one. The rename also syncs the KV
+        // `{doc_id}-metadata` `title`/`file_name` fields so the UI list
+        // reflects the new name without another round-trip. Best-effort:
+        // any failure keeps the original filename.
         let pdf = self
             .maybe_rename_from_front_matter(
                 &pdf,
                 &markdown,
-                data.rename_after_parse,
                 data.source_url.as_deref(),
+                &early_doc_id,
                 &pdf_storage,
             )
             .await;
 
-        // 6. Create document via standard pipeline
-        // == Progress: markdown stored, starting entity extraction + indexing ==
-        task.update_progress("entity_extraction".to_string(), 4, 50);
+        // 6. Algorithm extraction (VLM-OCR path only — pass 2+3 runs on
+        //    blocks detected during conversion). Moved ahead of
+        //    `process_text_insert` so entity extraction no longer
+        //    contends with algorithm content for LLM budget and so the
+        //    algorithms table is populated before the knowledge graph
+        //    extractor sees the markdown. Best-effort: failures are
+        //    logged and swallowed.
+        if let Some(ref sink) = algo_block_sink {
+            let blocks = sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if !blocks.is_empty() {
+                info!(
+                    pdf_id = %data.pdf_id,
+                    block_count = blocks.len(),
+                    "Auto algorithm extraction: detected {} blocks during conversion, running Pass 2+3",
+                    blocks.len()
+                );
+
+                self.update_document_status(&early_doc_id, "algo_extracting", None)
+                    .await
+                    .ok();
+                task.update_progress("algo_extracting".to_string(), 4, 55);
+
+                let workspace_id_str = data.workspace_id.to_string();
+                let ws_id = if workspace_id_str != "default" && !workspace_id_str.is_empty() {
+                    Some(workspace_id_str.as_str())
+                } else {
+                    None
+                };
+
+                // finalize_status=false: text_insert runs after us and owns
+                // the final document status. If we let the embedding step
+                // stamp `completed` here, entity extraction would appear to
+                // be skipped from the UI's perspective.
+                match self
+                    .run_algorithm_pass2_pass3(&early_doc_id, ws_id, &blocks, task, false)
+                    .await
+                {
+                    Ok(count) => {
+                        info!(
+                            pdf_id = %data.pdf_id,
+                            algorithm_count = count,
+                            "Auto algorithm extraction completed"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            pdf_id = %data.pdf_id,
+                            error = %e,
+                            "Auto algorithm extraction failed (non-fatal)"
+                        );
+                    }
+                }
+            }
+        }
+
+        // 7. Reference-repo detection (Phase 0 of Reference Code GraphRAG).
+        //    Same relocation rationale as the algorithm step above —
+        //    runs before entity extraction so the `document_repos` table
+        //    is populated first. Layer A works on PDF bytes; if nothing,
+        //    Layer B falls through to SearXNG + Crawl4AI.
+        let pdf_data_for_detection = pdf_storage
+            .get_pdf(&data.pdf_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|p| p.pdf_data)
+            .unwrap_or_default();
+        if let Err(e) = self
+            .run_repo_detection_inline(
+                task.tenant_id,
+                task.workspace_id,
+                &early_doc_id,
+                &pdf_data_for_detection,
+                &markdown,
+            )
+            .await
+        {
+            warn!(
+                pdf_id = %data.pdf_id,
+                error = %e,
+                "Reference-repo detection failed (non-fatal)"
+            );
+        }
+
+        // 8. Create document via standard pipeline (chunking + entity
+        //    extraction). Runs AFTER algorithm + repo extraction so
+        //    those tables are populated first; the chunker still re-
+        //    processes the full markdown (including algorithm blocks)
+        //    but downstream consumers can now cross-reference the
+        //    structured algorithm rows.
+        // == Progress: markdown stored + enrichment done, starting entity extraction ==
+        task.update_progress("entity_extraction".to_string(), 5, 60);
 
         // ── CANCELLATION GATE: before handing off to text_insert pipeline ──
         self.check_cancelled(&cancel_token, "pre-text-insert", &early_doc_id)
@@ -649,95 +740,10 @@ impl DocumentTaskProcessor {
             }
         }
 
-        // 8. Automatic algorithm extraction (VLM-OCR only).
-        // If algorithm blocks were detected during conversion, run Pass 2+3 inline.
-        if let Some(ref sink) = algo_block_sink {
-            let blocks = sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if !blocks.is_empty() {
-                info!(
-                    pdf_id = %data.pdf_id,
-                    block_count = blocks.len(),
-                    "Auto algorithm extraction: detected {} blocks during conversion, running Pass 2+3",
-                    blocks.len()
-                );
-
-                self.update_document_status(&early_doc_id, "algo_extracting", None)
-                    .await
-                    .ok();
-                task.update_progress("algo_extracting".to_string(), 6, 80);
-
-                let workspace_id_str = data.workspace_id.to_string();
-                let ws_id = if workspace_id_str != "default" && !workspace_id_str.is_empty() {
-                    Some(workspace_id_str.as_str())
-                } else {
-                    None
-                };
-
-                match self
-                    .run_algorithm_pass2_pass3(&early_doc_id, ws_id, &blocks, task)
-                    .await
-                {
-                    Ok(count) => {
-                        info!(
-                            pdf_id = %data.pdf_id,
-                            algorithm_count = count,
-                            "Auto algorithm extraction completed"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            pdf_id = %data.pdf_id,
-                            error = %e,
-                            "Auto algorithm extraction failed (non-fatal)"
-                        );
-                    }
-                }
-
-                // Restore status to completed after algorithm extraction.
-                self.update_document_status(&early_doc_id, "completed", None)
-                    .await
-                    .ok();
-            }
-        }
-
-        // 9. Reference-repo detection (Phase 0 of the Reference Code GraphRAG
-        // extension). Layer A runs against the PDF bytes; if nothing is found,
-        // Layer B falls through to SearXNG + Crawl4AI when those env vars are
-        // set. Failures are swallowed — detection is opportunistic, not
-        // required for a successful ingest.
-        //
-        // We need the raw PDF bytes again plus the markdown. Re-fetching from
-        // storage (rather than holding onto the earlier `pdf.pdf_data` clone)
-        // keeps the hot path memory footprint small even when this step is a
-        // no-op.
-        let pdf_data_for_detection = pdf_storage
-            .get_pdf(&data.pdf_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|p| p.pdf_data)
-            .unwrap_or_default();
-        // `markdown` is the freshly extracted content local to this task —
-        // identical to what we just persisted into `pdf_documents`. Pass it
-        // directly instead of round-tripping through KV (the old
-        // `{doc_id}-content` key is no longer written, so that lookup would
-        // leave Layer B with an empty string and trigger `NoFrontMatter`).
-        if let Err(e) = self
-            .run_repo_detection_inline(
-                task.tenant_id,
-                task.workspace_id,
-                &early_doc_id,
-                &pdf_data_for_detection,
-                &markdown,
-            )
-            .await
-        {
-            warn!(
-                pdf_id = %data.pdf_id,
-                error = %e,
-                "Reference-repo detection failed (non-fatal)"
-            );
-        }
+        // NOTE: algorithm + reference-repo extraction now run BEFORE
+        // `process_text_insert` (see steps 6+7 above). Keeping this
+        // comment as a signpost — older log grep patterns and design
+        // docs still reference the previous ordering.
 
         info!(
             pdf_id = %data.pdf_id,
@@ -785,15 +791,11 @@ impl DocumentTaskProcessor {
         &self,
         pdf: &edgequake_storage::PdfDocument,
         markdown: &str,
-        rename_requested: bool,
         source_url: Option<&str>,
+        document_id: &str,
         pdf_storage: &std::sync::Arc<dyn edgequake_storage::PdfDocumentStorage>,
     ) -> edgequake_storage::PdfDocument {
         use edgequake_agents::web_search::extract_front_matter;
-
-        if !rename_requested {
-            return pdf.clone();
-        }
 
         let Some(fm) = extract_front_matter(markdown) else {
             info!(
@@ -812,6 +814,8 @@ impl DocumentTaskProcessor {
             return pdf.clone();
         };
 
+        // Year: prefer arxiv-id in the source URL; otherwise leave off.
+        // Non-arxiv uploads still get `"Author - Title.pdf"`.
         let year = source_url.and_then(derive_arxiv_year);
 
         let new_filename = format_citation_filename(author, year.as_deref(), &fm.title);
@@ -819,6 +823,8 @@ impl DocumentTaskProcessor {
             return pdf.clone();
         }
 
+        // 1. Rewrite the pdf_documents row so any future consumer
+        //    (reprocess, download, delete) sees the new name.
         if let Err(e) = pdf_storage
             .update_pdf_filename(&pdf.pdf_id, &new_filename)
             .await
@@ -826,9 +832,26 @@ impl DocumentTaskProcessor {
             warn!(
                 pdf_id = %pdf.pdf_id,
                 error = %e,
-                "rename failed at storage — keeping original filename"
+                "rename failed at pdf_documents — keeping original filename"
             );
             return pdf.clone();
+        }
+
+        // 2. Sync KV `{doc_id}-metadata` so the documents list + detail
+        //    views pick up the new title. The list renderer reads
+        //    `title` from this blob; the detail view reads `file_name`.
+        //    Failure here is non-fatal — log it and keep the storage-
+        //    level rename.
+        if let Err(e) = self
+            .sync_document_metadata_title(document_id, &new_filename)
+            .await
+        {
+            warn!(
+                pdf_id = %pdf.pdf_id,
+                document_id,
+                error = %e,
+                "rename: pdf_documents updated but KV title sync failed"
+            );
         }
 
         info!(
@@ -843,6 +866,49 @@ impl DocumentTaskProcessor {
         let mut updated = pdf.clone();
         updated.filename = new_filename;
         updated
+    }
+
+    /// Read the `{doc_id}-metadata` KV blob, overwrite `title` +
+    /// `file_name` with the new filename, and write it back. We don't
+    /// touch any other fields so concurrent status writes from the
+    /// progress tracker aren't clobbered (last-writer-wins on this
+    /// single blob is a pre-existing limitation of the KV design; the
+    /// progress tracker runs after this rename call so the race is
+    /// narrow in practice).
+    #[cfg(feature = "postgres")]
+    async fn sync_document_metadata_title(
+        &self,
+        document_id: &str,
+        new_filename: &str,
+    ) -> Result<(), String> {
+        let key = format!("{document_id}-metadata");
+        let Some(mut value) = self
+            .kv_storage
+            .get_by_id(&key)
+            .await
+            .map_err(|e| format!("kv get: {e}"))?
+        else {
+            // Metadata blob isn't there yet — probably a race with the
+            // early-metadata write. Not fatal for this rename pass;
+            // downstream progress writes will overwrite with their own
+            // title field sourced from pdf.filename, which we've just
+            // shadowed above.
+            return Ok(());
+        };
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert(
+                "title".to_string(),
+                serde_json::Value::String(new_filename.to_string()),
+            );
+            obj.insert(
+                "file_name".to_string(),
+                serde_json::Value::String(new_filename.to_string()),
+            );
+        }
+        self.kv_storage
+            .upsert(&[(key, value)])
+            .await
+            .map_err(|e| format!("kv upsert: {e}"))
     }
 }
 
@@ -911,13 +977,16 @@ fn format_citation_filename(author: &str, year: Option<&str>, title: &str) -> St
 
 /// Replace filesystem-hostile characters with `_` and collapse runs of
 /// whitespace. Preserves unicode (we want author names like `Özkan` to
-/// survive). Also strips leading/trailing whitespace and `.`.
+/// survive) and `:` (academic subtitles like "Euston: Efficient..." —
+/// legal on Linux/macOS; Windows users may have to rename on download,
+/// which is the better trade-off than mangled titles everywhere else).
+/// Also strips leading/trailing whitespace and `.`.
 #[cfg(feature = "postgres")]
 fn sanitize_filename_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*' => out.push('_'),
+            '/' | '\\' | '<' | '>' | '"' | '|' | '?' | '*' => out.push('_'),
             c if c.is_control() => out.push('_'),
             c => out.push(c),
         }
@@ -966,9 +1035,16 @@ mod rename_tests {
     }
 
     #[test]
-    fn sanitize_strips_forbidden_chars() {
-        assert_eq!(sanitize_filename_segment("A/B\\C:D?E*F"), "A_B_C_D_E_F");
+    fn sanitize_strips_forbidden_chars_but_keeps_colon() {
+        // `:` is preserved (valid on Linux/macOS, common in academic
+        // subtitles). Other Windows-reserved + path-separator chars are
+        // replaced with `_`.
+        assert_eq!(sanitize_filename_segment("A/B\\C:D?E*F"), "A_B_C:D_E_F");
         assert_eq!(sanitize_filename_segment("  spaces   out  "), "spaces out");
+        assert_eq!(
+            sanitize_filename_segment("Euston: Efficient Inference"),
+            "Euston: Efficient Inference"
+        );
     }
 
     #[test]
