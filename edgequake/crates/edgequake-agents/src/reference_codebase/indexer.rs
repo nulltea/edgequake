@@ -57,10 +57,11 @@ impl ReferenceCodebaseIndexer {
         // symbol ids after every file has been parsed (so cross-file
         // refs can resolve).
         let mut pending_edges: Vec<super::treesitter::PendingEdge> = Vec::new();
-        // Regex-path residue: files whose language has no tree-sitter
+        // Regex-path residue: file ids whose language has no tree-sitter
         // support fall through to the old extractor for a minimal
-        // defines+calls graph.
-        let mut regex_files: Vec<&CodebaseFile> = Vec::new();
+        // defines+calls graph. Stored as ids (not refs) so a later mutable
+        // pass over `files` doesn't trip the borrow checker.
+        let mut regex_files: Vec<Uuid> = Vec::new();
 
         for file in files.iter().filter(|f| f.skipped_reason.is_none()) {
             let content = read_repo_file(&repo_root, &file.file_path)?;
@@ -93,8 +94,66 @@ impl ReferenceCodebaseIndexer {
                             .push(sym.clone());
                         symbols.push(sym);
                     }
-                    regex_files.push(file);
+                    regex_files.push(file.id);
                 }
+            }
+        }
+
+        // Pass 2: vendored reachability. Scan thirdparty/vendor files now that
+        // the main graph knows which symbol names it references. Keep only
+        // vendored symbols that are targeted by an unresolved `calls` /
+        // `references` edge from main — one hop, no transitive cascade through
+        // vendored → vendored. Zero outgoing edges from vendored symbols so the
+        // graph treats them as leaf nodes.
+        let unresolved_names: BTreeSet<String> = pending_edges
+            .iter()
+            .filter(|p| matches!(p.edge_type.as_str(), "calls" | "references"))
+            .filter_map(|p| {
+                let k = target_key(&p.target_name);
+                if symbol_by_name.contains_key(k) {
+                    None
+                } else {
+                    Some(k.to_string())
+                }
+            })
+            .collect();
+
+        let mut vendored_kept_files: BTreeSet<Uuid> = BTreeSet::new();
+        if !unresolved_names.is_empty() {
+            for file in files
+                .iter()
+                .filter(|f| f.skipped_reason.as_deref() == Some("vendored_not_referenced"))
+            {
+                let content = read_repo_file(&repo_root, &file.file_path)?;
+                let Some(out) = super::treesitter::parse_file(file, &content) else {
+                    continue;
+                };
+                for sym in out.symbols {
+                    // `target_key` strips `::` / `.` qualifiers so a call to
+                    // `seal::encrypt` matches a SEAL symbol named `encrypt`.
+                    // Keep only the first hit per name — matches the edge
+                    // resolver's `.first()` semantics, so extra copies would
+                    // sit as orphan nodes.
+                    let key = target_key(&sym.name).to_string();
+                    if !unresolved_names.contains(&key) {
+                        continue;
+                    }
+                    if symbol_by_name.contains_key(&key) {
+                        continue;
+                    }
+                    symbol_by_name.entry(sym.name.clone()).or_default().push(sym.id);
+                    symbols_by_file
+                        .entry(file.id)
+                        .or_default()
+                        .push(sym.clone());
+                    symbols.push(sym);
+                    vendored_kept_files.insert(file.id);
+                }
+            }
+        }
+        for file in files.iter_mut() {
+            if vendored_kept_files.contains(&file.id) {
+                file.skipped_reason = None;
             }
         }
 
@@ -144,7 +203,12 @@ impl ReferenceCodebaseIndexer {
         }
 
         // Regex-fallback `calls` edges for languages without tree-sitter.
-        for file in &regex_files {
+        let files_by_id: BTreeMap<Uuid, &CodebaseFile> =
+            files.iter().map(|f| (f.id, f)).collect();
+        for file_id in &regex_files {
+            let Some(file) = files_by_id.get(file_id) else {
+                continue;
+            };
             if let Some(file_symbols) = symbols_by_file.get(&file.id) {
                 let content = read_repo_file(&repo_root, &file.file_path)?;
                 for sym in file_symbols {
@@ -234,6 +298,11 @@ impl ReferenceCodebaseIndexer {
                     Some("unsupported_language".to_string())
                 } else if metadata.len() > self.limits.max_file_bytes {
                     Some("file_too_large".to_string())
+                } else if is_vendored_path(&rel) {
+                    // Held back until the reachability pass decides whether
+                    // any of this file's symbols are called from non-vendored
+                    // code. Cleared to None if a symbol is kept.
+                    Some("vendored_not_referenced".to_string())
                 } else {
                     None
                 };
@@ -568,6 +637,7 @@ fn ranges_overlap(a_start: i32, a_end: i32, b_start: i32, b_end: i32) -> bool {
     a_start <= b_end && b_start <= a_end
 }
 
+/// Hard-skip: directories that never contain indexable source. Walked past entirely.
 fn should_skip_path(path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     parts.iter().any(|p| {
@@ -582,7 +652,27 @@ fn should_skip_path(path: &str) -> bool {
                 | ".venv"
                 | "venv"
                 | "__pycache__"
-                | "vendor"
+        )
+    })
+}
+
+/// Vendored: scanned but excluded from the main extraction pass. A later pass
+/// reads them and keeps only symbols whose names are targeted by edges from
+/// non-vendored code — so a `calls seal::encrypt` from main brings in the
+/// matching SEAL symbol without dragging the whole vendored tree into the graph.
+fn is_vendored_path(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    parts.iter().any(|p| {
+        matches!(
+            *p,
+            "vendor"
+                | "thirdparty"
+                | "third_party"
+                | "3rdparty"
+                | "external"
+                | "externals"
+                | "deps"
+                | "submodules"
         )
     })
 }

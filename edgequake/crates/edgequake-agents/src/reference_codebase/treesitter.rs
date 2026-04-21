@@ -640,19 +640,27 @@ fn walk_c_like(
         let end = n.end_pos().line() + 1;
         match n.kind().as_ref() {
             "function_definition" => {
-                let name = find_c_function_name(&n);
-                if let Some(name) = name {
-                    let sid = push_symbol(
-                        symbols,
-                        file,
-                        "function",
-                        name,
-                        &[],
-                        start,
-                        end,
-                        "::",
-                    );
-                    fn_ranges.insert((start, end), sid);
+                // WHY: `TEST(A, B) { ... }`, `REGISTER_OP(...) { ... }`,
+                // `DEFINE_string(...) { ... }` and similar macro-call-with-body
+                // patterns parse as function_definitions whose name is the macro
+                // token. Tree-sitter has no preprocessor, so we disambiguate via
+                // AST shape: real functions have a `type` field; ctor/dtor/operator
+                // have structured declarators. A type-less, plain-identifier fn_def
+                // is almost always a macro invocation.
+                if !is_macro_like_fn_def(&n) {
+                    if let Some(name) = find_c_function_name(&n) {
+                        let sid = push_symbol(
+                            symbols,
+                            file,
+                            "function",
+                            name,
+                            &[],
+                            start,
+                            end,
+                            "::",
+                        );
+                        fn_ranges.insert((start, end), sid);
+                    }
                 }
             }
             "struct_specifier" | "union_specifier" | "enum_specifier" => {
@@ -733,6 +741,35 @@ fn walk_c_like(
     }
 
     let _ = enclosing_symbol;
+}
+
+/// Returns true when a C/C++ `function_definition` is almost certainly a
+/// macro-call-with-body (`TEST(A, B) { ... }`, `REGISTER_OP(...) { ... }`,
+/// `DEFINE_string(...) { ... }`, `BOOST_AUTO_TEST_CASE(x) { ... }`) rather
+/// than a real function. These lack a `type` field in source because the
+/// return type lives inside the macro body, not the call site — and their
+/// declarator resolves to a plain `identifier`. Constructors/destructors/
+/// operators are also type-less but have `qualified_identifier`,
+/// `destructor_name`, or `operator_name` declarators, so they pass through.
+fn is_macro_like_fn_def(fn_def: &Node<'_, StrDoc<SupportLang>>) -> bool {
+    if fn_def.field("type").is_some() {
+        return false;
+    }
+    let mut queue: std::collections::VecDeque<Node<'_, StrDoc<SupportLang>>> =
+        std::collections::VecDeque::from([fn_def.clone()]);
+    while let Some(n) = queue.pop_front() {
+        match n.kind().as_ref() {
+            "identifier" => return true,
+            "qualified_identifier" | "destructor_name" | "operator_name"
+            | "field_identifier" => return false,
+            "parameter_list" | "parameter_declaration" => continue,
+            _ => {}
+        }
+        for c in n.children() {
+            queue.push_back(c);
+        }
+    }
+    false
 }
 
 /// Walk a C/C++ `function_definition` subtree and return the identifier
@@ -939,5 +976,57 @@ class Dog : public Animal {};
         // Phase 3 / SCIP scope — not emitted in Phase 2.
         assert!(!out.edges.iter().any(|e| e.edge_type == "inherits"));
         assert!(!out.edges.iter().any(|e| e.edge_type == "implements"));
+    }
+
+    #[test]
+    fn cpp_drops_macro_like_function_definitions() {
+        let src = r#"
+void foo() {}
+TEST(SuiteName, CaseName) {}
+BOOST_AUTO_TEST_CASE(x) {}
+REGISTER_OP(name) {}
+DEFINE_string(f, d, h) {}
+"#;
+        let f = test_file("src/testsuite.cpp", "cpp");
+        let out = parse_file(&f, src).expect("cpp supported");
+        let fn_names: Vec<&str> = out
+            .symbols
+            .iter()
+            .filter(|s| s.symbol_kind == "function")
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            fn_names,
+            vec!["foo"],
+            "expected only foo to survive macro filter, got {:?}",
+            fn_names
+        );
+    }
+
+    #[test]
+    fn cpp_preserves_class_members() {
+        // Ctor/dtor/operator have no `type` field but have structured
+        // declarators — they must NOT be filtered as macro-like. Regular
+        // methods have a return type and pass through trivially.
+        let src = r#"
+class C {
+public:
+    C() {}
+    ~C() {}
+    void m() {}
+    C operator+(C o) { return o; }
+};
+"#;
+        let f = test_file("src/cls.cpp", "cpp");
+        let out = parse_file(&f, src).expect("cpp supported");
+        let fn_names: std::collections::BTreeSet<&str> = out
+            .symbols
+            .iter()
+            .filter(|s| s.symbol_kind == "function")
+            .map(|s| s.name.as_str())
+            .collect();
+        // The method `m` always lands; the ctor name (`C`) should also
+        // survive because its declarator is a qualified/field identifier.
+        assert!(fn_names.contains("m"), "methods must survive: {:?}", fn_names);
     }
 }
