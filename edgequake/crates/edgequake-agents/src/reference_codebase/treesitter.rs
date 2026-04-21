@@ -178,6 +178,53 @@ fn push_symbol(
         end_line: end_line as i32,
         start_byte: 0,
         end_byte: 0,
+        metadata: serde_json::Value::Object(serde_json::Map::new()),
+    });
+    id
+}
+
+/// Same as `push_symbol` but attaches per-language extracted metadata
+/// (parameters, return type, docstring, visibility, flags). The empty-map
+/// default is kept on the plain `push_symbol` path so the tree-sitter
+/// walkers can opt in per-kind without a bigger refactor.
+#[allow(clippy::too_many_arguments)]
+fn push_symbol_with_meta(
+    symbols: &mut Vec<CodebaseSymbol>,
+    file: &CodebaseFile,
+    kind: &str,
+    name: String,
+    scope_prefix: &[&str],
+    start_line: usize,
+    end_line: usize,
+    scope_separator: &str,
+    metadata: serde_json::Value,
+) -> Uuid {
+    let id = Uuid::new_v4();
+    let qualified = if scope_prefix.is_empty() {
+        format!("{}{}{}", file.file_path, "::", name)
+    } else {
+        format!(
+            "{}::{}{}{}",
+            file.file_path,
+            scope_prefix.join(scope_separator),
+            scope_separator,
+            name,
+        )
+    };
+    symbols.push(CodebaseSymbol {
+        id,
+        file_id: file.id,
+        symbol_kind: kind.to_string(),
+        name,
+        qualified_name: qualified,
+        parent_symbol_id: None,
+        file_path: file.file_path.clone(),
+        language: file.language.clone(),
+        start_line: start_line as i32,
+        end_line: end_line as i32,
+        start_byte: 0,
+        end_byte: 0,
+        metadata,
     });
     id
 }
@@ -209,7 +256,8 @@ fn walk_rust<'a>(
         "function_item" => {
             if let Some(name_node) = node.field("name") {
                 let name = name_node.text().to_string();
-                let sid = push_symbol(
+                let meta = extract_rust_fn_metadata(node);
+                let sid = push_symbol_with_meta(
                     symbols,
                     file,
                     "function",
@@ -218,6 +266,7 @@ fn walk_rust<'a>(
                     start_line,
                     end_line,
                     "::",
+                    meta,
                 );
                 // Walk body for calls.
                 walk_body_calls_rust(node, file, sid, edges);
@@ -354,7 +403,8 @@ fn walk_python<'a>(
         "function_definition" => {
             if let Some(name_node) = node.field("name") {
                 let name = name_node.text().to_string();
-                let sid = push_symbol(
+                let meta = extract_python_fn_metadata(node);
+                let sid = push_symbol_with_meta(
                     symbols,
                     file,
                     "function",
@@ -363,6 +413,7 @@ fn walk_python<'a>(
                     start_line,
                     end_line,
                     ".",
+                    meta,
                 );
                 walk_body_calls_python(node, file, sid, edges);
             }
@@ -649,7 +700,8 @@ fn walk_c_like(
                 // is almost always a macro invocation.
                 if !is_macro_like_fn_def(&n) {
                     if let Some(name) = find_c_function_name(&n) {
-                        let sid = push_symbol(
+                        let meta = extract_c_fn_metadata(&n);
+                        let sid = push_symbol_with_meta(
                             symbols,
                             file,
                             "function",
@@ -658,6 +710,7 @@ fn walk_c_like(
                             start,
                             end,
                             "::",
+                            meta,
                         );
                         fn_ranges.insert((start, end), sid);
                     }
@@ -858,6 +911,252 @@ pub fn slice_lines(source: &str, start_line: i32, end_line: i32) -> String {
         .join("\n")
 }
 
+/// Extract signature-level metadata from a Rust `function_item` node.
+/// Keys emitted when the grammar exposes them:
+///   parameters: [{name, type?}]
+///   return_type: "..."
+///   visibility: "public" | "crate" | "private"
+///   is_async: true
+fn extract_rust_fn_metadata(
+    fn_node: &Node<'_, StrDoc<SupportLang>>,
+) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    let mut is_async = false;
+    let mut visibility: Option<&'static str> = None;
+
+    for child in fn_node.children() {
+        match child.kind().as_ref() {
+            "visibility_modifier" => {
+                let t = child.text().to_string();
+                visibility = Some(if t.contains("crate") {
+                    "crate"
+                } else if t.starts_with("pub") {
+                    "public"
+                } else {
+                    "private"
+                });
+            }
+            "function_modifiers" => {
+                if child.text().to_string().contains("async") {
+                    is_async = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(params_node) = fn_node.field("parameters") {
+        let mut params = Vec::new();
+        for p in params_node.children() {
+            match p.kind().as_ref() {
+                "parameter" => {
+                    let mut obj = serde_json::Map::new();
+                    if let Some(pat) = p.field("pattern") {
+                        obj.insert("name".into(), serde_json::json!(pat.text().to_string()));
+                    }
+                    if let Some(ty) = p.field("type") {
+                        obj.insert("type".into(), serde_json::json!(ty.text().to_string()));
+                    }
+                    params.push(serde_json::Value::Object(obj));
+                }
+                "self_parameter" => {
+                    params.push(serde_json::json!({"name": p.text().to_string()}));
+                }
+                _ => {}
+            }
+        }
+        if !params.is_empty() {
+            m.insert("parameters".into(), serde_json::Value::Array(params));
+        }
+    }
+
+    if let Some(rt) = fn_node.field("return_type") {
+        m.insert(
+            "return_type".into(),
+            serde_json::json!(rt.text().to_string()),
+        );
+    }
+    if is_async {
+        m.insert("is_async".into(), serde_json::json!(true));
+    }
+    if let Some(v) = visibility {
+        m.insert("visibility".into(), serde_json::json!(v));
+    }
+
+    serde_json::Value::Object(m)
+}
+
+/// Extract signature-level metadata from a C/C++ `function_definition` node.
+/// Keys emitted when the grammar exposes them:
+///   parameters: [{name?, type}]  — name absent on abstract declarators.
+///   return_type: "..."
+///
+/// Constructors/destructors (no `type` field) simply get `{parameters}`.
+/// Docstring extraction for C/C++ requires looking at preceding sibling
+/// `comment` nodes — deferred; see comment in the body about the cost.
+fn extract_c_fn_metadata(fn_node: &Node<'_, StrDoc<SupportLang>>) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+
+    if let Some(ty) = fn_node.field("type") {
+        m.insert(
+            "return_type".into(),
+            serde_json::json!(ty.text().to_string()),
+        );
+    }
+
+    // Walk to find the innermost parameter_list. `function_declarator` can nest
+    // (pointer-return types, function-returning-function-pointer); we want the
+    // one directly attached to this fn_def's declarator.
+    let mut stack: Vec<Node<'_, StrDoc<SupportLang>>> = vec![fn_node.clone()];
+    while let Some(n) = stack.pop() {
+        if n.kind().as_ref() == "parameter_list" {
+            let mut params = Vec::new();
+            for child in n.children() {
+                if child.kind().as_ref() == "parameter_declaration" {
+                    let mut obj = serde_json::Map::new();
+                    if let Some(ty) = child.field("type") {
+                        obj.insert(
+                            "type".into(),
+                            serde_json::json!(ty.text().to_string()),
+                        );
+                    }
+                    if let Some(decl) = child.field("declarator") {
+                        if let Some(name) = find_c_param_name(&decl) {
+                            obj.insert("name".into(), serde_json::json!(name));
+                        }
+                    }
+                    if !obj.is_empty() {
+                        params.push(serde_json::Value::Object(obj));
+                    }
+                }
+            }
+            if !params.is_empty() {
+                m.insert("parameters".into(), serde_json::Value::Array(params));
+            }
+            break;
+        }
+        for c in n.children() {
+            stack.push(c);
+        }
+    }
+
+    serde_json::Value::Object(m)
+}
+
+fn find_c_param_name(
+    decl: &Node<'_, StrDoc<SupportLang>>,
+) -> Option<String> {
+    // BFS for the first identifier, but don't descend into nested
+    // parameter_lists (function-pointer params have their own sub-signature).
+    let mut queue: std::collections::VecDeque<Node<'_, StrDoc<SupportLang>>> =
+        std::collections::VecDeque::from([decl.clone()]);
+    while let Some(n) = queue.pop_front() {
+        match n.kind().as_ref() {
+            "identifier" | "field_identifier" => return Some(n.text().to_string()),
+            "parameter_list" => continue,
+            _ => {}
+        }
+        for c in n.children() {
+            queue.push_back(c);
+        }
+    }
+    None
+}
+
+/// Extract signature-level metadata from a Python `function_definition` node.
+/// Keys emitted when the grammar exposes them:
+///   parameters: [{name, type?, default?}]
+///   return_type: "..."
+///   is_async: true
+///   docstring: "..."  — the first expression_statement→string in the body.
+fn extract_python_fn_metadata(
+    fn_node: &Node<'_, StrDoc<SupportLang>>,
+) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+
+    let is_async = fn_node
+        .children()
+        .any(|c| c.kind().as_ref() == "async" || c.text().to_string().trim() == "async");
+
+    if let Some(params_node) = fn_node.field("parameters") {
+        let mut params = Vec::new();
+        for p in params_node.children() {
+            match p.kind().as_ref() {
+                "identifier" => {
+                    params.push(serde_json::json!({"name": p.text().to_string()}));
+                }
+                "typed_parameter" => {
+                    let mut obj = serde_json::Map::new();
+                    if let Some(n) = p.children().find(|c| c.kind().as_ref() == "identifier") {
+                        obj.insert("name".into(), serde_json::json!(n.text().to_string()));
+                    }
+                    if let Some(ty) = p.field("type") {
+                        obj.insert("type".into(), serde_json::json!(ty.text().to_string()));
+                    }
+                    params.push(serde_json::Value::Object(obj));
+                }
+                "default_parameter" | "typed_default_parameter" => {
+                    let mut obj = serde_json::Map::new();
+                    if let Some(n) = p.field("name") {
+                        obj.insert("name".into(), serde_json::json!(n.text().to_string()));
+                    }
+                    if let Some(ty) = p.field("type") {
+                        obj.insert("type".into(), serde_json::json!(ty.text().to_string()));
+                    }
+                    if let Some(v) = p.field("value") {
+                        obj.insert("default".into(), serde_json::json!(v.text().to_string()));
+                    }
+                    params.push(serde_json::Value::Object(obj));
+                }
+                _ => {}
+            }
+        }
+        if !params.is_empty() {
+            m.insert("parameters".into(), serde_json::Value::Array(params));
+        }
+    }
+
+    if let Some(rt) = fn_node.field("return_type") {
+        m.insert(
+            "return_type".into(),
+            serde_json::json!(rt.text().to_string()),
+        );
+    }
+    if is_async {
+        m.insert("is_async".into(), serde_json::json!(true));
+    }
+
+    // Docstring: first expression_statement → string inside body.
+    if let Some(body) = fn_node.field("body") {
+        if let Some(first_stmt) = body.children().next() {
+            if first_stmt.kind().as_ref() == "expression_statement" {
+                if let Some(s) = first_stmt
+                    .children()
+                    .find(|c| c.kind().as_ref() == "string")
+                {
+                    let text = s.text().to_string();
+                    let stripped = text
+                        .trim_start_matches("\"\"\"")
+                        .trim_end_matches("\"\"\"")
+                        .trim_start_matches("'''")
+                        .trim_end_matches("'''")
+                        .trim_start_matches('"')
+                        .trim_end_matches('"')
+                        .trim_start_matches('\'')
+                        .trim_end_matches('\'')
+                        .trim()
+                        .to_string();
+                    if !stripped.is_empty() {
+                        m.insert("docstring".into(), serde_json::json!(stripped));
+                    }
+                }
+            }
+        }
+    }
+
+    serde_json::Value::Object(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,6 +1300,135 @@ DEFINE_string(f, d, h) {}
             "expected only foo to survive macro filter, got {:?}",
             fn_names
         );
+    }
+
+    #[test]
+    fn python_extracts_metadata() {
+        let src = r#"
+async def fetch(url: str, timeout: int = 10) -> bytes:
+    """Fetch URL content within timeout."""
+    return b""
+
+def plain(x, y):
+    return x + y
+"#;
+        let f = test_file("src/net.py", "python");
+        let out = parse_file(&f, src).expect("python supported");
+        let fetch = out.symbols.iter().find(|s| s.name == "fetch").unwrap();
+        assert_eq!(fetch.metadata["is_async"], true);
+        assert_eq!(
+            fetch.metadata["docstring"],
+            "Fetch URL content within timeout."
+        );
+        assert_eq!(fetch.metadata["return_type"], "bytes");
+        let params = fetch.metadata["parameters"].as_array().unwrap();
+        let names: Vec<&str> = params
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["url", "timeout"]);
+        assert_eq!(params[0]["type"], "str");
+        assert_eq!(params[1]["default"], "10");
+
+        let plain = out.symbols.iter().find(|s| s.name == "plain").unwrap();
+        // No async, no return type, no docstring — but params still present.
+        assert!(plain.metadata.get("is_async").is_none());
+        assert!(plain.metadata.get("docstring").is_none());
+        let p_names: Vec<&str> = plain.metadata["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(p_names, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn rust_extracts_metadata() {
+        let src = r#"
+pub async fn fetch(url: &str, timeout: u32) -> Result<Vec<u8>, Error> {
+    Ok(Vec::new())
+}
+
+fn private_helper(x: i32) -> i32 { x + 1 }
+
+pub(crate) fn crate_only(y: i32) -> i32 { y }
+"#;
+        let f = test_file("src/net.rs", "rust");
+        let out = parse_file(&f, src).expect("rust supported");
+        let fetch = out.symbols.iter().find(|s| s.name == "fetch").unwrap();
+        assert_eq!(fetch.metadata["is_async"], true);
+        assert_eq!(fetch.metadata["visibility"], "public");
+        assert!(fetch.metadata["return_type"]
+            .as_str()
+            .unwrap()
+            .contains("Result"));
+        let params = fetch.metadata["parameters"].as_array().unwrap();
+        assert_eq!(params[0]["name"], "url");
+        assert_eq!(params[1]["name"], "timeout");
+
+        let priv_ = out
+            .symbols
+            .iter()
+            .find(|s| s.name == "private_helper")
+            .unwrap();
+        assert_eq!(priv_.metadata.get("visibility"), None);
+
+        let crate_only = out
+            .symbols
+            .iter()
+            .find(|s| s.name == "crate_only")
+            .unwrap();
+        assert_eq!(crate_only.metadata["visibility"], "crate");
+    }
+
+    #[test]
+    fn c_extracts_fn_metadata() {
+        let src = r#"
+int add(int a, int b) {
+    return a + b;
+}
+
+void noop(void) {}
+
+float scale(const float *v, int n, float k) {
+    return v[n] * k;
+}
+"#;
+        let f = test_file("src/math.c", "c");
+        let out = parse_file(&f, src).expect("c supported");
+        let add = out.symbols.iter().find(|s| s.name == "add").unwrap();
+        assert_eq!(add.metadata["return_type"], "int");
+        let params = add.metadata["parameters"].as_array().unwrap();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0]["name"], "a");
+        assert_eq!(params[0]["type"], "int");
+        assert_eq!(params[1]["name"], "b");
+
+        let scale = out.symbols.iter().find(|s| s.name == "scale").unwrap();
+        assert_eq!(scale.metadata["return_type"], "float");
+        let sp = scale.metadata["parameters"].as_array().unwrap();
+        assert_eq!(sp[0]["name"], "v");
+        assert_eq!(sp[0]["type"], "float");
+    }
+
+    #[test]
+    fn cpp_extracts_fn_metadata() {
+        let src = r#"
+class Ciphertext {
+public:
+    Ciphertext encrypt(const Plaintext& p, int level) { return Ciphertext(); }
+    Plaintext decrypt(const Ciphertext& c);
+};
+"#;
+        let f = test_file("src/cls.cpp", "cpp");
+        let out = parse_file(&f, src).expect("cpp supported");
+        let enc = out.symbols.iter().find(|s| s.name == "encrypt").unwrap();
+        let params = enc.metadata["parameters"].as_array().unwrap();
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0]["name"], "p");
+        assert_eq!(params[1]["name"], "level");
+        assert_eq!(enc.metadata["return_type"], "Ciphertext");
     }
 
     #[test]

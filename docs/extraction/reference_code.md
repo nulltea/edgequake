@@ -406,7 +406,10 @@ Auto-triggered rows carry `auto_triggered=TRUE` and a reduced `max_files_overrid
 Runs as the `reference_codebase_index` task:
 
 1. **Snapshot.** `code-analyzer /snapshot` clones or reuses the repo on the shared `code-analyzer-workspace` volume. EdgeQuake never clones — the analyzer owns the disk and edgequake mounts read-only.
-2. **Scan.** `.gitignore`-aware walk of the repo root, skipping `.git / target / node_modules / dist / build / .venv / vendor`. Honours `max_files`, `max_file_bytes`, `max_chunks` caps.
+2. **Scan.** `.gitignore`-aware walk of the repo root. Directories split into two buckets:
+   - **Hard-skip:** `.git / target / node_modules / dist / build / .next / .venv / venv / __pycache__`. Never walked — no conceivable indexable source.
+   - **Vendored (scanned but held back):** `vendor / thirdparty / third_party / 3rdparty / external / externals / deps / submodules`. Files are discovered and parsed but their symbols don't land in the graph unconditionally — they're gated behind the reachability pass below. Keeps the primary graph focused on the paper's own source while still letting the agent reach into bundled crypto / ML primitives that the paper's code actually calls. Honours `max_files`, `max_file_bytes`, `max_chunks` caps.
+
 3. **Symbols + edges.** Tree-sitter via `ast-grep-core` for Rust / Python / TypeScript / C / C++; regex fallback for everything else. Per-language edge coverage:
 
 | Edge | Rust | Python | TS | C | C++ |
@@ -420,24 +423,45 @@ Runs as the `reference_codebase_index` task:
 
 C's preprocessor macros are **not expanded** — macro-hidden calls don't resolve. Accepts the approximation; SCIP is the Phase-3 precision pass.
 
+**Macro-expansion filter (C/C++).** Without a preprocessor, tree-sitter-cpp parses `TEST(Suite, Case) { body }`, `REGISTER_OP(...) { body }`, `DEFINE_string(f, d, h) { body }`, and similar macro-call-with-body shapes as function definitions named after the macro token — `TEST`, `REGISTER_OP`, `DEFINE_string`. The indexer disambiguates structurally: a C/C++ `function_definition` whose declarator is a plain identifier **and** has no `type` field is treated as a macro invocation and dropped. Real functions always carry a return type; constructors/destructors/operators use `qualified_identifier` / `destructor_name` / `operator_name` declarators and pass through cleanly. No name blocklist, no ALL_CAPS heuristic, no config knob — the rule is always on. Effect on a GoogleTest-heavy repo (e.g. Microsoft SEAL's own test suite vendored inside a paper): 279 phantom `TEST` nodes vanish without pulling down genuine callers/callees.
+
+**Rich symbol metadata.** Each extracted symbol carries a JSONB `metadata` blob emitted at parse time — the information is in the AST and otherwise gets thrown away. Captured per language where the grammar exposes them:
+
+| Field | Rust | Python | C | C++ |
+|---|---|---|---|---|
+| `parameters` (name + type + default) | ✓ | ✓ | ✓ | ✓ |
+| `return_type` | ✓ | ✓ | ✓ | ✓ |
+| `docstring` (leading `"""…"""` / `///` / `/** */`) | — | ✓ | — | — |
+| `visibility` (`public` / `crate` / `private`) | ✓ | — | — | — |
+| `is_async` | ✓ | ✓ | — | — |
+
+Surfaced on graph-endpoint node payloads and on `query_code` / `get_symbol_neighborhood` hits, so an agent inspecting a symbol gets signature + docstring without re-reading the function body. 80% of porting questions are answered by "what does this take and return"; paying the extraction cost once at index time saves tokens on every query.
+
 4. **Chunker.** In `algorithm_focused` mode, keeps only symbols inside files that contain an approved `code_artifact` anchor (or that *are* anchors). Each chunk carries `algorithm_focus` ∈ [0,1] — anchors get 1.0, file-neighbours get 0.35. `full` mode chunks every symbol.
-5. **Embed.** Each chunk goes through `JinaEmbedder.embed_code_for_indexing` (same passage prefix as Phase 1, so Phase 1 + Phase 2 embeddings live in a compatible space). Upserted into `reference_codebase_embeddings` keyed by `chunk_id`.
-6. **Complete.** Status advances `queued → scanning → parsing → chunking → embedding → complete`. Any grammar crash bumps the per-file `parse_errors` counter without failing the whole index.
+
+5. **1-hop vendored reachability.** After the primary pass has emitted every non-vendored symbol and collected its outgoing `calls` / `references` edges, a second pass walks vendored files and keeps only the symbols whose names are targeted by those unresolved edges. First-hit wins per name (matches the resolver's `.first()` semantics, avoids orphan nodes from overload duplicates). Vendored symbols get `defines` edges but emit no outgoing edges of their own — they sit as leaves. The net effect: the graph shows *Euston → seal::Encryptor::encrypt* as a real resolved call, without dragging the rest of Microsoft SEAL (2000+ symbols) into the index.
+
+6. **Embed.** Each chunk goes through `JinaEmbedder.embed_code_for_indexing` (same passage prefix as Phase 1, so Phase 1 + Phase 2 embeddings live in a compatible space). Upserted into `reference_codebase_embeddings` keyed by `chunk_id`.
+7. **Complete.** Status advances `queued → scanning → parsing → chunking → embedding → complete`. Any grammar crash bumps the per-file `parse_errors` counter without failing the whole index.
+
+**Re-index semantics.** Either path (`force_reindex=true` via the UI button, or `force_reindex=false` via auto-enqueue on a second code-match approval) destroys and rebuilds every child row — files, symbols, edges, chunks, embeddings. The difference is only the index row's UUID: `force=true` issues a `DELETE` on `reference_codebase_indexes` (cascading via `ON DELETE CASCADE` FKs) and inserts a fresh row with a new id; `force=false` does `INSERT … ON CONFLICT DO UPDATE` and keeps the id stable. Saved MCP bookmarks / frontend links targeting an `index_id` survive the latter, break across the former.
 
 ### 14.3 Data model
 
-Five new tables (migrations 045, 046, 048):
+Six new tables (migrations 045, 046, 048, 051):
 
 | Table | Role |
 |---|---|
 | `reference_codebase_indexes` | Per-commit build status, counts, timings, `auto_triggered`, `max_files_override` |
 | `reference_codebase_files` | Scanned source files + `parse_errors` telemetry |
-| `reference_codebase_symbols` | Functions, structs, classes, impls with line spans |
+| `reference_codebase_symbols` | Functions, structs, classes, impls with line spans + `metadata` JSONB (params, return type, docstring, visibility, flags) |
 | `reference_codebase_edges` | `defines / calls / imports / references / implements / inherits` edges |
 | `reference_codebase_chunks` | Retrieval units (`algorithm_anchor / symbol / file_overview`) with `algorithm_focus` |
 | `reference_codebase_embeddings` | pgvector(896) + HNSW cosine on chunk embeddings |
 
 Graph edges live in the SQL tables, not AGE — the edge count per index is easily 5k+ (the V3DB zk-ivf-pq index is 3959), which would outpace AGE's Cypher-query tooling. The subgraph endpoint runs a recursive CTE directly against the SQL tables, bounded by `hops` and `max_nodes`.
+
+The `metadata` column (migration 051) is JSONB rather than per-attribute columns so new language extractors can emit fields (generics, attributes, throws, is_test…) without a schema migration per language. A GIN index on `metadata` keeps attribute-based filtering (e.g. `visibility='public'`, `is_async=true`) cheap for future query-path features.
 
 ### 14.4 Retrieval APIs
 
@@ -446,15 +470,33 @@ Four endpoints under `/api/v1/reference-codebase/*`:
 - `POST /indexes` — enqueue (manual path; auto-enqueue uses the same pipeline).
 - `GET /indexes/{id}` — status, counts, errors.
 - `GET /by-repo/{document_repo_id}` — list every index for a repo (newest first).
-- `GET /indexes/{id}/graph?anchor_artifact_id=…|anchor_symbol=…&hops=1&max_nodes=200` — BFS subgraph for the Code Graph tab and the `get_symbol_neighborhood` MCP tool. Recursive CTE over `reference_codebase_edges`; `hops` clamps to [1,3], `max_nodes` to [1,1000]. Rejects when the index isn't `status='complete'`. Seed resolution: artifact id → overlapping symbols, symbol name → exact-then-case-insensitive, neither → top-N by degree (fallback for `mode='full'`).
-- `POST /query` — semantic search via Jina. `document_repo_id` / `index_id` / `algorithm_ids` filters stack. Anchor-focus boost applied in SQL (`algorithm_focus * -0.08 + cosine_distance`).
+- `GET /indexes/{id}/graph?anchor_artifact_id=…|anchor_symbol=…&hops=1&max_nodes=200` — BFS subgraph for the Code Graph tab and the `get_symbol_neighborhood` MCP tool. Recursive CTE over `reference_codebase_edges`; `hops` clamps to [1,3], `max_nodes` to [1,1000]. Rejects when the index isn't `status='complete'`. Seed resolution: artifact id → overlapping symbols, symbol name → exact-then-case-insensitive, neither → top-N by degree (fallback for `mode='full'`). Each node payload includes `metadata` (signature + docstring + visibility, where the extractor captured it).
+- `POST /query` — three-signal hybrid search detailed below.
+
+**Hybrid ranking.** A single `query_code` call composes three signals for every hit:
+
+1. **Entity expansion.** The query text is parsed for code-shaped identifiers — CamelCase tokens (`AttentionHead`), snake_case tokens with ≥1 underscore (`rebalance_clusters`), backtick-wrapped tokens, qualified paths (`seal::Encryptor::encrypt` — both the full path and the tail `encrypt` are tried). Each candidate is looked up against `reference_codebase_chunks.symbol_name` three ways: exact match, prefix (`X::*` — catches class-name queries pulling in methods), and suffix (`*::X` — catches short-name queries pulling in qualified symbols). Matched chunks go into the result set with `matched_entity` populated and `cosine_distance = 0.0`. Agent queries carry exact function names 60%+ of the time — this path guarantees they land in top-K.
+
+2. **Vector similarity.** Jina nl2code embedding of the query ranked against chunk embeddings via pgvector HNSW cosine, filtered by `document_repo_id` / `index_id` / `algorithm_ids`. SQL applies the anchor-focus boost (`algorithm_focus * -0.08 + cosine_distance`) so approved code matches outrank tangential hits.
+
+3. **BM25 lexical.** A code-aware tokenizer splits camelCase / PascalCase (`HTMLParser` → `html, parser`; `getHTTPResponse` → `get, http, response`), snake_case, digit boundaries, and punctuation; lowercases; drops <2-char tokens. An in-memory Okapi BM25 index is built per-query from the candidate union (entity + vector hits) using each chunk's `symbol_name ++ content`. Scores each candidate against the tokenized query.
+
+The final ordering uses a blended score:
+
+```
+final = 0.6 * (1 - cosine_distance)  +  0.4 * bm25_score  +  entity_boost
+```
+
+`entity_boost` is `+0.3` for entity-matched hits, zero otherwise — gives them a deterministic lead even when BM25 is weak. All three components round-trip in the response as `cosine_distance`, `bm25_score`, `final_score`, and `matched_entity` — agents and humans can see *why* a hit ranked first, not just that it did.
+
+**Why BM25 on the candidate set rather than the full corpus.** A full-corpus BM25 index would give stronger IDF, but persisting it per-index either requires bincode/JSON serialization into a new column (migration + staleness concerns) or a cold-start cost per process. On the candidate union (typically ≤24 chunks) BM25 is still directionally right — rare tokens shared between query and a hit dominate the score — and it's ~30µs per query with zero extra schema.
 
 ### 14.5 MCP tools
 
 Two new tools in the Node.js MCP server:
 
-- **`query_code(query, repo_url?, algorithm_id?, limit?, max_distance?)`** — semantic NL → code-chunk search. Returns rendered markdown with fenced code blocks, file:line ranges, and GitHub deep-links pinned to `repo_commit`. Meant for "find the attention kernel" / "how does the rebalance loop work" agent prompts.
-- **`get_symbol_neighborhood(index_id, symbol_name?, anchor_artifact_id?, hops?, max_nodes?)`** — N-hop symbol walk. Returns nodes + outgoing edges grouped per source symbol, with anchor markers (⭐) for approved artifacts. Meant for "what calls this" / "what does this depend on" follow-ups.
+- **`query_code(query, repo_url?, algorithm_id?, limit?, max_distance?)`** — hybrid NL → code-chunk search. Returns rendered markdown with fenced code blocks, file:line ranges, GitHub deep-links pinned to `repo_commit`, and (when available) the symbol's extracted signature + docstring so the agent sees the contract without reading the body. Ranking composes vector similarity + BM25 + entity expansion as described in 14.4; the response surfaces `matched_entity` / `bm25_score` / `final_score` so the agent can explain its own retrieval. Meant for "find the attention kernel" / "how does the rebalance loop work" agent prompts.
+- **`get_symbol_neighborhood(index_id, symbol_name?, anchor_artifact_id?, hops?, max_nodes?)`** — N-hop symbol walk. Returns nodes + outgoing edges grouped per source symbol, with anchor markers (⭐) for approved artifacts and `metadata` (parameters, return type, docstring, visibility) on each node. Meant for "what calls this" / "what does this depend on" follow-ups.
 
 Both tools share the existing env-bound tenant/workspace singleton — caller tools do not accept tenant args (multi-tenant leak guard).
 
@@ -480,6 +522,10 @@ New tab on the document detail page next to Code Matches. Left pane lists approv
 - **Git-blame-style provenance per snippet line.** Nice-to-have for attribution.
 - **Approved-algorithm vector retrieval.** Algorithms *are* embedded at approval time (into the workspace vector store with `type: "algorithm"` metadata), but the SOTA retrieval filter currently only surfaces `{chunk, entity, relationship}` vectors — the algorithm vectors exist but aren't reachable via `/query` today. Follow-up: add `AlgorithmVectorStorage` symmetric to `CodeVectorStorage`, surface as a parallel `approved_algorithms[]` response field.
 - **Clone storage GC.** Phase 2 persists clones on the shared volume; nothing trims them. A TTL sweeper (`EDGEQUAKE_REFERENCE_CODEBASE_CLONE_TTL_DAYS`) is documented but not yet implemented.
+- **Persistent full-corpus BM25.** Current BM25 IDF is computed over the candidate union per query — cheap and good-enough, but a persistent full-corpus index (serialized JSONB on `reference_codebase_indexes` or rebuilt on startup into a process-scoped cache) would give stronger rare-term discrimination. Worth revisiting if systematic misranking on sparse-vocabulary queries appears.
+- **Community detection on the code graph.** Louvain clustering over `calls + imports + implements` would produce a "main modules" view (typically 5–10 groups per paper repo — encryption, encoding, evaluator, nonlinear functions, etc.). Planned as a `list_code_modules` MCP tool so an agent can orient itself before diving into symbols. Deferred until the 3-signal retrieval baseline shows relevance gaps the graph shape could close.
+- **Extended symbol metadata.** Rust/Python extractors capture params, return type, docstring, visibility, is_async today. TypeScript metadata extraction, Rust doc-comment extraction (looks at the preceding sibling line comments), and C++ doc-comment extraction (preceding `/** */` blocks) are follow-ups — each one language-specific and relatively bounded.
+- **Parse-error UI banner.** `parse_errors` is persisted per file; the index-status endpoint exposes it; the frontend doesn't yet surface a banner when the failure ratio crosses a threshold.
 
 ---
 

@@ -126,6 +126,14 @@ pub struct GraphNodeDto {
     pub chunk_id: Option<Uuid>,
     pub is_anchor: bool,
     pub algorithm_focus: f32,
+    /// Per-language metadata: `{parameters, return_type, docstring, visibility,
+    /// is_async, is_test}`. Empty when the extractor had nothing to add.
+    #[serde(skip_serializing_if = "serde_json_is_empty_obj")]
+    pub metadata: serde_json::Value,
+}
+
+fn serde_json_is_empty_obj(v: &serde_json::Value) -> bool {
+    matches!(v, serde_json::Value::Object(m) if m.is_empty())
 }
 
 #[derive(Debug, Serialize)]
@@ -158,6 +166,12 @@ pub struct CodingContextHit {
     pub algorithm_id: Option<Uuid>,
     pub content: String,
     pub cosine_distance: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_entity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bm25_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_score: Option<f64>,
 }
 
 fn default_mode() -> String {
@@ -528,17 +542,42 @@ pub async fn query(
             .and_then(|v| v.parse().ok())
             .unwrap_or(896);
         let embedder = JinaEmbedder::new(code_embed_url, code_model, code_dim);
+        let storage = PgReferenceCodebaseVectorStorage::new(pool.clone());
+        let limit = request.limit.unwrap_or_else(default_limit);
+
+        // Entity expansion: parse identifiers out of the NL query, fetch their
+        // chunks directly. These land ahead of vector hits so exact-name
+        // matches never miss just because surrounding prose is sparse.
+        let entities =
+            edgequake_agents::reference_codebase::extract_code_entities(&request.query);
+        let entity_hits = if entities.is_empty() {
+            Vec::new()
+        } else {
+            storage
+                .fetch_chunks_by_symbol_names(
+                    tenant_id,
+                    workspace_id,
+                    &entities,
+                    request.document_repo_id,
+                    request.index_id,
+                    limit,
+                )
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(format!("entity-expansion lookup failed: {e}"))
+                })?
+        };
+
         let query_vec = embedder
             .embed_query_for_code_search(&request.query)
             .await
             .map_err(|e| ApiError::Internal(format!("embed reference codebase query: {e}")))?;
-        let storage = PgReferenceCodebaseVectorStorage::new(pool.clone());
-        let hits = storage
+        let vector_hits = storage
             .search_reference_codebase(
                 tenant_id,
                 workspace_id,
                 &query_vec,
-                request.limit.unwrap_or_else(default_limit),
+                limit,
                 request.max_distance.unwrap_or_else(default_max_distance),
                 request.document_repo_id,
                 request.index_id,
@@ -550,8 +589,59 @@ pub async fn query(
             )
             .await
             .map_err(|e| ApiError::Internal(format!("reference codebase search failed: {e}")))?;
+
+        // Dedup entity + vector candidates by chunk_id (entity wins when both
+        // routes surface the same chunk — preserves `matched_entity`).
+        let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut merged: Vec<edgequake_storage::ReferenceCodebaseSearchHit> = Vec::new();
+        for h in entity_hits.into_iter().chain(vector_hits.into_iter()) {
+            if seen.insert(h.chunk_id) {
+                merged.push(h);
+            }
+        }
+
+        // BM25 re-ranking. Build an in-memory corpus from the merged candidates
+        // so each chunk competes against the others using a code-aware
+        // tokenizer (camelCase / snake_case / digit splits). For identifier
+        // queries like "port rebalance_clusters to Rust", BM25 fires on the
+        // exact token, complementing cosine similarity.
+        //
+        // IDF on a candidate-only corpus is weaker than a full-index corpus,
+        // but for small K (typically ≤24) it's still directionally right and
+        // cheaper than a second SQL roundtrip + full corpus load per query.
+        let mut bm25 = edgequake_agents::reference_codebase::Bm25Index::new();
+        for h in &merged {
+            let blob = format!(
+                "{} {}",
+                h.symbol_name.as_deref().unwrap_or(""),
+                h.content
+            );
+            bm25.add_document(&h.chunk_id.to_string(), &blob);
+        }
+        let q_tokens = edgequake_agents::reference_codebase::bm25_tokenize(&request.query);
+        let q_refs: Vec<&str> = q_tokens.iter().map(String::as_str).collect();
+
+        for h in merged.iter_mut() {
+            let bm = bm25.score_with_tokens_str(&q_refs, &h.chunk_id.to_string());
+            // Entity hits come in with cosine_distance = 0.0 (guaranteed best
+            // vector component). A matched_entity gives an explicit boost so
+            // even if BM25 is low it stays near the top.
+            let vector_score = (1.0 - h.cosine_distance.clamp(0.0, 1.0)).max(0.0);
+            let entity_boost = if h.matched_entity.is_some() { 0.3 } else { 0.0 };
+            let final_score = (0.6 * vector_score + 0.4 * bm + entity_boost).min(1.0);
+            h.bm25_score = Some(bm);
+            h.final_score = Some(final_score);
+        }
+
+        merged.sort_by(|a, b| {
+            b.final_score
+                .partial_cmp(&a.final_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        merged.truncate(limit as usize);
+
         Ok(Json(ReferenceCodebaseQueryResponse {
-            coding_context: hits.into_iter().map(Into::into).collect(),
+            coding_context: merged.into_iter().map(Into::into).collect(),
         }))
     }
     #[cfg(not(feature = "postgres"))]
@@ -658,6 +748,7 @@ impl From<edgequake_agents::reference_codebase::SubgraphNode> for GraphNodeDto {
             chunk_id: n.chunk_id,
             is_anchor: n.is_anchor,
             algorithm_focus: n.algorithm_focus,
+            metadata: n.metadata,
         }
     }
 }
@@ -691,6 +782,9 @@ impl From<edgequake_storage::ReferenceCodebaseSearchHit> for CodingContextHit {
             algorithm_id: h.algorithm_id,
             content: h.content,
             cosine_distance: h.cosine_distance,
+            matched_entity: h.matched_entity,
+            bm25_score: h.bm25_score,
+            final_score: h.final_score,
         }
     }
 }

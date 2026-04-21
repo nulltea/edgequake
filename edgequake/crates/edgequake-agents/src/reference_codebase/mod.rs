@@ -5,11 +5,15 @@
 //! follows the shape of Code-RAG/codegraph-rust systems: source files →
 //! semantic symbols → structural edges → AST-aware chunks → vector index.
 
+mod bm25;
+mod entity_expansion;
 mod indexer;
 mod storage;
 mod treesitter;
 mod types;
 
+pub use bm25::{tokenize as bm25_tokenize, Bm25Index};
+pub use entity_expansion::extract_code_entities;
 pub use indexer::{IndexLimits, ReferenceCodebaseIndexer};
 pub use treesitter::{parse_file, PendingEdge, ParseOutput};
 pub use storage::{PostgresReferenceCodebaseStorage, ReferenceCodebaseStorage};

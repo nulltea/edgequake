@@ -635,6 +635,7 @@ mod postgres {
                     s.file_path       AS file_path,
                     s.start_line      AS start_line,
                     s.end_line        AS end_line,
+                    s.metadata        AS metadata,
                     v.depth           AS depth,
                     c.id              AS chunk_id,
                     c.code_artifact_id IS NOT NULL AS is_anchor,
@@ -688,6 +689,11 @@ mod postgres {
                     algorithm_focus: row
                         .try_get::<f32, _>("algorithm_focus")
                         .unwrap_or(0.0),
+                    metadata: row
+                        .try_get::<serde_json::Value, _>("metadata")
+                        .unwrap_or_else(|_| {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        }),
                 });
             }
 
@@ -774,9 +780,9 @@ mod postgres {
             INSERT INTO reference_codebase_symbols (
                 id, index_id, file_id, tenant_id, workspace_id, document_repo_id,
                 symbol_kind, name, qualified_name, parent_symbol_id, file_path,
-                language, start_line, end_line, start_byte, end_byte
+                language, start_line, end_line, start_byte, end_byte, metadata
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
             "#,
         )
         .bind(s.id)
@@ -795,6 +801,7 @@ mod postgres {
         .bind(s.end_line)
         .bind(s.start_byte)
         .bind(s.end_byte)
+        .bind(&s.metadata)
         .execute(&mut **tx)
         .await?;
         Ok(())

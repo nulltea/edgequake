@@ -441,6 +441,7 @@ fn extract_symbols(file: &CodebaseFile, content: &str) -> Vec<CodebaseSymbol> {
                     end_line: end,
                     start_byte: 0,
                     end_byte: 0,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
                 });
                 break;
             }

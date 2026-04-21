@@ -53,7 +53,85 @@ impl ReferenceCodebaseVectorStorage for PgReferenceCodebaseVectorStorage {
 
         Ok(rows.into_iter().map(Row::into_hit).collect())
     }
+
+    async fn fetch_chunks_by_symbol_names(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+        names: &[String],
+        document_repo_id: Option<Uuid>,
+        index_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<ReferenceCodebaseSearchHit>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, Row>(ENTITY_SQL)
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(names)
+            .bind(document_repo_id)
+            .bind(index_id)
+            .bind(limit)
+            .fetch_all(&*self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let matched = r.symbol_name.clone();
+                let mut hit = r.into_hit();
+                hit.matched_entity = matched;
+                hit
+            })
+            .collect())
+    }
 }
+
+// Match chunks three ways:
+//   (a) symbol_name = name                 — exact match on stored qualified form.
+//   (b) symbol_name LIKE name || '::%'     — query said `SoftmaxEvaluator`; stored
+//                                            form is `SoftmaxEvaluator::softmax`.
+//   (c) symbol_name LIKE '%::' || name     — query said `encrypt`; stored form is
+//                                            `seal::Encryptor::encrypt`.
+// Each candidate in $3 is probed against all three; chunks.symbol_name is still
+// an exact key per row so the index on it covers (a).
+const ENTITY_SQL: &str = r#"
+    SELECT
+        c.id                    AS chunk_id,
+        c.index_id              AS index_id,
+        c.document_id           AS document_id,
+        c.document_repo_id      AS document_repo_id,
+        i.repo_url              AS repo_url,
+        i.repo_commit           AS repo_commit,
+        c.file_path             AS file_path,
+        c.language              AS language,
+        c.symbol_name           AS symbol_name,
+        c.start_line            AS start_line,
+        c.end_line              AS end_line,
+        c.chunk_kind            AS chunk_kind,
+        c.algorithm_id          AS algorithm_id,
+        c.content               AS content,
+        0.0::float8             AS distance
+    FROM reference_codebase_chunks c
+    JOIN reference_codebase_indexes i ON i.id = c.index_id
+    WHERE c.tenant_id = $1
+      AND c.workspace_id = $2
+      AND i.status = 'complete'
+      AND ($4::uuid IS NULL OR c.document_repo_id = $4)
+      AND ($5::uuid IS NULL OR c.index_id = $5)
+      AND (
+           c.symbol_name = ANY($3::text[])
+        OR EXISTS (
+               SELECT 1 FROM unnest($3::text[]) AS pat
+                WHERE c.symbol_name LIKE pat || '::%'
+                   OR c.symbol_name LIKE '%::' || pat
+           )
+      )
+    ORDER BY c.symbol_name, c.start_line
+    LIMIT $6
+"#;
 
 const SQL: &str = r#"
     WITH matches AS (
@@ -155,6 +233,9 @@ impl Row {
             algorithm_id: self.algorithm_id,
             content: self.content,
             cosine_distance: self.distance,
+            matched_entity: None,
+            bm25_score: None,
+            final_score: None,
         }
     }
 }

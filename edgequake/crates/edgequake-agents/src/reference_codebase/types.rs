@@ -118,6 +118,11 @@ pub struct CodebaseSymbol {
     pub end_line: i32,
     pub start_byte: i32,
     pub end_byte: i32,
+    /// Per-language rich metadata extracted at tree-sitter time.
+    /// Shape: `{"parameters": [...], "return_type": "...", "docstring": "...",
+    /// "visibility": "public|private|crate|protected", "is_async": bool,
+    /// "is_test": bool}`. Keys present only when the grammar exposes them.
+    pub metadata: serde_json::Value,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +209,10 @@ pub struct SubgraphNode {
     pub is_anchor: bool,
     /// `algorithm_focus` copied from the best-matching chunk (0.0–1.0).
     pub algorithm_focus: f32,
+    /// Rich symbol metadata extracted at index time: `{parameters, return_type,
+    /// docstring, visibility, is_async, is_test}`. Keys present only when
+    /// the source grammar exposes them. Empty object `{}` otherwise.
+    pub metadata: serde_json::Value,
 }
 
 /// One edge in a subgraph. Emitted when both endpoints are symbols inside
