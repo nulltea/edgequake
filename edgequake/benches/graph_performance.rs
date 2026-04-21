@@ -110,7 +110,7 @@ fn bench_get_popular_nodes(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(limit), limit, |b, &limit| {
             b.to_async(&rt).iter(|| async {
                 let nodes = storage
-                    .get_popular_nodes_with_degree(black_box(limit), None, None, None, None)
+                    .get_popular_nodes_with_degree(black_box(limit), None, None, None, None, None)
                     .await
                     .unwrap();
                 black_box(nodes);

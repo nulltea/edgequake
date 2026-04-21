@@ -415,6 +415,11 @@ pub trait GraphStorage: Send + Sync {
     /// * `entity_type` - Filter by entity type (optional)
     /// * `tenant_id` - Tenant context for multi-tenancy (optional)
     /// * `workspace_id` - Workspace context (optional)
+    /// * `document_id` - Restrict to nodes whose `source_ids` array contains an
+    ///   entry starting with this document UUID (matches both bare UUID and
+    ///   chunk-key form `<uuid>-chunk-N`). When set, `limit` is applied to the
+    ///   document subgraph — not post-filtered — so callers get the top-N
+    ///   by degree *within the document*, not the workspace-wide top-N.
     ///
     /// # Returns
     ///
@@ -426,6 +431,7 @@ pub trait GraphStorage: Send + Sync {
         entity_type: Option<&str>,
         tenant_id: Option<&str>,
         workspace_id: Option<&str>,
+        document_id: Option<&str>,
     ) -> Result<Vec<(GraphNode, usize)>> {
         // Default implementation uses existing methods (N+1 pattern)
         // Implementations should override for performance
@@ -478,6 +484,32 @@ pub trait GraphStorage: Send + Sync {
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
                     if !node_workspace.is_empty() && node_workspace != wid {
+                        continue;
+                    }
+                }
+
+                // Apply document filter. Checks both the modern `source_ids`
+                // JSON array and the legacy pipe-separated `source_id` string.
+                // A prefix match covers both the bare UUID and the chunk-key
+                // form (`<uuid>-chunk-N`).
+                if let Some(did) = document_id {
+                    let matched = node
+                        .properties
+                        .get("source_ids")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter().any(|e| {
+                                e.as_str().map_or(false, |s| s.starts_with(did))
+                            })
+                        })
+                        .unwrap_or(false)
+                        || node
+                            .properties
+                            .get("source_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.split('|').any(|part| part.starts_with(did)))
+                            .unwrap_or(false);
+                    if !matched {
                         continue;
                     }
                 }

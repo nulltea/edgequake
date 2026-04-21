@@ -88,6 +88,7 @@ pub async fn stream_graph(
             None,
             tenant_ctx_clone.tenant_id.as_deref(),
             tenant_ctx_clone.workspace_id.as_deref(),
+            params_clone.document_id.as_deref(),
         );
 
         let nodes_with_degrees =
@@ -117,6 +118,18 @@ pub async fn stream_graph(
                                         &n.properties,
                                         &tenant_ctx_clone,
                                     )
+                                })
+                                .filter(|n| {
+                                    params_clone
+                                        .document_id
+                                        .as_deref()
+                                        .map(|doc_id| {
+                                            properties_match_document(
+                                                &n.properties,
+                                                doc_id,
+                                            )
+                                        })
+                                        .unwrap_or(true)
                                 })
                                 .take(params_clone.max_nodes)
                                 .map(|n| (n, 0usize)) // Degree unknown, use 0
@@ -157,6 +170,15 @@ pub async fn stream_graph(
                             .filter(|n| {
                                 properties_match_tenant_context(&n.properties, &tenant_ctx_clone)
                             })
+                            .filter(|n| {
+                                params_clone
+                                    .document_id
+                                    .as_deref()
+                                    .map(|doc_id| {
+                                        properties_match_document(&n.properties, doc_id)
+                                    })
+                                    .unwrap_or(true)
+                            })
                             .take(params_clone.max_nodes)
                             .map(|n| (n, 0usize)) // Degree unknown, use 0
                             .collect(),
@@ -172,21 +194,11 @@ pub async fn stream_graph(
                 }
             };
 
-        // Post-filter nodes by document_id when requested. Mirrors the
-        // non-streaming /graph handler, which also post-filters (the
-        // SQL side doesn't push the filter down yet). Safe at
-        // max_nodes ≤ MAX_GRAPH_NODES.
-        let nodes_with_degrees: Vec<_> = if let Some(doc_id) =
-            params_clone.document_id.as_deref()
-        {
-            nodes_with_degrees
-                .into_iter()
-                .filter(|(node, _)| properties_match_document(&node.properties, doc_id))
-                .collect()
-        } else {
-            nodes_with_degrees
-        };
-
+        // Document filter is pushed down into the SQL (see
+        // `get_popular_nodes_with_degree` in postgres/graph/mod.rs), so
+        // nodes_with_degrees is already scoped to the document
+        // subgraph when `document_id` is set. The `get_all_nodes`
+        // fallback branches above still post-filter in Rust.
         let nodes_to_stream = nodes_with_degrees.len();
         let total_batches = nodes_to_stream.div_ceil(params_clone.batch_size);
 

@@ -34,8 +34,8 @@ import { HeaderTenantSelector } from './header-tenant-selector';
 
 const navItems = [
   { href: '/', icon: Home, labelKey: 'nav.dashboard' },
-  { href: '/graph', icon: Network, labelKey: 'nav.graph' },
   { href: '/documents', icon: FileText, labelKey: 'nav.documents' },
+  { href: '/graph', icon: Network, labelKey: 'nav.graph' },
   { href: '/knowledge', icon: BookOpen, labelKey: 'nav.knowledge' },
   { href: '/pipeline', icon: Activity, labelKey: 'nav.pipeline' },
   { href: '/query', icon: MessageSquare, labelKey: 'nav.query' },

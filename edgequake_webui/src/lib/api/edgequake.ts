@@ -1258,6 +1258,12 @@ export interface GetGraphStreamOptions {
    * this document. Mirrors the `documentId` option on `getGraph`.
    */
   documentId?: string;
+  /**
+   * Abort signal plumbed through to the underlying `fetch`. Aborting
+   * tears down the SSE connection server-side so a superseded stream
+   * can't keep pushing rows that overwrite the caller's newer state.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -1307,6 +1313,7 @@ export async function* graphStream(
     `/graph/stream${query ? `?${query}` : ""}`,
     {
       method: "GET",
+      signal: options?.signal,
     },
   );
 }

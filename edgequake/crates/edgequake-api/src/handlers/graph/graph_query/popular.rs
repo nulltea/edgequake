@@ -41,6 +41,7 @@ pub async fn get_popular_labels(
             params.entity_type.as_deref(),
             None, // tenant_id filtering done by middleware
             None, // workspace_id filtering done by middleware
+            None, // no document scope on the popular-labels endpoint
         )
         .await?;
 

@@ -321,6 +321,7 @@ impl SOTAQueryEngine {
                     None,
                     tenant_id.as_deref(),
                     workspace_id.as_deref(),
+                    None, // no document scope for query-time fallback
                 )
                 .await?;
 
@@ -619,6 +620,7 @@ impl SOTAQueryEngine {
                 None,
                 tenant_id.as_deref(),
                 workspace_id.as_deref(),
+                None, // no document scope for query-time fallback
             )
             .await?;
 

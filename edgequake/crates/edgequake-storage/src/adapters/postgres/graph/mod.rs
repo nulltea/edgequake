@@ -1253,6 +1253,7 @@ impl GraphStorage for PostgresAGEGraphStorage {
         entity_type: Option<&str>,
         tenant_id: Option<&str>,
         workspace_id: Option<&str>,
+        document_id: Option<&str>,
     ) -> Result<Vec<(GraphNode, usize)>> {
         let pool = self.pool.get().await?;
         let mut conn = pool.acquire().await.map_err(|e| {
@@ -1287,6 +1288,41 @@ impl GraphStorage for PostgresAGEGraphStorage {
             where_conditions.push(format!(
                 "ag_catalog.agtype_to_json(v.properties)->>'workspace_id' = '{}'",
                 escaped_wid
+            ));
+        }
+
+        // WHY: Document filter pushed down into SQL so the top-N-by-degree
+        // selection is computed *within the document subgraph*, not against
+        // the whole workspace. A post-filter approach would miss high-degree
+        // doc nodes whenever the workspace has more popular nodes in other
+        // docs than `limit` allows.
+        //
+        // Matches both the modern `source_ids` JSON array (via
+        // jsonb_array_elements_text + LIKE prefix) and the legacy
+        // pipe-separated `source_id` string. Prefix LIKE covers bare UUID
+        // (`doc-uuid`) and chunk-key (`doc-uuid-chunk-N`) shapes in one
+        // condition.
+        if let Some(did) = document_id {
+            let escaped_did = Self::escape_sql_string(did);
+            // WHY json_array_elements_text (not jsonb_): ag_catalog.agtype_to_json
+            // returns `json`, not `jsonb`, and COALESCE can't coerce between the
+            // two — using the jsonb variant produced "could not convert type
+            // jsonb to json" at runtime.
+            where_conditions.push(format!(
+                "(EXISTS (\
+                    SELECT 1 \
+                    FROM json_array_elements_text(\
+                        COALESCE(ag_catalog.agtype_to_json(v.properties)->'source_ids', '[]'::json)\
+                    ) AS src(val) \
+                    WHERE src.val LIKE '{did}%'\
+                ) OR EXISTS (\
+                    SELECT 1 \
+                    FROM unnest(string_to_array(\
+                        COALESCE(ag_catalog.agtype_to_json(v.properties)->>'source_id', ''), '|'\
+                    )) AS part(val) \
+                    WHERE part.val LIKE '{did}%'\
+                ))",
+                did = escaped_did
             ));
         }
 

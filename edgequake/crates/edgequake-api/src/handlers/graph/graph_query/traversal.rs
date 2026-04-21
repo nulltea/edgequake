@@ -158,29 +158,17 @@ pub async fn get_graph(
             None, // No entity_type filter
             tenant_ctx.tenant_id.as_deref(),
             tenant_ctx.workspace_id.as_deref(),
+            params.document_id.as_deref(),
         );
 
         let nodes_with_degrees =
             match tokio::time::timeout(Duration::from_secs(QUERY_TIMEOUT_SECS), query_future).await
             {
-                Ok(Ok(nodes)) => {
-                    // Document filter is post-applied here (and in the
-                    // start-node branch above). The popular-nodes SQL
-                    // doesn't take a document filter — we'd need a new
-                    // graph_storage method to push it down. For graphs
-                    // small enough to fit in `max_nodes` (default 100,
-                    // capped at 500) the post-filter cost is trivial.
-                    if let Some(doc_id) = params.document_id.as_deref() {
-                        nodes
-                            .into_iter()
-                            .filter(|(node, _)| {
-                                properties_match_document(&node.properties, doc_id)
-                            })
-                            .collect()
-                    } else {
-                        nodes
-                    }
-                }
+                // Document filter is pushed down into the SQL (see
+                // `get_popular_nodes_with_degree` in postgres/graph/mod.rs),
+                // so the top-N by degree is computed within the doc
+                // subgraph — no post-filter needed here.
+                Ok(Ok(nodes)) => nodes,
                 Ok(Err(e)) => {
                     // Check if this is a statement timeout - if so, fall back
                     let error_msg = format!("{}", e);

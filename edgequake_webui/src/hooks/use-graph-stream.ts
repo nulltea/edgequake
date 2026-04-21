@@ -299,8 +299,18 @@ export function useGraphStream(
     setIsStreaming(true);
     streamStartTimeRef.current = Date.now();
 
-    // Create new abort controller
-    abortControllerRef.current = new AbortController();
+    // WHY: Capture the AbortController in a local const. The shared
+    // `abortControllerRef.current` gets reassigned by the *next*
+    // `startStream()` call, so any guard that reads through the ref
+    // inside this closure will see the new controller (not aborted)
+    // and fail to break out of the loop — which caused a stale stream
+    // to keep writing rows after its successor was already running.
+    // Also plumbs the signal through to `graphStream`, which now
+    // passes it to `fetch` so the server tears down the SSE
+    // connection instead of continuing to push bytes into a dead
+    // reader.
+    const myController = new AbortController();
+    abortControllerRef.current = myController;
 
     setProgress({
       ...initialProgress,
@@ -315,9 +325,12 @@ export function useGraphStream(
           batchSize,
           startNode,
           documentId,
+          signal: myController.signal,
         })) {
-          // Check if cancelled
-          if (abortControllerRef.current?.signal.aborted) {
+          // Check if cancelled — reads the LOCAL controller so a
+          // successor `startStream()` can't resurrect us by swapping
+          // the ref out from under us.
+          if (myController.signal.aborted) {
             break;
           }
 
