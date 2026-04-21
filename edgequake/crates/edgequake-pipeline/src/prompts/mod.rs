@@ -56,17 +56,37 @@ pub const SUPPORTED_LANGUAGES: &[&str] = &[
 ];
 
 /// Default entity types for extraction.
+///
+/// Narrowed from the original 9-type list to 5 types tailored to the
+/// research-paper RAG use case:
+///
+/// - Dropped `DOCUMENT` — it explicitly encouraged `Table 1`, `Section 4`,
+///   `Theorem 2.1`-style structural references that polluted the graph.
+/// - Dropped `PERSON` — author lists dominated real uploads (46% of all
+///   entities on one sample paper). Paper-level authorship is already
+///   captured in the document metadata / citation filename; per-mention
+///   person entities are noise at query time.
+/// - Dropped `LOCATION` and `EVENT` — low signal for the target domain
+///   (cryptography / ML research); rarely appear as named things and
+///   frequently surface as noise when they do.
+/// - Dropped `DATE` — bare years and publication timestamps are
+///   captured in document metadata (`processed_at`, front-matter year)
+///   and are not useful as standalone graph entities.
+///
+/// `Other` is retained as the borderline-fallback bucket so the LLM has
+/// somewhere to put items it can't confidently classify, without being
+/// forced to mis-type them as one of the kept categories.
+///
+/// The complementary shape-based filter in `parser::tuple_parser` catches
+/// residual noise the prompt doesn't prevent (single-letter names,
+/// protocol-role actors, numbered formal labels).
 pub fn default_entity_types() -> Vec<String> {
     vec![
-        "PERSON".to_string(),
         "ORGANIZATION".to_string(),
-        "LOCATION".to_string(),
-        "EVENT".to_string(),
         "CONCEPT".to_string(),
         "TECHNOLOGY".to_string(),
         "PRODUCT".to_string(),
-        "DATE".to_string(),
-        "DOCUMENT".to_string(),
+        "Other".to_string(),
     ]
 }
 
@@ -77,9 +97,15 @@ mod tests {
     #[test]
     fn test_default_entity_types() {
         let types = default_entity_types();
-        assert!(types.contains(&"PERSON".to_string()));
         assert!(types.contains(&"ORGANIZATION".to_string()));
-        assert!(types.len() >= 7);
+        assert!(types.contains(&"CONCEPT".to_string()));
+        assert!(types.contains(&"Other".to_string()));
+        // Intentionally absent after the noise-reduction pass:
+        assert!(!types.contains(&"PERSON".to_string()));
+        assert!(!types.contains(&"LOCATION".to_string()));
+        assert!(!types.contains(&"EVENT".to_string()));
+        assert!(!types.contains(&"DOCUMENT".to_string()));
+        assert!(!types.contains(&"DATE".to_string()));
     }
 
     #[test]

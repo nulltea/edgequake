@@ -43,6 +43,24 @@ pub use graph_stream::*;
 // Re-export DTOs from graph_types module
 pub use crate::handlers::graph_types::*;
 
+use crate::handlers::documents::storage_helpers::extract_source_docs;
+
+/// Returns true when the node/edge's `source_ids` (or legacy
+/// `source_id`) property contains the requested document — either as
+/// a bare doc UUID or as a chunk key prefixed with that UUID
+/// (`<doc_uuid>-chunk-<n>`). Shared by the non-streaming
+/// (`graph_query::traversal`) and streaming (`graph_stream`) handlers
+/// so the graph viewer's "filter by document" surface is consistent.
+pub(crate) fn properties_match_document(
+    properties: &std::collections::HashMap<String, serde_json::Value>,
+    document_id: &str,
+) -> bool {
+    let chunk_prefix = format!("{document_id}-chunk-");
+    extract_source_docs(properties).iter().any(|s| {
+        s == document_id || s.starts_with(&chunk_prefix) || s.starts_with(document_id)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,6 +77,7 @@ mod tests {
             start_node: None,
             depth: 2,
             max_nodes: 100,
+            document_id: None,
         };
 
         let result = get_graph(State(state), tenant_ctx, Query(params)).await;
@@ -76,6 +95,7 @@ mod tests {
             start_node: None,
             depth: 5,
             max_nodes: 50,
+            document_id: None,
         };
 
         let result = get_graph(State(state), tenant_ctx, Query(params)).await;

@@ -11,6 +11,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::error::ApiResult;
+use crate::handlers::graph::properties_match_document;
 use crate::handlers::graph_types::*;
 use crate::handlers::isolation::properties_match_tenant_context;
 use crate::middleware::TenantContext;
@@ -83,6 +84,13 @@ pub async fn get_graph(
             .nodes
             .into_iter()
             .filter(|n| properties_match_tenant_context(&n.properties, &tenant_ctx))
+            .filter(|n| {
+                params
+                    .document_id
+                    .as_deref()
+                    .map(|doc_id| properties_match_document(&n.properties, doc_id))
+                    .unwrap_or(true)
+            })
             .map(|n| GraphNodeResponse {
                 id: n.id.clone(),
                 label: n.id.clone(),
@@ -112,6 +120,11 @@ pub async fn get_graph(
                 properties_match_tenant_context(&e.properties, &tenant_ctx)
                     && node_ids.contains(&e.source)
                     && node_ids.contains(&e.target)
+                    && params
+                        .document_id
+                        .as_deref()
+                        .map(|doc_id| properties_match_document(&e.properties, doc_id))
+                        .unwrap_or(true)
             })
             .map(|e| GraphEdgeResponse {
                 source: e.source,
@@ -150,7 +163,24 @@ pub async fn get_graph(
         let nodes_with_degrees =
             match tokio::time::timeout(Duration::from_secs(QUERY_TIMEOUT_SECS), query_future).await
             {
-                Ok(Ok(nodes)) => nodes,
+                Ok(Ok(nodes)) => {
+                    // Document filter is post-applied here (and in the
+                    // start-node branch above). The popular-nodes SQL
+                    // doesn't take a document filter — we'd need a new
+                    // graph_storage method to push it down. For graphs
+                    // small enough to fit in `max_nodes` (default 100,
+                    // capped at 500) the post-filter cost is trivial.
+                    if let Some(doc_id) = params.document_id.as_deref() {
+                        nodes
+                            .into_iter()
+                            .filter(|(node, _)| {
+                                properties_match_document(&node.properties, doc_id)
+                            })
+                            .collect()
+                    } else {
+                        nodes
+                    }
+                }
                 Ok(Err(e)) => {
                     // Check if this is a statement timeout - if so, fall back
                     let error_msg = format!("{}", e);
@@ -169,6 +199,15 @@ pub async fn get_graph(
                             .await?
                             .into_iter()
                             .filter(|n| properties_match_tenant_context(&n.properties, &tenant_ctx))
+                            .filter(|n| {
+                                params
+                                    .document_id
+                                    .as_deref()
+                                    .map(|doc_id| {
+                                        properties_match_document(&n.properties, doc_id)
+                                    })
+                                    .unwrap_or(true)
+                            })
                             .take(params.max_nodes)
                             .map(|n| (n, 0usize)) // Degree unknown in fallback
                             .collect()
@@ -189,6 +228,13 @@ pub async fn get_graph(
                     let filtered_nodes: Vec<_> = all_nodes
                         .into_iter()
                         .filter(|n| properties_match_tenant_context(&n.properties, &tenant_ctx))
+                        .filter(|n| {
+                            params
+                                .document_id
+                                .as_deref()
+                                .map(|doc_id| properties_match_document(&n.properties, doc_id))
+                                .unwrap_or(true)
+                        })
                         .take(params.max_nodes)
                         .map(|n| (n, 0usize)) // Degree unknown, use 0
                         .collect();
@@ -233,6 +279,13 @@ pub async fn get_graph(
 
         let edges: Vec<GraphEdgeResponse> = filtered_edges
             .into_iter()
+            .filter(|e| {
+                params
+                    .document_id
+                    .as_deref()
+                    .map(|doc_id| properties_match_document(&e.properties, doc_id))
+                    .unwrap_or(true)
+            })
             .map(|e| GraphEdgeResponse {
                 source: e.source,
                 target: e.target,

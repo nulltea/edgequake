@@ -9,6 +9,7 @@ import {
   FileText,
   Globe,
   GitBranch,
+  Trash2,
   XCircle,
 } from 'lucide-react';
 
@@ -16,6 +17,13 @@ interface RepoCardProps {
   repo: RepoCandidate;
   onApprove?: (id: string) => void;
   onReject?: (id: string) => void;
+  /**
+   * Remove the repo regardless of current status. Backend uses the
+   * same hard-delete path as `reject` (rejected rows are deleted,
+   * not flagged), so this also tears down any analyzer artifacts
+   * via the `ON DELETE CASCADE` on `code_artifacts.document_repo_id`.
+   */
+  onDelete?: (id: string) => void;
 }
 
 function confidenceColor(c: RepoCandidate['confidence']): string {
@@ -54,7 +62,7 @@ function MethodIcon({ method }: { method: RepoCandidate['detection_method'] }) {
   );
 }
 
-export function RepoCard({ repo, onApprove, onReject }: RepoCardProps) {
+export function RepoCard({ repo, onApprove, onReject, onDelete }: RepoCardProps) {
   return (
     <div className="rounded-lg border bg-card p-4 shadow-sm">
       {/* Header: host/owner/repo + status */}
@@ -78,6 +86,17 @@ export function RepoCard({ repo, onApprove, onReject }: RepoCardProps) {
             {repo.confidence}
           </Badge>
           <Badge variant={statusVariant(repo.status)}>{repo.status}</Badge>
+          {onDelete && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+              onClick={() => onDelete(repo.id)}
+              title="Delete this reference repository"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
         </div>
       </div>
 

@@ -86,6 +86,13 @@ pub struct GraphQueryParams {
     /// Maximum nodes to return.
     #[serde(default = "default_max_nodes")]
     pub max_nodes: usize,
+
+    /// When set, scope the returned graph to nodes/edges whose
+    /// `source_ids` property contains this document ID. Without it,
+    /// the viewer returns the union of all entities across all
+    /// documents in the workspace, which is rarely what the user
+    /// wants when investigating a single paper.
+    pub document_id: Option<String>,
 }
 
 /// WHY: Maximum allowed nodes per graph request - prevents performance issues
@@ -293,6 +300,12 @@ pub struct GraphStreamQueryParams {
     /// Batch size for streaming (how many nodes per chunk).
     #[serde(default = "default_stream_batch_size")]
     pub batch_size: usize,
+
+    /// Restrict streamed nodes and edges to those whose `source_ids`
+    /// contain this document. Mirrors the non-streaming `/graph`
+    /// endpoint so a single filter parameter works across both paths.
+    #[serde(default)]
+    pub document_id: Option<String>,
 }
 
 impl GraphStreamQueryParams {

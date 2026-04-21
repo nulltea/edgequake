@@ -134,6 +134,10 @@ interface GraphState {
   maxNodes: number; // Max nodes to fetch (default: 500)
   depth: number; // Traversal depth (default: 2)
   startNode: string | null; // Focus on specific node neighborhood
+  // When set, restrict the viewer to nodes/edges whose `source_ids`
+  // contain this document. Populated from the `?document_id=<uuid>`
+  // URL param on the graph page.
+  documentId: string | null;
 
   // Truncation info from server
   isTruncated: boolean;
@@ -209,6 +213,7 @@ interface GraphActions {
   setMaxNodes: (maxNodes: number) => void;
   setDepth: (depth: number) => void;
   setStartNode: (nodeId: string | null) => void;
+  setDocumentId: (documentId: string | null) => void;
   setTruncationInfo: (
     isTruncated: boolean,
     totalNodes: number,
@@ -260,6 +265,7 @@ const initialState: GraphState = {
   maxNodes: 200, // Reduced from 500 for faster initial load
   depth: 2,
   startNode: null,
+  documentId: null,
   isTruncated: false,
   totalNodesInStorage: 0,
   totalEdgesInStorage: 0,
@@ -891,6 +897,12 @@ export const useGraphStore = create<GraphStore>()((set, get) => ({
 
   setStartNode: (nodeId: string | null) => {
     set({ startNode: nodeId });
+  },
+
+  setDocumentId: (documentId: string | null) => {
+    // Normalise empty string to null so equality checks and
+    // `documentId || undefined` fall-throughs behave consistently.
+    set({ documentId: documentId && documentId.length > 0 ? documentId : null });
   },
 
   setTruncationInfo: (

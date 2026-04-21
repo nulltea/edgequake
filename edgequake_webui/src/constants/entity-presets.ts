@@ -38,16 +38,16 @@ export const ENTITY_PRESETS: Record<Exclude<PresetKey, 'custom'>, EntityPreset> 
     labelKey: 'entityTypes.presets.general',
     labelFallback: 'General',
     icon: 'Globe',
+    // Must match backend default_entity_types() in
+    // crates/edgequake-pipeline/src/prompts/mod.rs.
+    // Narrowed to 5 types for research-paper RAG: PERSON, LOCATION,
+    // EVENT, DATE, DOCUMENT dropped as noise sources.
     types: [
-      'PERSON',
       'ORGANIZATION',
-      'LOCATION',
-      'EVENT',
       'CONCEPT',
       'TECHNOLOGY',
       'PRODUCT',
-      'DATE',
-      'DOCUMENT',
+      'OTHER',
     ],
   },
   manufacturing: {

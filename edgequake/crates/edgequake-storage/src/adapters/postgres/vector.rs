@@ -590,8 +590,8 @@ impl VectorStorage for PgVectorStorage {
 
         let sql = format!(
             r#"
-            DELETE FROM {} 
-            WHERE metadata->>'source' = $1 
+            DELETE FROM {}
+            WHERE metadata->>'source' = $1
                OR metadata->>'target' = $1
             "#,
             self.table_name
@@ -606,6 +606,28 @@ impl VectorStorage for PgVectorStorage {
             })?;
 
         Ok(())
+    }
+
+    async fn delete_by_document_id(&self, document_id: &str) -> Result<usize> {
+        // Hit the indexed `document_id` column, not the JSONB metadata —
+        // the *_doc_id_idx btree index makes this cheap even on large
+        // workspace vector tables.
+        let pool = self.pool.get().await?;
+
+        let sql = format!(
+            "DELETE FROM {} WHERE document_id = $1",
+            self.table_name
+        );
+
+        let result = sqlx::query(&sql)
+            .bind(document_id)
+            .execute(&pool)
+            .await
+            .map_err(|e| {
+                StorageError::Database(format!("Delete by document_id failed: {}", e))
+            })?;
+
+        Ok(result.rows_affected() as usize)
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<Vec<f32>>> {

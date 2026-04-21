@@ -300,6 +300,21 @@ pub struct ProcessingStats {
     /// Populated only when storage_errors occur during indexing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_details: Option<String>,
+
+    /// Entities rejected by the structural-noise filter in
+    /// `prompts::parser::tuple_parser` (document-structure refs like
+    /// "Table 1", single-letter names, role-only actors). Summed
+    /// across all chunks. Useful as a calibration knob — a sudden
+    /// spike suggests a new noise pattern the LLM is emitting that
+    /// the regex doesn't yet cover; zero on a large doc may mean the
+    /// filter regressed.
+    #[serde(default)]
+    pub dropped_structural_entities: usize,
+
+    /// Relationships rejected because at least one endpoint was a
+    /// structural-noise entity. Summed across all chunks.
+    #[serde(default)]
+    pub dropped_structural_relationships: usize,
 }
 
 /// Information about a failed chunk for error reporting.

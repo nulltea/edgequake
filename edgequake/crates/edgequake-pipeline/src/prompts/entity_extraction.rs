@@ -91,6 +91,19 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 
 8.  **Completion Signal:** Output the literal string `{completion_delimiter}` only after all entities and relationships have been completely extracted.
 
+---Exclusions---
+Do NOT extract the following, even when they appear named in the text:
+
+*   **Document structure references:** `Table 1`, `Figure 3`, `Section 4`, `Appendix A`, `Equation (2)`, `Chapter 5`, `§3`, page numbers.
+*   **Formal objects and their numbered labels:** `Theorem 2.1`, `Lemma 4.3`, `Protocol 4`, `Algorithm 5`, `Corollary 1`, `Proposition 3`, `Definition 2`, `Claim A.1`, `Remark 5`, `Case 3`. These are proof-structure artifacts, not entities.
+*   **Single-letter variable names or symbols:** `S`, `Q`, `P`, `A`, `x`, `π`. These are mathematical notation, not entities.
+*   **Generic protocol-role names used alone:** `Adversary`, `Challenger`, `Verifier`, `Prover`, `Simulator`, `Client`, `Server` — including variants with a parenthesised one-letter suffix like `Adversary (A)`. They describe a role, not a thing. Extract them only when they appear with a proper name attached (e.g. `Adversary Eve`, `Server Alice`).
+*   **Authors, reviewers, or any person mentioned in the text.** Person-level granularity is captured at the document level; do not emit PERSON entities. This is why `PERSON` is absent from the allowed `entity_types` list.
+*   **Real-world locations and dated events** unless they are the explicit subject of the paper (rare for technical / research material). This is why `LOCATION` and `EVENT` are absent from the allowed list.
+*   **Bare dates, years, months, or publication timestamps** (`2024`, `2026-03-14`, `Q3 2025`, `last year`). Document-level dates are stored in metadata; per-mention dates rarely stand as useful entities. This is why `DATE` is absent from the allowed list.
+
+Extract ONLY: named organisations, named systems / products / protocols / datasets / libraries / algorithms, and well-defined concepts with descriptive names. If an item is borderline, prefer omission over including it.
+
 ---Examples---
 {examples}"#,
             entity_types = entity_types_str,
@@ -169,50 +182,60 @@ Based on the last extraction task, identify and extract any **missed or incorrec
     }
 
     /// Get the few-shot examples for the prompt.
+    ///
+    /// Examples deliberately avoid PERSON / LOCATION / EVENT output and
+    /// include passages that tempt the model toward structural refs
+    /// (Theorem 2.1, Table 1, Adversary A, §3) with the correct answer
+    /// being to *skip* those items.
     fn get_examples(&self) -> String {
         format!(
             r#"
 Example 1:
 <Input Text>
-while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
+We evaluate the GraphRAG pipeline on the HotpotQA benchmark using the Mistral 7B model hosted on the Ollama runtime. Indexing is backed by pgvector with an HNSW graph, and the vector store is exposed through the LangChain API wrapper.
 
 <Output>
-entity{td}Alex{td}PERSON{td}Alex is a character who experiences frustration and is observant of the dynamics among other characters.
-entity{td}Taylor{td}PERSON{td}Taylor is portrayed with authoritarian certainty and shows a moment of reverence towards a device.
-entity{td}Jordan{td}PERSON{td}Jordan shares a commitment to discovery with Alex.
-entity{td}Cruz{td}PERSON{td}Cruz is associated with a vision of control and order.
-relation{td}Alex{td}Taylor{td}power dynamics, observation{td}Alex observes Taylor's authoritarian behavior.
-relation{td}Alex{td}Jordan{td}shared goals, rebellion{td}Alex and Jordan share a commitment to discovery.
-relation{td}Jordan{td}Cruz{td}ideological conflict{td}Jordan's discovery commitment rebels against Cruz's control vision.
+entity{td}GraphRAG{td}TECHNOLOGY{td}GraphRAG is the retrieval-augmented generation pipeline being evaluated.
+entity{td}HotpotQA{td}PRODUCT{td}HotpotQA is a multi-hop question-answering benchmark dataset used for evaluation.
+entity{td}Mistral 7B{td}PRODUCT{td}Mistral 7B is the open-weights language model used by the pipeline under test.
+entity{td}Ollama{td}PRODUCT{td}Ollama is the local model-serving runtime hosting Mistral 7B.
+entity{td}pgvector{td}TECHNOLOGY{td}pgvector is the Postgres extension providing vector-similarity indexing.
+entity{td}HNSW{td}CONCEPT{td}HNSW is the approximate-nearest-neighbour graph algorithm used by the vector index.
+entity{td}LangChain{td}PRODUCT{td}LangChain is the API wrapper through which the vector store is accessed.
+relation{td}GraphRAG{td}HotpotQA{td}evaluation{td}GraphRAG is evaluated against the HotpotQA benchmark.
+relation{td}GraphRAG{td}Mistral 7B{td}uses{td}The GraphRAG pipeline uses Mistral 7B as its language model.
+relation{td}Mistral 7B{td}Ollama{td}hosted-on{td}Mistral 7B runs on the Ollama runtime in this setup.
+relation{td}pgvector{td}HNSW{td}uses-index{td}pgvector builds an HNSW graph to accelerate similarity search.
+relation{td}LangChain{td}pgvector{td}wraps{td}LangChain exposes the pgvector-backed store via its API wrapper.
 {cd}
 
 Example 2:
 <Input Text>
-Stock markets faced a sharp downturn today as tech giants saw significant declines, with the global tech index dropping by 3.4%.
+In Theorem 2.1 we show that the protocol is secure against a malicious Adversary (A). Table 1 summarizes the concrete bounds for the AES-GCM ciphersuite under the TLS 1.3 handshake. See §3 for the proof sketch.
 
 <Output>
-entity{td}Global Tech Index{td}CONCEPT{td}The Global Tech Index tracks major technology stocks and dropped 3.4%.
-entity{td}Market Selloff{td}EVENT{td}Market selloff refers to the significant decline in stock values.
-relation{td}Global Tech Index{td}Market Selloff{td}market performance{td}The tech index decline is part of the broader selloff.
+entity{td}AES-GCM{td}TECHNOLOGY{td}AES-GCM is an authenticated-encryption ciphersuite whose concrete security bounds are analysed.
+entity{td}TLS 1.3{td}TECHNOLOGY{td}TLS 1.3 is the transport-layer handshake under which the AES-GCM bounds are evaluated.
+relation{td}AES-GCM{td}TLS 1.3{td}ciphersuite-of{td}AES-GCM is one of the ciphersuites used within the TLS 1.3 handshake.
 {cd}
+(Note: `Theorem 2.1`, `Adversary (A)`, `Table 1`, and `§3` are structure / role references and are intentionally omitted.)
 
 Example 3:
 <Input Text>
-Dr. Sarah Chen, lead researcher at Quantum Dynamics Lab in Boston, published a groundbreaking paper on quantum entanglement in Nature Physics journal. The study was funded by the National Science Foundation.
+The Quantum Dynamics Lab published a paper on quantum entanglement in the Nature Physics journal on 2026-03-14. The research was funded by the National Science Foundation and conducted on the IBM Quantum hardware platform.
 
 <Output>
-entity{td}Sarah Chen{td}PERSON{td}Dr. Sarah Chen is the lead researcher at Quantum Dynamics Lab who published a paper on quantum entanglement.
-entity{td}Quantum Dynamics Lab{td}ORGANIZATION{td}Quantum Dynamics Lab is a research institution located in Boston.
-entity{td}Boston{td}LOCATION{td}Boston is a city where Quantum Dynamics Lab is located.
-entity{td}Nature Physics{td}ORGANIZATION{td}Nature Physics is a scientific journal that published Sarah Chen's paper.
-entity{td}Quantum Entanglement{td}CONCEPT{td}Quantum entanglement is a physics phenomenon studied in Sarah Chen's groundbreaking paper.
-entity{td}National Science Foundation{td}ORGANIZATION{td}The National Science Foundation funded Sarah Chen's quantum entanglement research.
-relation{td}Sarah Chen{td}Quantum Dynamics Lab{td}employment, research{td}Sarah Chen works as lead researcher at Quantum Dynamics Lab.
-relation{td}Sarah Chen{td}Nature Physics{td}publication{td}Sarah Chen published her research in Nature Physics journal.
-relation{td}Sarah Chen{td}Quantum Entanglement{td}research{td}Sarah Chen researches quantum entanglement.
-relation{td}Quantum Dynamics Lab{td}Boston{td}location{td}Quantum Dynamics Lab is located in Boston.
-relation{td}National Science Foundation{td}Sarah Chen{td}funding{td}The National Science Foundation funded Sarah Chen's research.
+entity{td}Quantum Dynamics Lab{td}ORGANIZATION{td}Quantum Dynamics Lab is the research institution behind the quantum-entanglement study.
+entity{td}Nature Physics{td}ORGANIZATION{td}Nature Physics is the scientific journal that published the study.
+entity{td}Quantum Entanglement{td}CONCEPT{td}Quantum entanglement is the physical phenomenon that is the subject of the study.
+entity{td}National Science Foundation{td}ORGANIZATION{td}The National Science Foundation is the funding body for the research.
+entity{td}IBM Quantum{td}PRODUCT{td}IBM Quantum is the quantum-computing hardware platform on which the experiments ran.
+relation{td}Quantum Dynamics Lab{td}Nature Physics{td}publication{td}Quantum Dynamics Lab published their study in Nature Physics.
+relation{td}Quantum Dynamics Lab{td}Quantum Entanglement{td}studies{td}The lab's research subject is quantum entanglement.
+relation{td}National Science Foundation{td}Quantum Dynamics Lab{td}funding{td}The National Science Foundation funds the lab's research.
+relation{td}Quantum Dynamics Lab{td}IBM Quantum{td}uses-platform{td}Experiments were carried out on the IBM Quantum platform.
 {cd}
+(Note: individual researchers are not extracted as PERSON entities; authorship is captured at the document level. The `2026-03-14` publication date is also omitted — it belongs in document metadata, not as a graph entity.)
 "#,
             td = self.tuple_delimiter,
             cd = self.completion_delimiter
@@ -258,12 +281,27 @@ mod tests {
     #[test]
     fn test_examples_in_prompt() {
         let prompts = EntityExtractionPrompts::default();
-        let system = prompts.system_prompt(&["PERSON"], "English");
+        let system = prompts.system_prompt(&["ORGANIZATION", "CONCEPT"], "English");
 
         assert!(system.contains("Example 1:"));
         assert!(system.contains("Example 2:"));
         assert!(system.contains("Example 3:"));
-        assert!(system.contains("Alex"));
-        assert!(system.contains("Sarah Chen"));
+        // Domain-appropriate anchors from the rewritten examples:
+        assert!(system.contains("GraphRAG"));
+        assert!(system.contains("Quantum Dynamics Lab"));
+    }
+
+    #[test]
+    fn test_exclusions_section_present() {
+        let prompts = EntityExtractionPrompts::default();
+        let system = prompts.system_prompt(&["ORGANIZATION"], "English");
+
+        // The exclusions are the whole point of this prompt revision —
+        // if the section regresses, over-extraction returns.
+        assert!(system.contains("---Exclusions---"));
+        assert!(system.contains("Theorem 2.1"));
+        assert!(system.contains("Adversary (A)"));
+        assert!(system.contains("Table 1"));
+        assert!(system.contains("PERSON entities"));
     }
 }

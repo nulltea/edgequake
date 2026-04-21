@@ -40,7 +40,8 @@ import { useGraphStore } from '@/stores/use-graph-store';
 import { useTenantStore } from '@/stores/use-tenant-store';
 import type { GraphNode } from '@/types';
 import { useQuery } from '@tanstack/react-query';
-import { AlertCircle, ChevronLeft, ChevronRight, Filter, Loader2, Maximize2, Menu, Network, PanelRightClose, RefreshCw, Upload, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertCircle, ChevronLeft, ChevronRight, FileText, Filter, Loader2, Maximize2, Menu, Network, PanelRightClose, RefreshCw, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { GraphEmptyIllustration } from '../illustrations/graph-empty-illustration';
@@ -142,6 +143,7 @@ export function GraphViewer() {
   const maxNodes = useGraphStore((s) => s.maxNodes);
   const depth = useGraphStore((s) => s.depth);
   const startNode = useGraphStore((s) => s.startNode);
+  const documentId = useGraphStore((s) => s.documentId);
   const setTruncationInfo = useGraphStore((s) => s.setTruncationInfo);
   
   // Streaming state for progressive loading
@@ -163,6 +165,7 @@ export function GraphViewer() {
     enabled: false, // Manual control - don't auto-start
     maxNodes,
     startNode: startNode || undefined,
+    documentId: documentId || undefined,
     onMetadata: (metadata) => {
       // Clear existing graph when new streaming starts
       clearGraphForStreaming();
@@ -225,11 +228,20 @@ export function GraphViewer() {
 
   // Standard query for non-streaming mode (fallback)
   const { data, isLoading: isQueryLoading, isError, error, refetch } = useQuery({
-    queryKey: ['graph', selectedTenantId, selectedWorkspaceId, maxNodes, depth, startNode],
-    queryFn: () => getGraph({ 
+    queryKey: [
+      'graph',
+      selectedTenantId,
+      selectedWorkspaceId,
+      maxNodes,
+      depth,
+      startNode,
+      documentId,
+    ],
+    queryFn: () => getGraph({
       maxNodes,
       depth,
       startNode: startNode || undefined,
+      documentId: documentId || undefined,
     }),
     staleTime: 5 * 60 * 1000, // 5 minutes - longer cache for better perf
     refetchOnWindowFocus: false, // Disable auto-refetch for better performance
@@ -298,7 +310,7 @@ export function GraphViewer() {
     }
     
     // WHY: Create param key to detect if we need to restart stream
-    const paramKey = `${selectedTenantId}-${selectedWorkspaceId}-${maxNodes}-${startNode || ""}`;
+    const paramKey = `${selectedTenantId}-${selectedWorkspaceId}-${maxNodes}-${startNode || ""}-${documentId || ""}`;
     
     // WHY: Skip if already initialized with same params (prevents duplicate calls)
     if (streamingInitializedRef.current && lastStreamParamsRef.current === paramKey) {
@@ -327,7 +339,7 @@ export function GraphViewer() {
     };
     // Only re-run when these key params change
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useStreaming, selectedTenantId, selectedWorkspaceId, maxNodes, startNode]);
+  }, [useStreaming, selectedTenantId, selectedWorkspaceId, maxNodes, startNode, documentId]);
 
   // Handle refetch for both modes
   const handleRefetch = useCallback(() => {
@@ -340,6 +352,16 @@ export function GraphViewer() {
       refetch();
     }
   }, [useStreaming, cancelStream, resetStreamingProgress, clearGraphForStreaming, startStream, refetch]);
+
+  // Clearing the active document filter also strips `?document_id` /
+  // `?entity=<uuid>` from the URL so a page refresh doesn't resurrect
+  // the filter from query params that the page-level effect re-reads.
+  const router = useRouter();
+  const setDocumentId = useGraphStore((s) => s.setDocumentId);
+  const handleClearDocumentFilter = useCallback(() => {
+    setDocumentId(null);
+    router.replace('/graph');
+  }, [router, setDocumentId]);
 
   // Set graph data from non-streaming query (when streaming is disabled)
   useEffect(() => {
@@ -494,6 +516,23 @@ export function GraphViewer() {
             {data?.metadata && !isMobile && (
               <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md">
                 {data.metadata.node_count.toLocaleString()} nodes · {data.metadata.edge_count.toLocaleString()} edges
+              </span>
+            )}
+            {documentId && (
+              <span
+                className="flex items-center gap-1 text-xs bg-primary/10 text-primary border border-primary/30 px-2 py-0.5 rounded-md"
+                title={`Showing only entities from document ${documentId}`}
+              >
+                <FileText className="h-3 w-3" />
+                <span className="font-mono">{documentId.slice(0, 8)}…</span>
+                <button
+                  onClick={handleClearDocumentFilter}
+                  className="ml-0.5 hover:text-destructive"
+                  aria-label="Clear document filter"
+                  title="Show the full graph (all documents)"
+                >
+                  <X className="h-3 w-3" />
+                </button>
               </span>
             )}
           </div>

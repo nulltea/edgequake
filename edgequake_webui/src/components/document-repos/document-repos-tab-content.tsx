@@ -130,6 +130,23 @@ export function DocumentReposTabContent({
     (id: string) => reviewMutation.mutate({ repoId: id, status: 'rejected' }),
     [reviewMutation],
   );
+  // WHY: The backend treats "rejected" as hard-delete (see
+  // `review_repo_impl` in handlers/repos/mod.rs — rejected rows are
+  // removed, not flagged, and ON DELETE CASCADE tears down any
+  // analyzer artifacts). So "delete" rides the same path as "reject",
+  // with a confirmation prompt since it's irreversible.
+  const handleDelete = useCallback(
+    (id: string) => {
+      if (
+        window.confirm(
+          'Delete this reference repository? This cannot be undone — any analyzer output tied to this repo is removed as well.',
+        )
+      ) {
+        reviewMutation.mutate({ repoId: id, status: 'rejected' });
+      }
+    },
+    [reviewMutation],
+  );
 
   if (isLoading) {
     return (
@@ -249,6 +266,7 @@ export function DocumentReposTabContent({
               repo={c}
               onApprove={handleApprove}
               onReject={handleReject}
+              onDelete={handleDelete}
             />
           ))}
         </div>

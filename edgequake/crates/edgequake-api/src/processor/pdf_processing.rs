@@ -178,7 +178,7 @@ impl DocumentTaskProcessor {
             info!(
                 document_id = %early_doc_id,
                 pdf_id = %data.pdf_id,
-                "Reprocessing: cleaning up old content and chunks before re-extraction"
+                "Reprocessing: cleaning up old content, chunks, vectors, and graph data before re-extraction"
             );
             // Remove old content entry
             let content_key = format!("{}-content", early_doc_id);
@@ -198,6 +198,78 @@ impl DocumentTaskProcessor {
                     "Removing old chunk entries"
                 );
                 let _ = self.kv_storage.delete(&chunk_keys).await;
+            }
+
+            // Purge vector rows for this document from the workspace
+            // vector store. Without this, every reprocess accumulates
+            // entity embeddings on top of the previous extraction — the
+            // new extraction inserts fresh rows but the old ones stick
+            // around, keeping pre-fix noise ("Theorem 1", single-letter
+            // entities, PERSON entries) visible in RAG retrieval and the
+            // graph view even though the current extraction would no
+            // longer emit them.
+            //
+            // The `document_id` column on the workspace vectors table is
+            // indexed, so `DELETE WHERE document_id = $1` is cheap.
+            // Best-effort: failures here are logged and ignored so the
+            // reprocess pipeline still runs — stale rows are tolerable,
+            // a wedged reprocess is not.
+            match self
+                .resolve_workspace_vector_storage_for_reprocess(&data.workspace_id)
+                .await
+            {
+                Some(ws_storage) => match ws_storage.delete_by_document_id(&early_doc_id).await {
+                    Ok(n) => {
+                        info!(
+                            document_id = %early_doc_id,
+                            rows_deleted = n,
+                            "Purged workspace vector rows from prior extraction"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            document_id = %early_doc_id,
+                            error = %e,
+                            "Failed to purge workspace vector rows before reprocess (continuing)"
+                        );
+                    }
+                },
+                None => {
+                    warn!(
+                        document_id = %early_doc_id,
+                        workspace_id = %data.workspace_id,
+                        "Workspace vector storage unavailable; stale entity rows may persist"
+                    );
+                }
+            }
+
+            // Clean the AGE graph — entities/relationships whose only
+            // source is this document get deleted outright; edges
+            // referencing deleted nodes are dropped. Keeps the graph
+            // view in sync with the fresh extraction.
+            match crate::handlers::documents::storage_helpers::cleanup_document_graph_data(
+                &early_doc_id,
+                &self.graph_storage,
+                None,
+            )
+            .await
+            {
+                Ok(stats) => {
+                    info!(
+                        document_id = %early_doc_id,
+                        entities_removed = stats.entities_removed,
+                        entities_updated = stats.entities_updated,
+                        relationships_removed = stats.relationships_removed,
+                        "Purged graph data from prior extraction"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        document_id = %early_doc_id,
+                        error = %e,
+                        "Failed to purge graph data before reprocess (continuing)"
+                    );
+                }
             }
         }
 
@@ -775,6 +847,44 @@ impl DocumentTaskProcessor {
         Err(edgequake_tasks::TaskError::UnsupportedOperation(
             "PDF processing requires postgres feature".to_string(),
         ))
+    }
+
+    /// Resolve the workspace-specific vector storage for a reprocess
+    /// cleanup pass. Lenient: returns `None` when the workspace row is
+    /// gone or the registry can't provision storage (a zombie document
+    /// must still be reprocessable even if the workspace metadata
+    /// degraded). Falls back to the default storage when the registry
+    /// exposes one — this matches what
+    /// `get_workspace_vector_storage_for_delete` does in the delete
+    /// path, so orphan rows go to a consistent place.
+    #[cfg(feature = "postgres")]
+    async fn resolve_workspace_vector_storage_for_reprocess(
+        &self,
+        workspace_id: &uuid::Uuid,
+    ) -> Option<Arc<dyn edgequake_storage::traits::VectorStorage>> {
+        use edgequake_storage::traits::WorkspaceVectorConfig;
+
+        // The registry caches instances per workspace; if this document
+        // ever got ingested, the cache hit path gives us the same
+        // storage without needing a fresh workspace-service lookup.
+        if let Some(cached) = self.vector_registry.get(workspace_id).await {
+            return Some(cached);
+        }
+
+        // Cache miss — provision via the workspace service to pick up
+        // the correct embedding dimension. If the service isn't wired
+        // or the workspace row is missing, fall back to the registry's
+        // default storage so we at least attempt a purge.
+        if let Some(ws_svc) = self.workspace_service.as_ref() {
+            if let Ok(Some(ws)) = ws_svc.get_workspace(*workspace_id).await {
+                let cfg = WorkspaceVectorConfig::new(*workspace_id, ws.embedding_dimension);
+                if let Ok(storage) = self.vector_registry.get_or_create(cfg).await {
+                    return Some(storage);
+                }
+            }
+        }
+
+        Some(self.vector_registry.default_storage())
     }
 
     /// Post-OCR rename helper. Returns an updated `PdfDocument` with

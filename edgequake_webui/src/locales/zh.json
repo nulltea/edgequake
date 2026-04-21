@@ -715,7 +715,7 @@
     "removeType": "删除 {{type}}",
     "maxReached": "已达到最多 {{max}} 个实体类型。",
     "defaults": "使用服务器默认值：",
-    "defaultsHint": "PERSON, ORGANIZATION, LOCATION, EVENT, CONCEPT, TECHNOLOGY, PRODUCT, DATE, DOCUMENT",
+    "defaultsHint": "ORGANIZATION, CONCEPT, TECHNOLOGY, PRODUCT, Other",
     "presets": {
       "general": "通用",
       "manufacturing": "制造",

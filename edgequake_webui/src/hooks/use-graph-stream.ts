@@ -63,6 +63,12 @@ export interface UseGraphStreamOptions {
   batchSize?: number;
   /** Focus on specific node neighborhood */
   startNode?: string;
+  /**
+   * Restrict the stream to nodes/edges whose `source_ids` contain
+   * this document. Pairs with the `?document_id=` / `?entity=<uuid>`
+   * URL params handled in the graph page effect.
+   */
+  documentId?: string;
   /** Whether streaming is enabled (default: true) */
   enabled?: boolean;
   /** Tenant ID for context */
@@ -151,6 +157,7 @@ export function useGraphStream(
     maxNodes = 200,
     batchSize = 50,
     startNode,
+    documentId,
     enabled = true,
     onMetadata,
     onNodesBatch,
@@ -269,7 +276,7 @@ export function useGraphStream(
   // Start streaming
   const startStream = useCallback(async () => {
     // WHY: Create unique key for this request to detect duplicates
-    const requestKey = `${maxNodes}-${batchSize}-${startNode || ""}`;
+    const requestKey = `${maxNodes}-${batchSize}-${startNode || ""}-${documentId || ""}`;
 
     // WHY: Skip if we're already streaming with the same parameters
     if (isStreaming && lastRequestKeyRef.current === requestKey) {
@@ -307,6 +314,7 @@ export function useGraphStream(
           maxNodes,
           batchSize,
           startNode,
+          documentId,
         })) {
           // Check if cancelled
           if (abortControllerRef.current?.signal.aborted) {
@@ -343,6 +351,7 @@ export function useGraphStream(
     maxNodes,
     batchSize,
     startNode,
+    documentId,
     processEvent,
     onError,
     isStreaming,
@@ -361,7 +370,7 @@ export function useGraphStream(
     // We intentionally only want this to run when enabled/params change
     // Adding startStream and cancel would cause infinite loops
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, maxNodes, batchSize, startNode]);
+  }, [enabled, maxNodes, batchSize, startNode, documentId]);
 
   return {
     nodes,

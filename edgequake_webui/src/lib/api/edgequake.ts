@@ -1049,6 +1049,12 @@ export interface GetGraphOptions {
   entity_types?: string[];
   /** Include orphan nodes with no connections */
   include_orphans?: boolean;
+  /**
+   * Restrict the returned graph to nodes/edges whose `source_ids`
+   * include this document. When unset the viewer shows the union of
+   * all entities across every document in the workspace.
+   */
+  documentId?: string;
 }
 
 export async function getGraph(
@@ -1066,6 +1072,9 @@ export async function getGraph(
     searchParams.set("entity_types", options.entity_types.join(","));
   if (options?.include_orphans !== undefined) {
     searchParams.set("include_orphans", String(options.include_orphans));
+  }
+  if (options?.documentId) {
+    searchParams.set("document_id", options.documentId);
   }
 
   const query = searchParams.toString();
@@ -1244,6 +1253,11 @@ export interface GetGraphStreamOptions {
   batchSize?: number;
   /** Focus on specific node neighborhood */
   startNode?: string;
+  /**
+   * Restrict the stream to nodes/edges whose `source_ids` contain
+   * this document. Mirrors the `documentId` option on `getGraph`.
+   */
+  documentId?: string;
 }
 
 /**
@@ -1285,6 +1299,8 @@ export async function* graphStream(
   if (options?.batchSize)
     searchParams.set("batch_size", String(options.batchSize));
   if (options?.startNode) searchParams.set("start_node", options.startNode);
+  if (options?.documentId)
+    searchParams.set("document_id", options.documentId);
 
   const query = searchParams.toString();
   yield* streamClient<GraphStreamEvent>(

@@ -291,7 +291,7 @@ pub struct CleanupStats {
 /// Handles two formats for backward compatibility:
 /// - `source_ids`: JSON array of strings (current format)
 /// - `source_id`: Pipe-separated string (legacy format)
-pub(super) fn extract_source_docs(
+pub(crate) fn extract_source_docs(
     properties: &std::collections::HashMap<String, serde_json::Value>,
 ) -> Vec<String> {
     // Try source_ids (JSON array) first - this is the current format

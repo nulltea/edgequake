@@ -81,6 +81,27 @@ pub(super) fn aggregate_extraction_stats(
         total_input_tokens += extraction.input_tokens;
         total_output_tokens += extraction.output_tokens;
 
+        // Surface the structural-noise filter's drop counts so they
+        // appear in the final `ProcessingStats`. The counters are
+        // written by the tuple parser (see
+        // `prompts::parser::tuple_parser::parse`) into the per-chunk
+        // extraction metadata. Silently ignore missing / malformed
+        // entries — the filter is belt-and-braces, not load-bearing.
+        if let Some(n) = extraction
+            .metadata
+            .get("dropped_structural_entities")
+            .and_then(|v| v.as_u64())
+        {
+            stats.dropped_structural_entities += n as usize;
+        }
+        if let Some(n) = extraction
+            .metadata
+            .get("dropped_structural_relationships")
+            .and_then(|v| v.as_u64())
+        {
+            stats.dropped_structural_relationships += n as usize;
+        }
+
         for entity in &extraction.entities {
             entity_types_set.insert(entity.entity_type.clone());
         }

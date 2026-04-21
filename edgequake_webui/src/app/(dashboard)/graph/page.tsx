@@ -45,16 +45,34 @@ const GraphTourWrapper = dynamic(
   }
 );
 
+// Matches a canonical UUID (8-4-4-4-12 hex). We use this to recognise
+// when the legacy `?entity=<uuid>` URL was actually meant as a document
+// filter — entity *names* are never UUID-shaped, so the heuristic is
+// safe.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default function GraphPage() {
   const searchParams = useSearchParams();
-  const { setSearchQuery, setStartNode, nodes } = useGraphStore();
-  
+  const { setSearchQuery, setStartNode, setDocumentId, nodes } = useGraphStore();
+
   // Handle URL parameters for deep linking from query results
   useEffect(() => {
     const entities = searchParams.get('entities');
     const focus = searchParams.get('focus');
     const entity = searchParams.get('entity');
-    
+    const documentIdParam = searchParams.get('document_id');
+
+    // Document scoping. Canonical param is `?document_id=<uuid>`. We
+    // also accept the legacy `?entity=<uuid>` shape — users had been
+    // typing document UUIDs into `?entity=` hoping for a filter, and
+    // the viewer silently ignored them. Treating a UUID-shaped `entity`
+    // as a document_id matches that intuition without breaking the
+    // entity-focus use case (entity names are not UUID-shaped).
+    const resolvedDocumentId =
+      documentIdParam ??
+      (entity && UUID_RE.test(entity) ? entity : null);
+    setDocumentId(resolvedDocumentId);
+
     // If entities filter is provided, set as search query
     if (entities) {
       // Use the first entity as a search filter
@@ -63,9 +81,10 @@ export default function GraphPage() {
         setSearchQuery(entityList[0]);
       }
     }
-    
-    // If focus or entity is specified, try to set it as the start node
-    const targetEntity = focus || entity;
+
+    // If focus or entity is specified (and not a UUID swallowed by the
+    // document filter above), try to set it as the start node.
+    const targetEntity = focus || (entity && !UUID_RE.test(entity) ? entity : null);
     if (targetEntity && nodes.length > 0) {
       // Find matching node
       const matchingNode = nodes.find(
@@ -76,7 +95,7 @@ export default function GraphPage() {
         setStartNode(matchingNode.id);
       }
     }
-  }, [searchParams, setSearchQuery, setStartNode, nodes]);
+  }, [searchParams, setSearchQuery, setStartNode, setDocumentId, nodes]);
   
   return (
     <div className="h-full overflow-hidden">

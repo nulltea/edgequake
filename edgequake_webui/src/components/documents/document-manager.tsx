@@ -194,8 +194,11 @@ export function DocumentManager() {
     router.push(`/documents/${doc.id}?tab=repos`);
   };
 
-  // OODA-29: Document queries extracted to useDocumentQueries hook
-  const { data, isLoading, isError, error, refetch, pipelineStatus, queryClient } = useDocumentQueries({
+  // OODA-29: Document queries extracted to useDocumentQueries hook.
+  // `queryClient` is already declared above via useQueryClient(); the
+  // hook returns the same instance, so we skip it here to avoid a
+  // "defined multiple times" SWC/Turbopack build error.
+  const { data, isLoading, isError, error, refetch, pipelineStatus } = useDocumentQueries({
     tenantId: selectedTenantId,
     workspaceId: selectedWorkspaceId,
     currentPage,

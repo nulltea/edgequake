@@ -907,7 +907,7 @@ export default function WorkspacePage() {
           ) : (
             <div className="text-sm text-muted-foreground">
               <span className="font-medium">{t('entityTypes.defaults', 'Using server defaults:')}</span>{' '}
-              <span className="font-mono text-xs">{t('entityTypes.defaultsHint', 'PERSON, ORGANIZATION, LOCATION, EVENT, CONCEPT, TECHNOLOGY, PRODUCT, DATE, DOCUMENT')}</span>
+              <span className="font-mono text-xs">{t('entityTypes.defaultsHint', 'ORGANIZATION, CONCEPT, TECHNOLOGY, PRODUCT, Other')}</span>
             </div>
           )}
         </CardContent>

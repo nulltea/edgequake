@@ -14,6 +14,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, warn};
 
 use crate::error::ApiError;
+use crate::handlers::graph::properties_match_document;
 use crate::handlers::graph_types::*;
 use crate::handlers::isolation::properties_match_tenant_context;
 use crate::middleware::TenantContext;
@@ -36,7 +37,8 @@ use crate::state::AppState;
     params(
         ("start_node" = Option<String>, Query, description = "Starting node ID"),
         ("max_nodes" = usize, Query, description = "Max nodes to stream (default 200)"),
-        ("batch_size" = usize, Query, description = "Nodes per batch (default 50)")
+        ("batch_size" = usize, Query, description = "Nodes per batch (default 50)"),
+        ("document_id" = Option<String>, Query, description = "Restrict to nodes/edges whose source_ids contain this document")
     ),
     responses(
         (status = 200, description = "SSE stream of graph data")
@@ -55,6 +57,7 @@ pub async fn stream_graph(
         workspace_id = ?tenant_ctx.workspace_id,
         max_nodes = params.max_nodes,
         batch_size = params.batch_size,
+        document_id = ?params.document_id,
         "Starting graph stream"
     );
 
@@ -169,6 +172,21 @@ pub async fn stream_graph(
                 }
             };
 
+        // Post-filter nodes by document_id when requested. Mirrors the
+        // non-streaming /graph handler, which also post-filters (the
+        // SQL side doesn't push the filter down yet). Safe at
+        // max_nodes ≤ MAX_GRAPH_NODES.
+        let nodes_with_degrees: Vec<_> = if let Some(doc_id) =
+            params_clone.document_id.as_deref()
+        {
+            nodes_with_degrees
+                .into_iter()
+                .filter(|(node, _)| properties_match_document(&node.properties, doc_id))
+                .collect()
+        } else {
+            nodes_with_degrees
+        };
+
         let nodes_to_stream = nodes_with_degrees.len();
         let total_batches = nodes_to_stream.div_ceil(params_clone.batch_size);
 
@@ -258,6 +276,13 @@ pub async fn stream_graph(
 
         let edge_responses: Vec<GraphEdgeResponse> = edges
             .into_iter()
+            .filter(|e| {
+                params_clone
+                    .document_id
+                    .as_deref()
+                    .map(|doc_id| properties_match_document(&e.properties, doc_id))
+                    .unwrap_or(true)
+            })
             .map(|e| GraphEdgeResponse {
                 source: e.source,
                 target: e.target,

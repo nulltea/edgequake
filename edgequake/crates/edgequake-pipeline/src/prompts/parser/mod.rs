@@ -379,10 +379,13 @@ relation<|#|>The Company<|#|>company<|#|>self<|#|>Same entity after normalizatio
 
     #[test]
     fn test_br0004_tuple_keyword_limit_enforced() {
+        // NOTE: entities must be >1 character — the structural-noise
+        // filter in tuple_parser drops single-letter names (they're
+        // never a useful entity in our domain).
         let parser = TupleParser::new();
-        let response = r#"entity<|#|>A<|#|>CONCEPT<|#|>Entity A
-entity<|#|>B<|#|>CONCEPT<|#|>Entity B
-relation<|#|>A<|#|>B<|#|>k1, k2, k3, k4, k5, k6, k7, k8<|#|>Many keywords
+        let response = r#"entity<|#|>Alpha<|#|>CONCEPT<|#|>Entity Alpha
+entity<|#|>Beta<|#|>CONCEPT<|#|>Entity Beta
+relation<|#|>Alpha<|#|>Beta<|#|>k1, k2, k3, k4, k5, k6, k7, k8<|#|>Many keywords
 <|COMPLETE|>"#;
 
         let result = parser.parse(response, "chunk-1").unwrap();

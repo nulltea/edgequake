@@ -1073,11 +1073,14 @@ impl DocumentTaskProcessor {
             .await;
 
         info!(
-            "Document {} processed: {} chunks, {} entities, {} relationships",
+            "Document {} processed: {} chunks, {} entities, {} relationships \
+             (dropped by structural-noise filter: {} entities, {} relationships)",
             document_id,
             result.stats.chunk_count,
             result.stats.entity_count,
-            result.stats.relationship_count
+            result.stats.relationship_count,
+            result.stats.dropped_structural_entities,
+            result.stats.dropped_structural_relationships,
         );
 
         Ok(json!({
@@ -1085,6 +1088,8 @@ impl DocumentTaskProcessor {
             "chunk_count": result.stats.chunk_count,
             "entity_count": result.stats.entity_count,
             "relationship_count": result.stats.relationship_count,
+            "dropped_structural_entities": result.stats.dropped_structural_entities,
+            "dropped_structural_relationships": result.stats.dropped_structural_relationships,
         }))
     }
 }

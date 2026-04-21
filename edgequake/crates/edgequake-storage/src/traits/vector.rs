@@ -150,6 +150,28 @@ pub trait VectorStorage: Send + Sync {
     /// Used when cascading entity deletion.
     async fn delete_entity_relations(&self, entity_name: &str) -> Result<()>;
 
+    /// Delete every vector row (entity + chunk + anything else) that
+    /// belongs to the given document.
+    ///
+    /// Used on the reprocess / re-ingest path: without this, a second
+    /// extraction accumulates on top of the first — old entities keep
+    /// surfacing in RAG retrieval and graph views even though the new
+    /// extraction no longer emits them. Deletion is keyed on the
+    /// `document_id` metadata column so it catches rows the graph-
+    /// traversal cleanup can't (e.g. entities the current extraction
+    /// wouldn't re-emit, so their IDs don't appear in the fresh
+    /// graph).
+    ///
+    /// Default implementation returns 0 — adapters that don't track
+    /// document_id opt out and the reprocess path silently skips them.
+    /// PostgreSQL workspace vectors override this.
+    ///
+    /// Returns the number of rows deleted.
+    async fn delete_by_document_id(&self, document_id: &str) -> Result<usize> {
+        let _ = document_id;
+        Ok(0)
+    }
+
     /// Get a single vector by ID.
     async fn get_by_id(&self, id: &str) -> Result<Option<Vec<f32>>>;
 
