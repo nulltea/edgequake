@@ -2208,6 +2208,28 @@ export async function analyzeCodeReference(
   >(`/code-reference/analyze/${documentRepoId}`, {});
 }
 
+export interface CodeReferenceSubmitResponse {
+  document_id: string;
+  approved_count: number;
+  rejected_count: number;
+  indexes_queued: number;
+  status: string;
+}
+
+/**
+ * Finalise code-match review. Enforces all matches are approved or
+ * rejected, then enqueues reference-codebase indexing for each distinct
+ * repo that has approvals (if the auto-index gate is on).
+ */
+export async function submitCodeReferences(
+  documentId: string,
+): Promise<CodeReferenceSubmitResponse> {
+  return api.post<CodeReferenceSubmitResponse>(
+    `/code-reference/by-document/${documentId}/submit`,
+    {},
+  );
+}
+
 // ============================================================================
 // Reference codebase RAG (Phase 2)
 // ============================================================================
@@ -2409,6 +2431,7 @@ export const edgequakeApi = {
   getCodeReferences,
   reviewCodeArtifact,
   analyzeCodeReference,
+  submitCodeReferences,
 
   // Reference codebase RAG (Phase 2)
   createReferenceCodebaseIndex,

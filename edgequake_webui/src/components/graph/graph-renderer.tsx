@@ -17,6 +17,7 @@
 'use client';
 
 import { detectCommunities, getCommunityColor } from '@/lib/graph/clustering';
+import { drawNodeHoverReadable } from '@/lib/graph/hover-renderer';
 import { getGraphEdgeKeyFromEdge } from '@/lib/graph/ids';
 import {
   applyLayoutToGraph,
@@ -542,6 +543,12 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
       stagePadding: 50, // Add padding around graph for better visibility
       // WHY: Always enable zIndex so selected nodes can render on top
       zIndex: true,
+      // WHY: Sigma's default hover drawer paints a white box + uses the
+      // theme's labelColor for the text. In dark mode that's a light
+      // slate (#e2e8f0) → invisible label on the white box. Our
+      // replacement keeps the white box and forces a fixed dark text
+      // color so hover labels stay readable in both themes.
+      defaultDrawNodeHover: drawNodeHoverReadable,
       nodeReducer,
       edgeReducer,
     });

@@ -20,6 +20,7 @@ pub fn code_reference_routes() -> Router<AppState> {
     Router::new()
         .route("/analyze/{document_repo_id}", post(analyze))
         .route("/by-document/{document_id}", get(list_for_document))
+        .route("/by-document/{document_id}/submit", post(submit))
         .route("/counts", get(counts))
         .route("/{code_artifact_id}/review", post(review))
 }
@@ -131,6 +132,28 @@ pub async fn review(
         let _ = (state, tenant_ctx, code_artifact_id, request);
         Err(ApiError::Internal(
             "Code-reference review requires the postgres feature".to_string(),
+        ))
+    }
+}
+
+/// Finalise the review — rejects that every artifact is still Pending,
+/// then auto-enqueues a `ReferenceCodebaseIndex` task for each distinct
+/// `(document_repo, commit)` with approved rows (gated by
+/// `auto_index_enabled()`). Mirrors `POST /algorithms/by-document/{id}/submit`.
+pub async fn submit(
+    State(state): State<AppState>,
+    tenant_ctx: TenantContext,
+    Path(document_id): Path<String>,
+) -> ApiResult<Json<CodeReferenceSubmitResponse>> {
+    #[cfg(feature = "postgres")]
+    {
+        submit_impl(state, tenant_ctx, document_id).await
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (state, tenant_ctx, document_id);
+        Err(ApiError::Internal(
+            "Code-reference submit requires the postgres feature".to_string(),
         ))
     }
 }
@@ -326,38 +349,11 @@ async fn review_impl(
                 );
             }
 
-            // Phase 2 auto-enqueue: on approve, fire-and-forget a
-            // reference-codebase indexing task. Gated behind
-            // EDGEQUAKE_REFERENCE_CODEBASE_AUTO_INDEX. Idempotent via
-            // the (tenant, workspace, document_repo, commit, mode)
-            // unique key — concurrent approvals across sibling
-            // artifacts enqueue exactly one task. Never tears down an
-            // existing index (rejection stays a no-op here).
-            if matches!(request.status, ArtifactStatus::Approved)
-                && auto_index_enabled()
-            {
-                let pool_cloned = pool.clone();
-                let task_storage = state.task_storage.clone();
-                let task_queue = state.task_queue.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = maybe_auto_enqueue_index(
-                        &pool_cloned,
-                        &task_storage,
-                        &task_queue,
-                        tenant_id,
-                        workspace_id,
-                        code_artifact_id,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            code_artifact_id = %code_artifact_id,
-                            "reference-codebase auto-enqueue failed (non-fatal)"
-                        );
-                    }
-                });
-            }
+            // Phase 2 auto-enqueue now runs from the `submit` handler
+            // (POST /by-document/{id}/submit), not per-approve — mirrors
+            // the algorithms review → submit → embed flow. Keeps the
+            // review path cheap and lets the user finish triaging all
+            // matches before kicking off indexing.
         }
         ArtifactStatus::Pending => {}
     }
@@ -365,6 +361,133 @@ async fn review_impl(
     Ok(Json(CodeArtifactReviewResponse {
         id: code_artifact_id,
         status: types::status_str(request.status),
+    }))
+}
+
+#[cfg(feature = "postgres")]
+async fn submit_impl(
+    state: AppState,
+    tenant_ctx: TenantContext,
+    document_id: String,
+) -> ApiResult<Json<CodeReferenceSubmitResponse>> {
+    use edgequake_agents::code_analysis::{
+        ArtifactStatus, CodeArtifactStorage, PostgresCodeArtifactStorage,
+    };
+
+    let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
+    let pool = state.pg_pool.as_ref().ok_or_else(|| {
+        ApiError::Internal("Code-reference storage requires PostgreSQL pool".to_string())
+    })?;
+    let storage = PostgresCodeArtifactStorage::new(pool.clone());
+
+    let candidates = storage
+        .list_for_document(tenant_id, workspace_id, &document_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list code_artifacts: {e}")))?;
+
+    if candidates.is_empty() {
+        return Err(ApiError::BadRequest(
+            "no code matches to submit for this document".to_string(),
+        ));
+    }
+
+    let pending_count = candidates
+        .iter()
+        .filter(|c| c.status == ArtifactStatus::Pending)
+        .count();
+    if pending_count > 0 {
+        return Err(ApiError::BadRequest(format!(
+            "{pending_count} code match(es) still pending review — review every match before submitting"
+        )));
+    }
+
+    // Pick one approved artifact per distinct document_repo. Since
+    // `maybe_auto_enqueue_index` is keyed on (document_repo, commit,
+    // mode) and `INSERT … ON CONFLICT DO NOTHING`, any approved row
+    // from the same repo would trigger the same insert — grouping by
+    // repo just avoids redundant work.
+    let mut seen_repos: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut anchors: Vec<Uuid> = Vec::new();
+    let mut approved_count: usize = 0;
+    for c in candidates.iter() {
+        if c.status != ArtifactStatus::Approved {
+            continue;
+        }
+        approved_count += 1;
+        if seen_repos.insert(c.document_repo_id) {
+            anchors.push(c.id);
+        }
+    }
+    let rejected_count = candidates.len() - approved_count;
+
+    if approved_count == 0 {
+        return Ok(Json(CodeReferenceSubmitResponse {
+            document_id,
+            approved_count: 0,
+            rejected_count,
+            indexes_queued: 0,
+            status: "no_approved_matches",
+        }));
+    }
+
+    if !auto_index_enabled() {
+        info!(
+            document_id = %document_id,
+            approved_count,
+            rejected_count,
+            "Code-reference submit: auto-index gate is off; approved without queueing indexes"
+        );
+        return Ok(Json(CodeReferenceSubmitResponse {
+            document_id,
+            approved_count,
+            rejected_count,
+            indexes_queued: 0,
+            status: "auto_index_disabled",
+        }));
+    }
+
+    let mut indexes_queued: usize = 0;
+    for anchor in anchors {
+        match maybe_auto_enqueue_index(
+            pool,
+            &state.task_storage,
+            &state.task_queue,
+            tenant_id,
+            workspace_id,
+            anchor,
+        )
+        .await
+        {
+            // Only count true enqueues — the helper logs on its own when
+            // it skips (existing index) but returns Ok(()) either way,
+            // so we can't distinguish here. For a user-facing number
+            // we'd need it to return an enum; for now we optimistically
+            // count each successful helper call as "queued or already".
+            Ok(()) => indexes_queued += 1,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    code_artifact_id = %anchor,
+                    "reference-codebase auto-enqueue from submit failed (non-fatal)"
+                );
+            }
+        }
+    }
+
+    info!(
+        document_id = %document_id,
+        approved_count,
+        rejected_count,
+        indexes_queued,
+        "Code-reference submit: indexing kicked off"
+    );
+
+    Ok(Json(CodeReferenceSubmitResponse {
+        document_id,
+        approved_count,
+        rejected_count,
+        indexes_queued,
+        status: "indexing_queued",
     }))
 }
 

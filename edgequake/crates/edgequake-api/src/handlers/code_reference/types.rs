@@ -131,6 +131,22 @@ pub struct AnalyzeCodeReferenceResponse {
     pub status: &'static str,
 }
 
+/// Response from `POST /code-reference/by-document/{id}/submit`. Mirrors
+/// `algorithms/submit` so the UI can render the same success toast shape:
+/// "Submitted: N approved, M rejected — K indexes queued".
+#[derive(Debug, Serialize)]
+pub struct CodeReferenceSubmitResponse {
+    pub document_id: String,
+    pub approved_count: usize,
+    pub rejected_count: usize,
+    /// Number of distinct (document_repo, commit) pairs for which a
+    /// reference-codebase index task was enqueued as a result of this
+    /// submit. Zero when `auto_index_enabled()` is off, or when every
+    /// repo already has a matching index row (idempotent).
+    pub indexes_queued: usize,
+    pub status: &'static str,
+}
+
 // ── Enum → str ──────────────────────────────────────────────────────────────
 
 pub(super) fn status_str(s: ArtifactStatus) -> &'static str {

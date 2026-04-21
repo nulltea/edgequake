@@ -243,8 +243,20 @@ export function DocumentReposTabContent({
         </Button>
       </form>
 
-      {/* Empty state */}
-      {empty && (
+      {/* Loading state — detection is running or the user just queued one */}
+      {empty && (run?.status === 'running' || detectMutation.isPending) && (
+        <div className="flex flex-col items-center justify-center py-12 px-4 rounded-lg border border-dashed">
+          <Loader2 className="h-8 w-8 animate-spin text-primary mb-3" />
+          <p className="text-sm font-medium">Detecting reference repositories</p>
+          <p className="text-xs text-muted-foreground text-center max-w-sm mt-1">
+            Scanning PDF links and searching the web — this usually takes
+            under a minute.
+          </p>
+        </div>
+      )}
+
+      {/* Empty state — no run in flight */}
+      {empty && run?.status !== 'running' && !detectMutation.isPending && (
         <div className="flex flex-col items-center justify-center py-12 px-4 rounded-lg border border-dashed">
           <div className="rounded-full bg-muted p-3 mb-3">
             <GitBranch className="h-6 w-6 text-muted-foreground" />

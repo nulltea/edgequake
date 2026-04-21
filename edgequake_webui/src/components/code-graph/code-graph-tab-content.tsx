@@ -30,6 +30,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, FileCode2, GitBranch, Loader2, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { InlineMath } from "@/components/algorithms/inline-math";
 import { CodeGraphRenderer } from "./code-graph-renderer";
 
 interface CodeGraphTabContentProps {
@@ -253,9 +254,15 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
             }`}
           >
             <div className="font-medium truncate">
-              {a.algorithm_id
-                ? (algorithmNameById.get(a.algorithm_id) ?? "Unknown algorithm")
-                : "Orphan match"}
+              {a.algorithm_id ? (
+                <InlineMath
+                  text={
+                    algorithmNameById.get(a.algorithm_id) ?? "Unknown algorithm"
+                  }
+                />
+              ) : (
+                "Orphan match"
+              )}
             </div>
             <div className="text-muted-foreground mt-1 truncate">
               <FileCode2 className="inline h-3 w-3 mr-1" />
@@ -300,57 +307,54 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
                 : ""}
             </span>
           </div>
-          {selectedIndex && (
+          {selectedArtifact && (
             <div className="ml-auto flex items-center gap-2 text-muted-foreground">
-              <span>
-                Index: <span className="font-mono">{selectedIndex.id.slice(0, 8)}</span>{" "}
-                · {selectedIndex.status}
-                {selectedIndex.symbol_count > 0 && (
-                  <>
-                    {" · "}
-                    {selectedIndex.symbol_count} symbols · {selectedIndex.edge_count}{" "}
-                    edges
-                  </>
-                )}
-              </span>
-              {selectedArtifact && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    reindexMutation.mutate(selectedArtifact.document_repo_id)
-                  }
-                  disabled={reindexMutation.isPending}
-                  title="Re-run indexing with force_reindex=true"
-                >
-                  {reindexMutation.isPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
+              {selectedIndex ? (
+                <span>
+                  Index: <span className="font-mono">{selectedIndex.id.slice(0, 8)}</span>{" "}
+                  · {selectedIndex.status}
+                  {selectedIndex.symbol_count > 0 && (
+                    <>
+                      {" · "}
+                      {selectedIndex.symbol_count} symbols ·{" "}
+                      {selectedIndex.edge_count} edges
+                    </>
                   )}
-                  Re-index
-                </Button>
+                </span>
+              ) : (
+                <span>No index yet for this repo</span>
               )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  reindexMutation.mutate(selectedArtifact.document_repo_id)
+                }
+                disabled={reindexMutation.isPending}
+                title={
+                  selectedIndex
+                    ? "Re-run indexing with force_reindex=true"
+                    : "Build the reference-codebase index for this repo"
+                }
+              >
+                {reindexMutation.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {selectedIndex ? "Re-index" : "Index"}
+              </Button>
             </div>
           )}
         </div>
 
-        {inFlight && (
-          <InlineBanner
-            tone="info"
-            text={`Index ${selectedIndex!.status} — graph will render once it completes.`}
-          />
-        )}
+        {/* Index-in-flight banner is replaced by the in-graph loading card
+            below (see Building code graph block) — that one is more visible
+            while the index runs and keeps the control bar uncluttered. */}
         {selectedIndex?.status === "failed" && (
           <InlineBanner
             tone="error"
             text={`Indexing failed: ${selectedIndex.error_message ?? "unknown error"}`}
-          />
-        )}
-        {!selectedIndex && selectedArtifact && (
-          <InlineBanner
-            tone="info"
-            text="No reference-codebase index for this repo yet. Approving the code match with auto-index enabled kicks one off; otherwise POST /api/v1/reference-codebase/indexes to build one."
           />
         )}
         {graph?.truncated && (
@@ -367,7 +371,16 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
             index response DTO is the only missing piece. */}
 
         <div className="flex-1 overflow-hidden p-3">
-          {loadingGraph ? (
+          {inFlight ? (
+            <div className="h-full flex flex-col items-center justify-center rounded-lg border border-dashed">
+              <Loader2 className="h-8 w-8 animate-spin text-primary mb-3" />
+              <p className="text-sm font-medium">Building code graph</p>
+              <p className="text-xs text-muted-foreground text-center max-w-sm mt-1">
+                Status: {selectedIndex!.status} — the graph will render as
+                soon as indexing completes.
+              </p>
+            </div>
+          ) : loadingGraph ? (
             <Skeleton className="h-full w-full" />
           ) : graphError ? (
             <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
@@ -382,6 +395,17 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
               edges={graph.edges}
               onNodeClick={setSelectedNode}
             />
+          ) : !selectedIndex && selectedArtifact ? (
+            <div className="h-full flex flex-col items-center justify-center rounded-lg border border-dashed text-center px-6">
+              <FileCode2 className="h-8 w-8 text-muted-foreground mb-3" />
+              <p className="text-sm font-medium">No code graph yet</p>
+              <p className="text-xs text-muted-foreground max-w-sm mt-1">
+                Click <span className="font-medium">Index</span> above to build
+                the reference-codebase index for this repo. This clones the
+                repo, parses the code, and embeds chunks — usually a few
+                minutes for a typical repository.
+              </p>
+            </div>
           ) : (
             <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
               {whole

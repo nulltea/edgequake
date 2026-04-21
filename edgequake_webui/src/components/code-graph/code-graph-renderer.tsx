@@ -14,6 +14,7 @@
  */
 "use client";
 
+import { drawNodeHoverReadable } from "@/lib/graph/hover-renderer";
 import type {
   ReferenceCodebaseGraphEdge,
   ReferenceCodebaseGraphNode,
@@ -132,6 +133,10 @@ export function CodeGraphRenderer({
       },
       renderLabels: true,
       defaultEdgeType: "arrow",
+      // Sigma's default hover box is white + uses labelColor for the
+      // text — invisible in dark mode. Swap in a drawer that forces a
+      // dark text color so the label stays readable.
+      defaultDrawNodeHover: drawNodeHoverReadable,
     });
     sigmaRef.current = sigma;
 
