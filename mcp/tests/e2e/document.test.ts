@@ -117,6 +117,13 @@ describe("document tools (e2e)", () => {
     expect(doc.id).toBe(docId);
     expect(doc.title).toBe("MCP E2E Test Document");
 
+    // Get raw markdown/content by ID
+    const markdown = await rawCallTool("document_get_md", {
+      document_id: docId,
+    });
+    expect(markdown.isError, `Get markdown failed: ${markdown.raw}`).toBeFalsy();
+    expect(markdown.raw).toContain("Model Context Protocol");
+
     // Wait for the document to leave 'pending' status before deleting
     await waitForProcessing(docId);
 

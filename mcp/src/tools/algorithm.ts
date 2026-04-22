@@ -7,40 +7,6 @@ import { getClient } from "../client.js";
 import { formatError } from "../errors.js";
 
 export function registerAlgorithmTools(server: McpServer): void {
-  // algorithm_extract
-  server.tool(
-    "algorithm_extract",
-    "Extract algorithms from a document. Triggers the algorithm extraction pipeline and returns extraction status.",
-    {
-      document_id: z.string().describe("Document UUID to extract algorithms from"),
-    },
-    async (params) => {
-      try {
-        const client = await getClient();
-        const result = await client.algorithms.extract(params.document_id);
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  document_id: result.document_id,
-                  status: result.status,
-                  message: result.message,
-                },
-                null,
-                2,
-              ),
-            },
-          ],
-        };
-      } catch (error) {
-        return formatError(error);
-      }
-    },
-  );
-
   // algorithm_list
   server.tool(
     "algorithm_list",

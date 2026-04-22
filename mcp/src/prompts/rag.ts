@@ -62,7 +62,7 @@ export function registerPrompts(server: McpServer): void {
                 `Please summarize the document with ID: ${params.document_id}`,
                 ``,
                 `Steps:`,
-                `1. Use 'document_get' to retrieve the document content`,
+                `1. Use 'document_get_md' to retrieve the document markdown/content`,
                 `2. Use 'document_status' to check if processing is complete`,
                 `3. If completed, use 'query' to ask "What are the main topics and key findings in this document?"`,
                 `4. Use 'graph_search_entities' to find entities extracted from this document`,

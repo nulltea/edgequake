@@ -245,6 +245,14 @@ export function registerDocumentTools(server: McpServer): void {
           title: params.title,
           force_reindex: params.force_reindex,
         });
+        const resultExtras = result as typeof result & {
+          task_id?: string;
+          metadata?: {
+            filename?: string;
+            page_count?: number;
+            file_size_bytes?: number;
+          };
+        };
         return {
           content: [
             {
@@ -254,11 +262,11 @@ export function registerDocumentTools(server: McpServer): void {
                   pdf_id: result.pdf_id,
                   document_id: result.document_id,
                   status: result.status,
-                  task_id: result.task_id,
+                  task_id: resultExtras.task_id,
                   track_id: result.track_id,
-                  filename: result.metadata?.filename,
-                  page_count: result.metadata?.page_count,
-                  file_size_bytes: result.metadata?.file_size_bytes,
+                  filename: resultExtras.metadata?.filename,
+                  page_count: resultExtras.metadata?.page_count,
+                  file_size_bytes: resultExtras.metadata?.file_size_bytes,
                   message: result.message,
                 },
                 null,
@@ -368,6 +376,62 @@ export function registerDocumentTools(server: McpServer): void {
               ),
             },
           ],
+        };
+      } catch (error) {
+        return formatError(error);
+      }
+    },
+  );
+
+  // document_get_md
+  server.tool(
+    "document_get_md",
+    "Return the document markdown/content as plain markdown text. For PDFs, uses the extracted PDF markdown when available.",
+    {
+      document_id: z.string().describe("Document UUID"),
+    },
+    async (params) => {
+      try {
+        const client = await getClient();
+        const doc = await client.documents.get(params.document_id);
+        const metadata = (doc as { metadata?: Record<string, unknown> }).metadata;
+        const pdfId =
+          doc.pdf_id ||
+          (typeof metadata?.pdf_id === "string" ? metadata.pdf_id : undefined);
+
+        if (pdfId) {
+          const pdfContent = await client.documents.pdf.getContent(pdfId);
+          if (pdfContent.markdown.trim().length > 0) {
+            return {
+              content: [{ type: "text" as const, text: pdfContent.markdown }],
+            };
+          }
+        }
+
+        if (doc.content && doc.content.trim().length > 0) {
+          return {
+            content: [{ type: "text" as const, text: doc.content }],
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  error: "Document markdown not available",
+                  document_id: params.document_id,
+                  status: doc.status,
+                  current_stage: doc.current_stage,
+                  stage_progress: doc.stage_progress,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+          isError: true,
         };
       } catch (error) {
         return formatError(error);

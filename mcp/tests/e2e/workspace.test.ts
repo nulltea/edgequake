@@ -31,28 +31,26 @@ describe("workspace tools (e2e)", () => {
     expect(Array.isArray(result)).toBe(true);
   });
 
-  it("should create, get, stats, and delete a workspace", async () => {
+  it("should get details and stats for an existing workspace", async () => {
     if (!serverUp) {
       console.log("SKIP: EdgeQuake server not running");
       return;
     }
 
-    // Create
-    const created = (await callTool(client, "workspace_create", {
-      name: "mcp-e2e-test",
-      description: "E2E test workspace",
-    })) as { id: string; name: string; slug: string };
-    expect(created).toHaveProperty("id");
-    expect(created.name).toBe("mcp-e2e-test");
-
-    const workspaceId = created.id;
+    const workspaces = (await callTool(client, "workspace_list")) as Array<{
+      id: string;
+    }>;
+    if (workspaces.length === 0) {
+      console.log("SKIP: no workspaces available");
+      return;
+    }
+    const workspaceId = workspaces[0].id;
 
     // Get
     const detail = (await callTool(client, "workspace_get", {
       workspace_id: workspaceId,
     })) as Record<string, unknown>;
     expect(detail.id).toBe(workspaceId);
-    expect(detail.name).toBe("mcp-e2e-test");
 
     // Stats
     const stats = (await callTool(client, "workspace_stats", {
@@ -60,11 +58,5 @@ describe("workspace tools (e2e)", () => {
     })) as Record<string, unknown>;
     expect(stats).toHaveProperty("document_count");
     expect(stats).toHaveProperty("entity_count");
-
-    // Delete
-    const deleted = (await callTool(client, "workspace_delete", {
-      workspace_id: workspaceId,
-    })) as { success: boolean };
-    expect(deleted.success).toBe(true);
   });
 });

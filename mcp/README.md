@@ -37,12 +37,11 @@ The [Model Context Protocol](https://modelcontextprotocol.io) is an open standar
 - **document_upload_file**: Upload files (.txt, .md, .pdf) from file paths
 - **document_list**: List documents with pagination and filtering
 - **document_get**: Get document details
+- **document_get_md**: Return document markdown/content as plain text
 - **document_delete**: Delete documents
 - **document_status**: Check processing status
-- **workspace_create**: Create new workspaces
 - **workspace_list**: List all workspaces
 - **workspace_get**: Get workspace details
-- **workspace_delete**: Delete workspaces
 - **workspace_stats**: Get workspace statistics
 - **graph_entity_neighborhood**: Explore entity relationships
 - **graph_search_entities**: Search for entities
@@ -393,47 +392,12 @@ EdgeQuake uses **workspaces** to isolate knowledge graphs:
 
 ### When to Create a New Workspace
 
-Create a new workspace when:
-
-- ✅ Starting a new project with unrelated documents
-- ✅ Needing different LLM providers per project (e.g., Ollama for dev, OpenAI for prod)
-- ✅ Isolating sensitive data from general knowledge
-- ✅ Testing different extraction strategies without affecting production data
-
-Use the same workspace when:
+Use a workspace when:
 
 - ✅ Documents are related and should reference each other
 - ✅ Entities should be deduplicated across documents
 - ✅ Queries should span multiple document sources
 - ✅ Building a unified knowledge base
-
-### Example: Creating a Project Workspace
-
-**Using the MCP Tool:**
-
-```json
-{
-  "tool": "workspace_create",
-  "arguments": {
-    "name": "ML Research Project",
-    "description": "Papers and notes on graph neural networks",
-    "llm_provider": "ollama",
-    "llm_model": "gemma3:12b",
-    "embedding_provider": "ollama",
-    "embedding_model": "nomic-embed-text"
-  }
-}
-```
-
-**Response:**
-
-```json
-{
-  "id": "workspace-uuid-xyz789",
-  "name": "ML Research Project",
-  "slug": "ml-research-project"
-}
-```
 
 ### Supported LLM Providers
 
@@ -472,22 +436,6 @@ Use the same workspace when:
 }
 ```
 
-**Delete a workspace** when no longer needed:
-
-```json
-{
-  "tool": "workspace_delete",
-  "arguments": {
-    "workspace_id": "workspace-uuid-xyz789"
-  }
-}
-```
-
-⚠️ **WARNING:** Deleting a workspace:
-
-- Removes ALL documents, entities, relationships
-- Cannot be undone
-- Revokes workspace-scoped API keys
 
 ### Workspace Best Practices
 
@@ -674,6 +622,16 @@ Get document details including full content and metadata.
 | ------------- | ------ | -------- | ------------ |
 | `document_id` | string | yes      | Document UUID |
 
+#### `document_get_md`
+
+Return the document markdown/content as plain text. For PDFs, this uses extracted PDF markdown when available.
+
+**Parameters:**
+
+| Name          | Type   | Required | Description  |
+| ------------- | ------ | -------- | ------------ |
+| `document_id` | string | yes      | Document UUID |
+
 #### `document_delete`
 
 Delete a document and its extracted knowledge.
@@ -696,21 +654,6 @@ Check the processing status of a document.
 
 ### Workspace Tools
 
-#### `workspace_create`
-
-Create a new workspace for document ingestion and knowledge graph.
-
-**Parameters:**
-
-| Name                  | Type   | Required | Description                                      |
-| --------------------- | ------ | -------- | ------------------------------------------------ |
-| `name`                | string | yes      | Workspace name                                   |
-| `description`         | string | no       | Workspace description                            |
-| `llm_model`           | string | no       | LLM model (e.g., `gemma3:12b`)                   |
-| `llm_provider`        | string | no       | LLM provider: `ollama`, `openai`, `lmstudio`     |
-| `embedding_model`     | string | no       | Embedding model name                             |
-| `embedding_provider`  | string | no       | Embedding provider: `ollama`, `openai`           |
-
 #### `workspace_list`
 
 List all workspaces in the current tenant.
@@ -718,16 +661,6 @@ List all workspaces in the current tenant.
 #### `workspace_get`
 
 Get workspace details including document and entity counts.
-
-**Parameters:**
-
-| Name           | Type   | Required | Description   |
-| -------------- | ------ | -------- | ------------- |
-| `workspace_id` | string | yes      | Workspace UUID |
-
-#### `workspace_delete`
-
-Delete a workspace and all its data.
 
 **Parameters:**
 

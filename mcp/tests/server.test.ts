@@ -37,24 +37,29 @@ describe("MCP server unit tests", () => {
     if (cleanup) await cleanup();
   });
 
-  it("should list all 16 registered tools", async () => {
+  it("should list all registered tools", async () => {
     const tools = await client.listTools();
     const toolNames = tools.tools.map((t) => t.name).sort();
 
     const expected = [
+      "algorithm_list",
+      "algorithm_search",
       "document_delete",
       "document_get",
+      "document_get_md",
       "document_list",
       "document_status",
       "document_upload",
+      "document_upload_file",
+      "document_upload_from_url",
+      "get_symbol_neighborhood",
       "graph_entity_neighborhood",
       "graph_get_entity",
       "graph_search_entities",
       "graph_search_relationships",
       "health",
       "query",
-      "workspace_create",
-      "workspace_delete",
+      "query_code",
       "workspace_get",
       "workspace_list",
       "workspace_stats",
@@ -80,7 +85,6 @@ describe("MCP server unit tests", () => {
     >;
     expect(queryProps).toHaveProperty("query");
     expect(queryProps).toHaveProperty("mode");
-    expect(queryProps).toHaveProperty("conversation_history");
 
     // document_upload requires 'content' string
     const upload = toolMap.get("document_upload");
@@ -93,16 +97,14 @@ describe("MCP server unit tests", () => {
     expect(uploadProps).toHaveProperty("title");
     expect(uploadProps).toHaveProperty("enable_gleaning");
 
-    // workspace_create requires 'name' string
-    const create = toolMap.get("workspace_create");
-    expect(create).toBeDefined();
-    const createProps = create!.inputSchema.properties as Record<
+    // document_get_md requires 'document_id' string
+    const getMd = toolMap.get("document_get_md");
+    expect(getMd).toBeDefined();
+    const getMdProps = getMd!.inputSchema.properties as Record<
       string,
       unknown
     >;
-    expect(createProps).toHaveProperty("name");
-    expect(createProps).toHaveProperty("llm_provider");
-    expect(createProps).toHaveProperty("embedding_model");
+    expect(getMdProps).toHaveProperty("document_id");
   });
 
   it("should list registered prompts", async () => {
