@@ -297,6 +297,11 @@ export interface UpdateWorkspaceRequest {
    * detection pipeline drops non-official candidates before persistence.
    */
   accept_unofficial_implementations?: boolean;
+  /**
+   * Workspace-scoped entity types used by the extraction pipeline.
+   * Empty or omitted values allow the server to use its defaults.
+   */
+  entity_types?: string[];
 }
 
 /**

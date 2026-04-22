@@ -139,6 +139,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid_with_vector_storage(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -149,6 +150,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix_with_vector_storage(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -389,6 +391,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid_with_vector_storage(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -399,6 +402,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix_with_vector_storage(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),

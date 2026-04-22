@@ -29,6 +29,7 @@ import {
   PdfParserBackendField,
   type PdfParserBackendChoice,
 } from '@/components/settings/pdf-parser-backend-field';
+import { EntityTypeSelector } from '@/components/shared/entity-type-selector';
 import { EmbeddingModelSelector, type EmbeddingSelection } from '@/components/workspace/embedding-model-selector';
 import { LLMModelSelector, type LLMSelection } from '@/components/workspace/llm-model-selector';
 import { RebuildEmbeddingsButton } from '@/components/workspace/rebuild-embeddings-button';
@@ -116,6 +117,7 @@ export default function WorkspacePage() {
   // Reference-repo detection setting: when off (default), non-official
   // candidates are dropped before they reach the review queue.
   const [selectedAcceptUnofficial, setSelectedAcceptUnofficial] = useState<boolean>(false);
+  const [selectedEntityTypes, setSelectedEntityTypes] = useState<string[]>([]);
 
   // Fetch workspace data
   const {
@@ -177,6 +179,7 @@ export default function WorkspacePage() {
       algorithm_extraction_llm_model?: string;
       algorithm_review_mode?: string;
       accept_unofficial_implementations?: boolean;
+      entity_types?: string[];
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
       _visionChanged?: boolean;
@@ -196,6 +199,7 @@ export default function WorkspacePage() {
         algorithm_extraction_llm_model: data.algorithm_extraction_llm_model,
         algorithm_review_mode: data.algorithm_review_mode,
         accept_unofficial_implementations: data.accept_unofficial_implementations,
+        entity_types: data.entity_types,
       }),
     onSuccess: (_result, variables) => {
       toast.success(t('workspace.updateSuccess', 'Workspace updated successfully'));
@@ -269,7 +273,7 @@ export default function WorkspacePage() {
   });
 
   const handleSave = () => {
-    const data: Record<string, string | number | boolean | undefined> = {};
+    const data: Record<string, string | number | boolean | string[] | undefined> = {};
 
     if (selectedLLM) {
       data.llm_model = selectedLLM.model;
@@ -294,6 +298,7 @@ export default function WorkspacePage() {
     data.algorithm_extraction_llm_model = selectedAlgoExtractionLLM?.model ?? '';
     data.algorithm_review_mode = selectedAlgoReviewMode;
     data.accept_unofficial_implementations = selectedAcceptUnofficial;
+    data.entity_types = selectedEntityTypes;
 
     // Track which models changed for post-save rebuild notification
     data._embeddingChanged = embeddingModelChanged ?? false;
@@ -313,6 +318,7 @@ export default function WorkspacePage() {
     setSelectedAlgoExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
     setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
     setSelectedAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
+    setSelectedEntityTypes([...(workspace?.entity_types ?? [])]);
   };
 
   const handleEditStart = () => {
@@ -324,6 +330,7 @@ export default function WorkspacePage() {
     setSelectedAlgoExtractionLLM(getWorkspaceAlgorithmExtractionSelection(workspace));
     setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
     setSelectedAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
+    setSelectedEntityTypes([...(workspace?.entity_types ?? [])]);
     setIsEditing(true);
   };
 
@@ -879,7 +886,7 @@ export default function WorkspacePage() {
         </Card>
       </div>
 
-      {/* Entity Types - SPEC-085: Read-only display of configured entity types */}
+      {/* Entity Types - SPEC-085: Preset/custom entity configuration */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -891,24 +898,33 @@ export default function WorkspacePage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {workspace.entity_types && workspace.entity_types.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {workspace.entity_types.map((type) => (
-                <Badge
-                  key={type}
-                  variant="secondary"
-                  className="text-xs font-mono"
-                  data-testid={`ws-entity-type-${type}`}
-                >
-                  {type}
-                </Badge>
-              ))}
-            </div>
+          {isEditing ? (
+            <EntityTypeSelector
+              value={selectedEntityTypes}
+              onChange={setSelectedEntityTypes}
+            />
           ) : (
-            <div className="text-sm text-muted-foreground">
-              <span className="font-medium">{t('entityTypes.defaults', 'Using server defaults:')}</span>{' '}
-              <span className="font-mono text-xs">{t('entityTypes.defaultsHint', 'ORGANIZATION, CONCEPT, TECHNOLOGY, PRODUCT, Other')}</span>
-            </div>
+            <>
+              {workspace.entity_types && workspace.entity_types.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {workspace.entity_types.map((type) => (
+                    <Badge
+                      key={type}
+                      variant="secondary"
+                      className="text-xs font-mono"
+                      data-testid={`ws-entity-type-${type}`}
+                    >
+                      {type}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  <span className="font-medium">{t('entityTypes.defaults', 'Using server defaults:')}</span>{' '}
+                  <span className="font-mono text-xs">{t('entityTypes.defaultsHint', 'ORGANIZATION, CONCEPT, TECHNOLOGY, PRODUCT, Other')}</span>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>

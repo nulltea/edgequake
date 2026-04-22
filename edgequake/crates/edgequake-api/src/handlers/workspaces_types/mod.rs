@@ -110,6 +110,7 @@ mod tests {
             algorithm_extraction_llm_model: None,
             algorithm_review_mode: None,
             accept_unofficial_implementations: None,
+            entity_types: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();

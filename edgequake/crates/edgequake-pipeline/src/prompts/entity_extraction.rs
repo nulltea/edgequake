@@ -52,7 +52,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
     *   **Identification:** Identify clearly defined and meaningful entities in the input text.
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
-        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, classify it as `Other`.
+        *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, **omit the entity entirely** — do not invent a new type and do not fall back to a generic bucket. Prefer missing an entity over mis-typing one.
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
     *   **Output Format - Entities:** Output a total of 4 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description`
@@ -94,15 +94,7 @@ You are a Knowledge Graph Specialist responsible for extracting entities and rel
 ---Exclusions---
 Do NOT extract the following, even when they appear named in the text:
 
-*   **Document structure references:** `Table 1`, `Figure 3`, `Section 4`, `Appendix A`, `Equation (2)`, `Chapter 5`, `§3`, page numbers.
-*   **Formal objects and their numbered labels:** `Theorem 2.1`, `Lemma 4.3`, `Protocol 4`, `Algorithm 5`, `Corollary 1`, `Proposition 3`, `Definition 2`, `Claim A.1`, `Remark 5`, `Case 3`. These are proof-structure artifacts, not entities.
 *   **Single-letter variable names or symbols:** `S`, `Q`, `P`, `A`, `x`, `π`. These are mathematical notation, not entities.
-*   **Generic protocol-role names used alone:** `Adversary`, `Challenger`, `Verifier`, `Prover`, `Simulator`, `Client`, `Server` — including variants with a parenthesised one-letter suffix like `Adversary (A)`. They describe a role, not a thing. Extract them only when they appear with a proper name attached (e.g. `Adversary Eve`, `Server Alice`).
-*   **Authors, reviewers, or any person mentioned in the text.** Person-level granularity is captured at the document level; do not emit PERSON entities. This is why `PERSON` is absent from the allowed `entity_types` list.
-*   **Real-world locations and dated events** unless they are the explicit subject of the paper (rare for technical / research material). This is why `LOCATION` and `EVENT` are absent from the allowed list.
-*   **Bare dates, years, months, or publication timestamps** (`2024`, `2026-03-14`, `Q3 2025`, `last year`). Document-level dates are stored in metadata; per-mention dates rarely stand as useful entities. This is why `DATE` is absent from the allowed list.
-
-Extract ONLY: named organisations, named systems / products / protocols / datasets / libraries / algorithms, and well-defined concepts with descriptive names. If an item is borderline, prefer omission over including it.
 
 ---Examples---
 {examples}"#,

@@ -295,6 +295,9 @@ pub struct UpdateWorkspaceRequest {
     /// Accept third-party / unrelated reference-repo candidates for manual
     /// review. Defaults to `false`.
     pub accept_unofficial_implementations: Option<bool>,
+    /// Workspace-scoped entity types for extraction.
+    /// If None, keep the current workspace setting.
+    pub entity_types: Option<Vec<String>>,
 }
 
 /// Statistics for a workspace.

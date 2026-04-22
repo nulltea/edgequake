@@ -73,9 +73,12 @@ pub const SUPPORTED_LANGUAGES: &[&str] = &[
 ///   captured in document metadata (`processed_at`, front-matter year)
 ///   and are not useful as standalone graph entities.
 ///
-/// `Other` is retained as the borderline-fallback bucket so the LLM has
-/// somewhere to put items it can't confidently classify, without being
-/// forced to mis-type them as one of the kept categories.
+/// `Other` was previously retained as a borderline-fallback bucket but
+/// turned into a magnet for hallucinated descriptions — the LLM would
+/// invent a role for a name it couldn't otherwise classify (e.g. a
+/// protocol name described as "the individual who realizes…"). With
+/// `Other` gone the LLM is told to drop items it can't confidently
+/// place in one of the kept categories.
 ///
 /// The complementary shape-based filter in `parser::tuple_parser` catches
 /// residual noise the prompt doesn't prevent (single-letter names,
@@ -86,7 +89,6 @@ pub fn default_entity_types() -> Vec<String> {
         "CONCEPT".to_string(),
         "TECHNOLOGY".to_string(),
         "PRODUCT".to_string(),
-        "Other".to_string(),
     ]
 }
 
@@ -99,13 +101,13 @@ mod tests {
         let types = default_entity_types();
         assert!(types.contains(&"ORGANIZATION".to_string()));
         assert!(types.contains(&"CONCEPT".to_string()));
-        assert!(types.contains(&"Other".to_string()));
         // Intentionally absent after the noise-reduction pass:
         assert!(!types.contains(&"PERSON".to_string()));
         assert!(!types.contains(&"LOCATION".to_string()));
         assert!(!types.contains(&"EVENT".to_string()));
         assert!(!types.contains(&"DOCUMENT".to_string()));
         assert!(!types.contains(&"DATE".to_string()));
+        assert!(!types.contains(&"Other".to_string()));
     }
 
     #[test]

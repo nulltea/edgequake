@@ -112,6 +112,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -121,6 +122,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -311,6 +313,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -320,6 +323,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -499,6 +503,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -508,6 +513,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -665,6 +671,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -674,6 +681,7 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
+                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),

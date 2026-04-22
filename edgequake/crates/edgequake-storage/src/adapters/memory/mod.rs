@@ -25,10 +25,12 @@
 
 mod graph;
 mod kv;
+mod sparse;
 mod vector;
 mod workspace_vector;
 
 pub use graph::MemoryGraphStorage;
 pub use kv::MemoryKVStorage;
+pub use sparse::MemorySparseChunkStorage;
 pub use vector::MemoryVectorStorage;
 pub use workspace_vector::MemoryWorkspaceVectorRegistry;

@@ -73,6 +73,7 @@ services:
             # against one click burning the whole Jina quota on a 20k-file
             # repo. Explicit POST /indexes calls aren't capped by this.
             EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES: "${EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES:-5000}"
+            EDGEQUAKE_BM25_INDEX_DIR: "${EDGEQUAKE_BM25_INDEX_DIR:-/tmp/edgequake-bm25}"
         extra_hosts:
             - "host.docker.internal:host-gateway"
         depends_on:

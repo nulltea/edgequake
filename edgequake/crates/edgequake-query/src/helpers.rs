@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::context::{RetrievedChunk, RetrievedEntity, RetrievedRelationship};
-use edgequake_storage::traits::VectorSearchResult;
+use edgequake_storage::traits::{SparseChunkSearchResult, VectorSearchResult};
 
 /// Source tracking information extracted from entity nodes.
 ///
@@ -166,6 +166,46 @@ pub fn build_chunk_from_result(result: &VectorSearchResult) -> RetrievedChunk {
     }
 
     if let Some(idx) = result.metadata.get("chunk_index").and_then(|v| v.as_u64()) {
+        chunk = chunk.with_chunk_index(idx as usize);
+    }
+
+    chunk
+}
+
+/// Build a [`RetrievedChunk`] from a sparse BM25 result.
+pub fn build_chunk_from_sparse_result(result: &SparseChunkSearchResult) -> RetrievedChunk {
+    let content = result
+        .metadata
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut chunk = RetrievedChunk::new(&result.id, content, result.score);
+
+    if let Some(doc_id) = result
+        .metadata
+        .get("document_id")
+        .or_else(|| result.metadata.get("source_document_id"))
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+        .or_else(|| extract_document_id(&result.id))
+    {
+        chunk = chunk.with_document_id(doc_id);
+    }
+
+    if let Some(start) = result.metadata.get("start_line").and_then(|v| v.as_u64()) {
+        if let Some(end) = result.metadata.get("end_line").and_then(|v| v.as_u64()) {
+            chunk = chunk.with_lines(start as usize, end as usize);
+        }
+    }
+
+    if let Some(idx) = result
+        .metadata
+        .get("chunk_index")
+        .or_else(|| result.metadata.get("index"))
+        .and_then(|v| v.as_u64())
+    {
         chunk = chunk.with_chunk_index(idx as usize);
     }
 

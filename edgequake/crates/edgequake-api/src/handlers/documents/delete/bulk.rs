@@ -159,6 +159,13 @@ pub async fn delete_all_documents(
                     "Failed to delete chunk embeddings"
                 );
             }
+            if let Err(e) = state.sparse_chunk_storage.delete_chunks(&chunk_ids).await {
+                tracing::warn!(
+                    document_id = %document_id,
+                    error = %e,
+                    "Failed to delete sparse BM25 chunks"
+                );
+            }
         }
 
         total_chunks_deleted += chunk_ids.len();

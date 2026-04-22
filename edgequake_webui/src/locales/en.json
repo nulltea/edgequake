@@ -717,7 +717,7 @@
     "removeType": "Remove {{type}}",
     "maxReached": "Maximum of {{max}} entity types reached.",
     "defaults": "Using server defaults:",
-    "defaultsHint": "ORGANIZATION, CONCEPT, TECHNOLOGY, PRODUCT, Other",
+    "defaultsHint": "ORGANIZATION, CONCEPT, TECHNOLOGY, PRODUCT",
     "presets": {
       "general": "General",
       "manufacturing": "Manufacturing",

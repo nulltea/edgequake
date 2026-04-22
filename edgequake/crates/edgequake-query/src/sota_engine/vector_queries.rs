@@ -454,18 +454,19 @@ impl SOTAQueryEngine {
     /// Hybrid mode with workspace-specific vector storage.
     pub(super) async fn query_hybrid_with_vector_storage(
         &self,
+        query: &str,
         keywords: &ExtractedKeywords,
         embeddings: &QueryEmbeddings,
         tenant_id: Option<String>,
         workspace_id: Option<String>,
         vector_storage: &Arc<dyn VectorStorage>,
     ) -> Result<QueryContext> {
-        // WHY: Run entity-based (local+global) AND naive chunk retrieval in parallel.
+        // WHY: Run entity-based (local+global), dense chunk retrieval, and sparse BM25 in parallel.
         // Entity-based retrieval provides graph context (entities, relationships),
         // but ONLY finds chunks linked to matching entities.
         // Naive retrieval finds chunks by direct semantic similarity to the query,
         // ensuring high recall even when entity extraction doesn't match.
-        let (local_context, global_context, naive_context) = tokio::join!(
+        let (local_context, global_context, naive_context, sparse_context) = tokio::join!(
             self.query_local_with_vector_storage(
                 keywords,
                 embeddings,
@@ -486,50 +487,34 @@ impl SOTAQueryEngine {
                 workspace_id.clone(),
                 vector_storage,
             ),
+            self.query_sparse_chunks(query, tenant_id.clone(), workspace_id.clone(),),
         );
 
         let local_context = local_context?;
         let global_context = global_context?;
         let naive_context = naive_context?;
+        let sparse_context = sparse_context?;
 
         tracing::debug!(
             naive_chunks = naive_context.chunks.len(),
+            sparse_chunks = sparse_context.chunks.len(),
             local_chunks = local_context.chunks.len(),
             local_entities = local_context.entities.len(),
             global_chunks = global_context.chunks.len(),
             global_entities = global_context.entities.len(),
-            "Hybrid merge: round-robin (local, global, naive)"
+            "Hybrid merge: RRF chunks (local, global, naive, sparse)"
         );
 
-        // WHY: Round-robin interleave chunks from local, global, and naive sources.
-        // KG-derived chunks (local, global) go first at each position since they carry
-        // entity/relationship context. The old approach gave naive all slots first,
-        // which could starve KG-derived chunks even when they were more relevant.
         let mut merged = QueryContext::new();
-        let mut seen_chunks = std::collections::HashSet::new();
-        let max_chunk_len = local_context
-            .chunks
-            .len()
-            .max(global_context.chunks.len())
-            .max(naive_context.chunks.len());
 
-        for i in 0..max_chunk_len {
-            // KG-derived first (higher signal), then naive (broader recall)
-            if let Some(c) = local_context.chunks.get(i) {
-                if seen_chunks.insert(c.id.clone()) {
-                    merged.add_chunk(c.clone());
-                }
-            }
-            if let Some(c) = global_context.chunks.get(i) {
-                if seen_chunks.insert(c.id.clone()) {
-                    merged.add_chunk(c.clone());
-                }
-            }
-            if let Some(c) = naive_context.chunks.get(i) {
-                if seen_chunks.insert(c.id.clone()) {
-                    merged.add_chunk(c.clone());
-                }
-            }
+        let fused_chunks = self.rrf_fuse_chunks(vec![
+            &local_context.chunks,
+            &global_context.chunks,
+            &naive_context.chunks,
+            &sparse_context.chunks,
+        ]);
+        for chunk in fused_chunks {
+            merged.add_chunk(chunk);
         }
 
         // Round-robin entities from local+global
@@ -568,7 +553,7 @@ impl SOTAQueryEngine {
             merged_chunks = merged.chunks.len(),
             merged_entities = merged.entities.len(),
             merged_relationships = merged.relationships.len(),
-            "Hybrid merge complete (round-robin)"
+            "Hybrid merge complete (RRF)"
         );
 
         Ok(merged)
@@ -577,6 +562,7 @@ impl SOTAQueryEngine {
     /// Mix mode with workspace-specific vector storage.
     pub(super) async fn query_mix_with_vector_storage(
         &self,
+        query: &str,
         keywords: &ExtractedKeywords,
         embeddings: &QueryEmbeddings,
         tenant_id: Option<String>,
@@ -585,6 +571,7 @@ impl SOTAQueryEngine {
     ) -> Result<QueryContext> {
         // Adaptive blend - delegates to hybrid for now
         self.query_hybrid_with_vector_storage(
+            query,
             keywords,
             embeddings,
             tenant_id,

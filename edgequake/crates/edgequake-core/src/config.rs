@@ -116,14 +116,14 @@ impl Default for PipelineConfig {
             chunk_overlap: 100,
             // Must stay in lockstep with
             // edgequake_pipeline::prompts::default_entity_types().
-            // Narrowed to 5 types for research-paper RAG: PERSON,
-            // LOCATION, EVENT, DATE, DOCUMENT dropped as noise sources.
+            // Narrowed for research-paper RAG: PERSON, LOCATION, EVENT,
+            // DATE, DOCUMENT dropped as noise sources. `Other` also
+            // removed — it had become a hallucination magnet for the LLM.
             entity_types: vec![
                 "ORGANIZATION".to_string(),
                 "CONCEPT".to_string(),
                 "TECHNOLOGY".to_string(),
                 "PRODUCT".to_string(),
-                "Other".to_string(),
             ],
             max_entities_per_chunk: 20,
             max_relations_per_chunk: 20,

@@ -87,7 +87,7 @@ use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
 use edgequake_llm::Reranker;
 use edgequake_storage::traits::{
-    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, VectorStorage,
+    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, SparseChunkStorage, VectorStorage,
 };
 
 /// Configuration for the SOTA query engine.
@@ -134,6 +134,15 @@ pub struct SOTAQueryConfig {
 
     /// Top K results to keep after reranking.
     pub rerank_top_k: usize,
+
+    /// Enable sparse BM25 branch in Hybrid/Mix retrieval.
+    pub enable_sparse_hybrid: bool,
+
+    /// Number of sparse BM25 chunk candidates to retrieve before RRF fusion.
+    pub sparse_top_k: usize,
+
+    /// Reciprocal Rank Fusion rank constant.
+    pub rrf_k: f32,
 }
 
 impl Default for SOTAQueryConfig {
@@ -173,6 +182,9 @@ impl Default for SOTAQueryConfig {
             min_rerank_score: 0.1,
             // WHY 20: Match max_chunks to keep all chunk candidates after reranking.
             rerank_top_k: 20,
+            enable_sparse_hybrid: true,
+            sparse_top_k: 40,
+            rrf_k: 60.0,
         }
     }
 }
@@ -264,6 +276,8 @@ pub struct SOTAQueryEngine {
     /// Approved-algorithm vector store used by the sibling enrichment pass.
     /// `None` disables the post-retrieval algorithm-enrichment step.
     algorithm_vector_storage: Option<Arc<dyn AlgorithmVectorStorage>>,
+    /// Optional sparse BM25 chunk storage used by Hybrid/Mix retrieval.
+    sparse_chunk_storage: Option<Arc<dyn SparseChunkStorage>>,
 }
 
 impl SOTAQueryEngine {
@@ -299,6 +313,7 @@ impl SOTAQueryEngine {
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
+            sparse_chunk_storage: None,
         }
     }
 
@@ -333,6 +348,7 @@ impl SOTAQueryEngine {
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
+            sparse_chunk_storage: None,
         }
     }
 
@@ -373,17 +389,25 @@ impl SOTAQueryEngine {
     /// Wire in the approved-algorithm vector store used by the
     /// post-retrieval algorithm enrichment step (symmetric with
     /// [`Self::with_code_reference`]).
-    pub fn with_approved_algorithms(
-        mut self,
-        storage: Arc<dyn AlgorithmVectorStorage>,
-    ) -> Self {
+    pub fn with_approved_algorithms(mut self, storage: Arc<dyn AlgorithmVectorStorage>) -> Self {
         self.algorithm_vector_storage = Some(storage);
+        self
+    }
+
+    /// Wire in sparse BM25 chunk retrieval for Hybrid/Mix mode.
+    pub fn with_sparse_chunk_storage(mut self, storage: Arc<dyn SparseChunkStorage>) -> Self {
+        self.sparse_chunk_storage = Some(storage);
         self
     }
 
     /// Accessor for the algorithm vector store (None = feature off).
     pub fn algorithm_vector_storage(&self) -> Option<&Arc<dyn AlgorithmVectorStorage>> {
         self.algorithm_vector_storage.as_ref()
+    }
+
+    /// Accessor for sparse chunk storage (None = feature off).
+    pub fn sparse_chunk_storage(&self) -> Option<&Arc<dyn SparseChunkStorage>> {
+        self.sparse_chunk_storage.as_ref()
     }
 }
 
@@ -398,6 +422,7 @@ mod prompt;
 mod query_entry;
 mod query_modes;
 mod reranking;
+mod sparse_fusion;
 mod vector_queries;
 
 #[cfg(test)]

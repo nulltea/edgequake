@@ -122,6 +122,9 @@ pub struct AppState {
     /// Vector storage (default, for backward compatibility).
     pub vector_storage: Arc<dyn edgequake_storage::traits::VectorStorage>,
 
+    /// Sparse BM25 chunk storage for lexical retrieval.
+    pub sparse_chunk_storage: Arc<dyn edgequake_storage::traits::SparseChunkStorage>,
+
     /// Workspace vector registry for per-workspace vector storage.
     /// Each workspace can have its own dimension based on its embedding provider.
     pub vector_registry: Arc<dyn edgequake_storage::traits::WorkspaceVectorRegistry>,

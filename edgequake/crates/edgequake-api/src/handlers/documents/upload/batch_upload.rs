@@ -184,6 +184,31 @@ async fn process_single_file(
 
     state.kv_storage.upsert(&chunks).await?;
 
+    let sparse_chunks: Vec<_> = result
+        .chunks
+        .iter()
+        .map(|chunk| {
+            edgequake_storage::SparseChunkDocument::new(
+                chunk.id.clone(),
+                chunk.content.clone(),
+                serde_json::json!({
+                    "type": "chunk",
+                    "document_id": document_id,
+                    "index": chunk.index,
+                    "content": chunk.content,
+                    "source_file": filename,
+                }),
+            )
+        })
+        .collect();
+    if let Err(e) = state
+        .sparse_chunk_storage
+        .upsert_chunks(&sparse_chunks)
+        .await
+    {
+        tracing::warn!(document_id = %document_id, error = %e, "Failed to update sparse BM25 index");
+    }
+
     // Store chunk embeddings in vector storage for semantic search
     // Note: Batch upload uses default vector storage since there's no workspace context.
     // For workspace-specific storage, use the main upload_file endpoint with tenant context.

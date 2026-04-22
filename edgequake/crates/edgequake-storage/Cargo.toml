@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 sha2 = "0.10"
+tantivy = { workspace = true }
 
 # Optional PostgreSQL dependencies
 sqlx = { workspace = true, optional = true }
@@ -31,3 +32,4 @@ chrono = { workspace = true }
 [dev-dependencies]
 tokio-test = { workspace = true }
 uuid = { version = "1.19", features = ["v4"] }
+tempfile = "3"

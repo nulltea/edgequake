@@ -476,7 +476,9 @@ impl WorkspaceService for WorkspaceServiceImpl {
         // Normalize: uppercase, underscored, deduplicated, max 50 types
         if let Some(entity_types) = request.entity_types {
             let normalized = normalize_entity_types(&entity_types);
-            if !normalized.is_empty() {
+            if normalized.is_empty() {
+                workspace.metadata.remove("entity_types");
+            } else {
                 workspace
                     .metadata
                     .insert("entity_types".to_string(), serde_json::json!(normalized));
@@ -756,6 +758,21 @@ impl WorkspaceService for WorkspaceServiceImpl {
             "accept_unofficial_implementations",
             request.accept_unofficial_implementations,
         );
+
+        // SPEC-085: Apply entity type configuration from workspace updates.
+        // Empty normalized lists intentionally clear the override, restoring
+        // server defaults for subsequent ingestion.
+        if let Some(entity_types) = request.entity_types {
+            let normalized = normalize_entity_types(&entity_types);
+            if normalized.is_empty() {
+                workspace.metadata.remove("entity_types");
+            } else {
+                workspace
+                    .metadata
+                    .insert("entity_types".to_string(), serde_json::json!(normalized));
+            }
+        }
+
         workspace.updated_at = chrono::Utc::now();
 
         // Store all config in metadata JSONB column (database schema uses metadata, not separate columns)
@@ -1349,6 +1366,34 @@ fn normalize_entity_types(types: &[String]) -> Vec<String> {
         .filter(|t| seen.insert(t.clone()))
         .take(MAX_ENTITY_TYPES)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_entity_types;
+
+    #[test]
+    fn normalize_entity_types_cleans_deduplicates_and_skips_empty_values() {
+        let types = vec![
+            " machine ".to_string(),
+            "Machine".to_string(),
+            "production-line".to_string(),
+            "".to_string(),
+            "quality gate".to_string(),
+        ];
+
+        assert_eq!(
+            normalize_entity_types(&types),
+            vec!["MACHINE", "PRODUCTION_LINE", "QUALITY_GATE"]
+        );
+    }
+
+    #[test]
+    fn normalize_entity_types_returns_empty_for_empty_or_blank_input() {
+        let types = vec!["".to_string(), "   ".to_string()];
+
+        assert!(normalize_entity_types(&types).is_empty());
+    }
 }
 
 // ============ Database Row Types ============

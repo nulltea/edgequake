@@ -263,4 +263,9 @@ pub struct UpdateWorkspaceApiRequest {
     /// author-released repos.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accept_unofficial_implementations: Option<bool>,
+
+    /// Workspace-scoped entity types for extraction.
+    /// If omitted, keeps the current workspace configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_types: Option<Vec<String>>,
 }

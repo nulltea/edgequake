@@ -14,7 +14,10 @@ use edgequake_query::{
     ExtractedKeywords, KeywordExtractor, Keywords, MockKeywordExtractor, QueryIntent, QueryMode,
     QueryRequest, SOTAQueryConfig, SOTAQueryEngine,
 };
-use edgequake_storage::{GraphStorage, MemoryGraphStorage, MemoryVectorStorage, VectorStorage};
+use edgequake_storage::{
+    GraphStorage, MemoryGraphStorage, MemorySparseChunkStorage, MemoryVectorStorage,
+    SparseChunkDocument, SparseChunkStorage, VectorStorage,
+};
 use serde_json::json;
 
 // =============================================================================
@@ -283,6 +286,9 @@ mod sota_config_tests {
             enable_rerank: true,
             min_rerank_score: 0.3,
             rerank_top_k: 10,
+            enable_sparse_hybrid: true,
+            sparse_top_k: 30,
+            rrf_k: 60.0,
         };
 
         assert_eq!(config.default_mode, QueryMode::Local);
@@ -2032,6 +2038,93 @@ mod chunk_ranking_and_hybrid_tests {
             "chunk-bm25",
             "BM25 reranker should rank chunk-bm25 first due to term matching, \
              but got: {:?}",
+            response
+                .context
+                .chunks
+                .iter()
+                .map(|c| (c.id.as_str(), c.score))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_rrf_promotes_sparse_exact_match() {
+        let vs = Arc::new(MemoryVectorStorage::new("test", 1536));
+        vs.initialize().await.unwrap();
+
+        vs.upsert(&[
+            (
+                "chunk-cosine".into(),
+                vec![1.0; 1536],
+                json!({
+                    "type": "chunk",
+                    "content": "Vector storage optimization and approximate nearest neighbors",
+                    "document_id": "doc-1",
+                }),
+            ),
+            (
+                "chunk-exact".into(),
+                make_directional_vec(1.0, 0.0),
+                json!({
+                    "type": "chunk",
+                    "content": "Euston non-interactivity transformer privacy inference",
+                    "document_id": "doc-1",
+                }),
+            ),
+        ])
+        .await
+        .unwrap();
+
+        let sparse = Arc::new(MemorySparseChunkStorage::new());
+        sparse.initialize().await.unwrap();
+        sparse
+            .upsert_chunks(&[
+                SparseChunkDocument::new(
+                    "chunk-cosine",
+                    "Vector storage optimization and approximate nearest neighbors",
+                    json!({
+                        "type": "chunk",
+                        "content": "Vector storage optimization and approximate nearest neighbors",
+                        "document_id": "doc-1",
+                    }),
+                ),
+                SparseChunkDocument::new(
+                    "chunk-exact",
+                    "Euston non-interactivity transformer privacy inference",
+                    json!({
+                        "type": "chunk",
+                        "content": "Euston non-interactivity transformer privacy inference",
+                        "document_id": "doc-1",
+                    }),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let gs = Arc::new(MemoryGraphStorage::new("test"));
+        gs.initialize().await.unwrap();
+
+        let provider = Arc::new(MockProvider::new());
+        enqueue_directional_embeddings(&provider).await;
+
+        let mut config = base_config();
+        config.max_chunks = 10;
+        config.sparse_top_k = 10;
+
+        let engine =
+            SOTAQueryEngine::with_mock_keywords(config, vs, gs, provider.clone(), provider)
+                .with_sparse_chunk_storage(sparse);
+
+        let request = QueryRequest::new("Euston non-interactivity")
+            .with_mode(QueryMode::Hybrid)
+            .context_only();
+
+        let response = engine.query(request).await.unwrap();
+
+        assert_eq!(
+            response.context.chunks.first().map(|c| c.id.as_str()),
+            Some("chunk-exact"),
+            "RRF should promote the exact sparse match over a dense-only high-cosine chunk: {:?}",
             response
                 .context
                 .chunks
