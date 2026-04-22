@@ -425,7 +425,11 @@ relation<|#|>Adversary (A)<|#|>Intel SGX<|#|>attacks<|#|>Edge out of role actor.
 
         let result = parser.parse(response, "chunk-x").unwrap();
 
-        assert_eq!(result.entities.len(), 2, "only real entities should survive");
+        assert_eq!(
+            result.entities.len(),
+            2,
+            "only real entities should survive"
+        );
         assert_eq!(
             result.relationships.len(),
             1,

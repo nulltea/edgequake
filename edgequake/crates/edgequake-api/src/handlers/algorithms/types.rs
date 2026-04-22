@@ -25,7 +25,6 @@ pub struct ListAlgorithmsParams {
 #[derive(Debug, Deserialize)]
 pub struct SearchAlgorithmsParams {
     pub query: Option<String>,
-    pub status: Option<String>,
     pub document_id: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

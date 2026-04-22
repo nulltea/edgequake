@@ -884,8 +884,7 @@ impl DocumentTaskProcessor {
                 .await
                 .map_err(|e| TaskError::Process(format!("Failed to store algorithms: {e}")))?;
 
-            let algorithm_ids: Vec<String> =
-                algorithms.iter().map(|a| a.id.to_string()).collect();
+            let algorithm_ids: Vec<String> = algorithms.iter().map(|a| a.id.to_string()).collect();
 
             info!(
                 document_id = %document_id,

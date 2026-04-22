@@ -18,7 +18,6 @@ import { Resource } from "./base.js";
 /** Search parameters for the algorithms search endpoint. */
 export interface AlgorithmSearchParams {
   query?: string;
-  status?: string;
   document_id?: string;
   limit?: number;
   offset?: number;
@@ -58,14 +57,13 @@ export class AlgorithmsResource extends Resource {
   /**
    * Search algorithms across the workspace.
    *
-   * @param params - Search parameters (query, status, document_id, limit, offset).
+   * @param params - Search parameters (query, document_id, limit, offset).
    */
   async search(
     params?: AlgorithmSearchParams,
   ): Promise<AlgorithmSearchResponse> {
     const sp = new URLSearchParams();
     if (params?.query) sp.set("query", params.query);
-    if (params?.status) sp.set("status", params.status);
     if (params?.document_id) sp.set("document_id", params.document_id);
     if (params?.limit != null) sp.set("limit", String(params.limit));
     if (params?.offset != null) sp.set("offset", String(params.offset));

@@ -498,9 +498,8 @@ pub trait GraphStorage: Send + Sync {
                         .get("source_ids")
                         .and_then(|v| v.as_array())
                         .map(|arr| {
-                            arr.iter().any(|e| {
-                                e.as_str().map_or(false, |s| s.starts_with(did))
-                            })
+                            arr.iter()
+                                .any(|e| e.as_str().map_or(false, |s| s.starts_with(did)))
                         })
                         .unwrap_or(false)
                         || node

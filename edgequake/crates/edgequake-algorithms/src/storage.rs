@@ -60,13 +60,12 @@ pub trait AlgorithmStorage: Send + Sync {
         workspace_id: Uuid,
     ) -> Result<u64, AlgorithmStorageError>;
 
-    /// Search algorithms across documents in a workspace.
+    /// Search approved algorithms across documents in a workspace.
     async fn search_algorithms(
         &self,
         tenant_id: Uuid,
         workspace_id: Uuid,
         query: Option<&str>,
-        status: Option<AlgorithmStatus>,
         document_id: Option<&str>,
         limit: i64,
         offset: i64,
@@ -102,6 +101,112 @@ impl PostgresAlgorithmStorage {
     pub fn new(pool: Arc<PgPool>) -> Self {
         Self { pool }
     }
+}
+
+/// Tokenize algorithm search text for deterministic lexical matching.
+///
+/// This intentionally stays lighter than BM25: no corpus statistics, no RRF,
+/// just normalized terms that can boost exact algorithm names and paper terms.
+pub fn tokenize_algorithm_query(query: &str) -> Vec<String> {
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "of",
+        "on", "or", "the", "to", "using", "with",
+    ];
+
+    let mut tokens = Vec::new();
+    for token in query
+        .split(|c: char| !c.is_alphanumeric())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 2 && !STOPWORDS.contains(&s.as_str()))
+    {
+        if !tokens.contains(&token) {
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+/// Score a single approved algorithm against tokenized query terms.
+///
+/// Higher weights are assigned to algorithm identity fields. Longer bodies
+/// still contribute, but cannot swamp exact title/tag matches.
+pub fn score_algorithm_match(algorithm: &Algorithm, tokens: &[String], raw_query: &str) -> f64 {
+    if tokens.is_empty() {
+        return 0.0;
+    }
+
+    let raw_query = raw_query.trim().to_lowercase();
+    let name = algorithm.name.to_lowercase();
+    let algorithm_type = algorithm.algorithm_type.to_lowercase();
+    let description = algorithm
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let complexity = algorithm
+        .complexity
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let pseudocode = algorithm
+        .pseudocode
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    let tags = algorithm.tags.join(" ").to_lowercase();
+    let steps = algorithm
+        .steps
+        .iter()
+        .map(|s| format!("{} {}", s.action, s.details))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let io = algorithm
+        .inputs
+        .iter()
+        .chain(algorithm.outputs.iter())
+        .map(|v| format!("{} {}", v.name, v.description))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut score = 0.0;
+    if !raw_query.is_empty() && name.contains(&raw_query) {
+        score += 20.0;
+    }
+
+    for token in tokens {
+        if name == *token {
+            score += 12.0;
+        } else if name.contains(token) {
+            score += 8.0;
+        }
+        if tags.split_whitespace().any(|tag| tag == token) {
+            score += 6.0;
+        } else if tags.contains(token) {
+            score += 4.0;
+        }
+        if algorithm_type.contains(token) {
+            score += 3.0;
+        }
+        if description.contains(token) {
+            score += 3.0;
+        }
+        if complexity.contains(token) {
+            score += 2.0;
+        }
+        if pseudocode.contains(token) {
+            score += 2.0;
+        }
+        if steps.contains(token) {
+            score += 1.5;
+        }
+        if io.contains(token) {
+            score += 1.0;
+        }
+    }
+
+    score
 }
 
 #[async_trait::async_trait]
@@ -298,77 +403,153 @@ impl AlgorithmStorage for PostgresAlgorithmStorage {
         tenant_id: Uuid,
         workspace_id: Uuid,
         query: Option<&str>,
-        status: Option<AlgorithmStatus>,
         document_id: Option<&str>,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<Algorithm>, i64), AlgorithmStorageError> {
-        // Build dynamic WHERE clause
-        let mut conditions = vec![
-            "tenant_id = $1".to_string(),
-            "workspace_id = $2".to_string(),
-        ];
-        let mut param_idx = 3;
+        if query.map(|q| q.trim().is_empty()).unwrap_or(true) {
+            let (rows, total) = if let Some(document_id) = document_id {
+                let total = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT COUNT(*)::BIGINT FROM algorithms
+                    WHERE tenant_id = $1
+                      AND workspace_id = $2
+                      AND status = 'approved'
+                      AND document_id = $3
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(workspace_id)
+                .bind(document_id)
+                .fetch_one(self.pool.as_ref())
+                .await?;
 
-        if query.is_some() {
-            conditions.push(format!(
-                "(name ILIKE '%' || ${p} || '%' OR description ILIKE '%' || ${p} || '%')",
-                p = param_idx
-            ));
-            param_idx += 1;
-        }
-        if status.is_some() {
-            conditions.push(format!("status = ${param_idx}"));
-            param_idx += 1;
-        }
-        if document_id.is_some() {
-            conditions.push(format!("document_id = ${param_idx}"));
-            // param_idx += 1; // unused after this
+                let rows = sqlx::query_as::<_, AlgorithmRow>(
+                    r#"
+                    SELECT * FROM algorithms
+                    WHERE tenant_id = $1
+                      AND workspace_id = $2
+                      AND status = 'approved'
+                      AND document_id = $3
+                    ORDER BY created_at DESC
+                    LIMIT $4 OFFSET $5
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(workspace_id)
+                .bind(document_id)
+                .bind(limit.max(0))
+                .bind(offset.max(0))
+                .fetch_all(self.pool.as_ref())
+                .await?;
+
+                (rows, total)
+            } else {
+                let total = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    SELECT COUNT(*)::BIGINT FROM algorithms
+                    WHERE tenant_id = $1
+                      AND workspace_id = $2
+                      AND status = 'approved'
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(workspace_id)
+                .fetch_one(self.pool.as_ref())
+                .await?;
+
+                let rows = sqlx::query_as::<_, AlgorithmRow>(
+                    r#"
+                    SELECT * FROM algorithms
+                    WHERE tenant_id = $1
+                      AND workspace_id = $2
+                      AND status = 'approved'
+                    ORDER BY created_at DESC
+                    LIMIT $3 OFFSET $4
+                    "#,
+                )
+                .bind(tenant_id)
+                .bind(workspace_id)
+                .bind(limit.max(0))
+                .bind(offset.max(0))
+                .fetch_all(self.pool.as_ref())
+                .await?;
+
+                (rows, total)
+            };
+
+            let algorithms = rows
+                .into_iter()
+                .map(|r| r.into_algorithm())
+                .collect::<Result<Vec<_>, _>>()?;
+
+            return Ok((algorithms, total));
         }
 
-        let where_clause = conditions.join(" AND ");
-        let count_sql = format!("SELECT COUNT(*) as count FROM algorithms WHERE {where_clause}");
-        let data_sql = format!(
-            "SELECT * FROM algorithms WHERE {where_clause} ORDER BY created_at DESC LIMIT {limit} OFFSET {offset}"
-        );
+        let rows = if let Some(document_id) = document_id {
+            sqlx::query_as::<_, AlgorithmRow>(
+                r#"
+                SELECT * FROM algorithms
+                WHERE tenant_id = $1
+                  AND workspace_id = $2
+                  AND status = 'approved'
+                  AND document_id = $3
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(document_id)
+            .fetch_all(self.pool.as_ref())
+            .await?
+        } else {
+            sqlx::query_as::<_, AlgorithmRow>(
+                r#"
+                SELECT * FROM algorithms
+                WHERE tenant_id = $1
+                  AND workspace_id = $2
+                  AND status = 'approved'
+                ORDER BY created_at DESC
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .fetch_all(self.pool.as_ref())
+            .await?
+        };
 
-        // We need to use raw queries with dynamic binding.
-        // For simplicity, use sqlx::query_scalar and sqlx::query_as with manual binding.
-        // Since sqlx doesn't support dynamic parameter counts easily, we build the queries
-        // with all possible parameters and use conditional binding.
-
-        // Count query
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-        count_query = count_query.bind(tenant_id).bind(workspace_id);
-        if let Some(q) = query {
-            count_query = count_query.bind(q);
-        }
-        if let Some(s) = status {
-            count_query = count_query.bind(s.to_string());
-        }
-        if let Some(d) = document_id {
-            count_query = count_query.bind(d);
-        }
-        let total = count_query.fetch_one(self.pool.as_ref()).await?;
-
-        // Data query
-        let mut data_query = sqlx::query_as::<_, AlgorithmRow>(&data_sql);
-        data_query = data_query.bind(tenant_id).bind(workspace_id);
-        if let Some(q) = query {
-            data_query = data_query.bind(q);
-        }
-        if let Some(s) = status {
-            data_query = data_query.bind(s.to_string());
-        }
-        if let Some(d) = document_id {
-            data_query = data_query.bind(d);
-        }
-        let rows = data_query.fetch_all(self.pool.as_ref()).await?;
-
-        let algorithms = rows
+        let mut scored = rows
             .into_iter()
             .map(|r| r.into_algorithm())
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|algorithm| {
+                let score = query
+                    .map(|q| score_algorithm_match(&algorithm, &tokenize_algorithm_query(q), q))
+                    .unwrap_or(0.0);
+                (algorithm, score)
+            })
+            .collect::<Vec<_>>();
+
+        if query.map(|q| !q.trim().is_empty()).unwrap_or(false) {
+            scored.retain(|(_, score)| *score > 0.0);
+            scored.sort_by(|(a_algo, a_score), (b_algo, b_score)| {
+                b_score
+                    .partial_cmp(a_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b_algo.created_at.cmp(&a_algo.created_at))
+            });
+        }
+
+        let total = scored.len() as i64;
+        let start = offset.max(0) as usize;
+        let end = start.saturating_add(limit.max(0) as usize);
+        let algorithms = scored
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .map(|(algorithm, _)| algorithm)
+            .collect();
 
         Ok((algorithms, total))
     }
@@ -467,5 +648,59 @@ impl AlgorithmRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_algorithm() -> Algorithm {
+        Algorithm {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            document_id: Uuid::new_v4().to_string(),
+            name: "SAP".to_string(),
+            algorithm_type: "Scheme".to_string(),
+            description: Some(
+                "Scale and Perturb approximate distance comparison preserving symmetric encryption"
+                    .to_string(),
+            ),
+            steps: vec![AlgorithmStep {
+                number: 1,
+                action: "Scale plaintext distance".to_string(),
+                details: "Perturb the scaled value before encryption".to_string(),
+                math: None,
+            }],
+            inputs: vec![AlgorithmIO {
+                name: "plaintext".to_string(),
+                io_type: "input".to_string(),
+                description: "numeric vector".to_string(),
+            }],
+            outputs: Vec::new(),
+            preconditions: Vec::new(),
+            complexity: Some("linear".to_string()),
+            mathematical_notation: None,
+            pseudocode: Some("scaled <- scale(x); ciphertext <- encrypt(scaled)".to_string()),
+            tags: vec!["encryption".to_string(), "distance".to_string()],
+            confidence: "high".to_string(),
+            status: AlgorithmStatus::Approved,
+            verification_status: None,
+            verification_details: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn tokenized_scoring_matches_long_algorithm_queries() {
+        let query =
+            "SAP Scale and Perturb approximate distance comparison preserving symmetric encryption";
+        let tokens = tokenize_algorithm_query(query);
+
+        assert!(tokens.contains(&"sap".to_string()));
+        assert!(!tokens.contains(&"and".to_string()));
+        assert!(score_algorithm_match(&test_algorithm(), &tokens, query) > 20.0);
     }
 }

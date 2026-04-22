@@ -614,18 +614,13 @@ impl VectorStorage for PgVectorStorage {
         // workspace vector tables.
         let pool = self.pool.get().await?;
 
-        let sql = format!(
-            "DELETE FROM {} WHERE document_id = $1",
-            self.table_name
-        );
+        let sql = format!("DELETE FROM {} WHERE document_id = $1", self.table_name);
 
         let result = sqlx::query(&sql)
             .bind(document_id)
             .execute(&pool)
             .await
-            .map_err(|e| {
-                StorageError::Database(format!("Delete by document_id failed: {}", e))
-            })?;
+            .map_err(|e| StorageError::Database(format!("Delete by document_id failed: {}", e)))?;
 
         Ok(result.rows_affected() as usize)
     }

@@ -84,9 +84,9 @@ fn fig_caption_co_locates_with_body() {
         ..Default::default()
     });
 
-    let caption_chunk = chunks.iter().find(|c| {
-        c.content.contains("Fig. 2: FUNCTIONALITY")
-    });
+    let caption_chunk = chunks
+        .iter()
+        .find(|c| c.content.contains("Fig. 2: FUNCTIONALITY"));
     assert!(
         caption_chunk.is_some(),
         "caption not found in any chunk; chunks were: {:#?}",
@@ -177,11 +177,16 @@ fn heading_path_populated() {
         .filter(|c| !c.content.trim_start().starts_with("# Preliminaries"))
         .collect();
     assert!(
-        non_preamble_chunks.iter().all(|c| !c.heading_path.is_empty()),
+        non_preamble_chunks
+            .iter()
+            .all(|c| !c.heading_path.is_empty()),
         "every post-heading chunk should have a heading path; got: {:#?}",
         non_preamble_chunks
             .iter()
-            .map(|c| (&c.heading_path, c.content.chars().take(40).collect::<String>()))
+            .map(|c| (
+                &c.heading_path,
+                c.content.chars().take(40).collect::<String>()
+            ))
             .collect::<Vec<_>>()
     );
 }

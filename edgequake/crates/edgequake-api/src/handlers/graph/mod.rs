@@ -56,9 +56,9 @@ pub(crate) fn properties_match_document(
     document_id: &str,
 ) -> bool {
     let chunk_prefix = format!("{document_id}-chunk-");
-    extract_source_docs(properties).iter().any(|s| {
-        s == document_id || s.starts_with(&chunk_prefix) || s.starts_with(document_id)
-    })
+    extract_source_docs(properties)
+        .iter()
+        .any(|s| s == document_id || s.starts_with(&chunk_prefix) || s.starts_with(document_id))
 }
 
 #[cfg(test)]

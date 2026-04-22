@@ -257,7 +257,9 @@ fn mathbb_s_fragmented_regex() -> &'static Regex {
 /// bogus `\mathbb{S}`. Idempotent.
 pub fn repair_sample_dollar(s: &str) -> String {
     // Fragmented form first so it doesn't over-consume into the simpler case.
-    let s = mathbb_s_fragmented_regex().replace_all(s, r"\$ $1").into_owned();
+    let s = mathbb_s_fragmented_regex()
+        .replace_all(s, r"\$ $1")
+        .into_owned();
     mathbb_s_regex().replace_all(&s, r"\$$1$2").into_owned()
 }
 
@@ -269,9 +271,7 @@ fn missing_bracket_simple_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // `[[<content>]^` where content has no `[` and no `]` — should be
     // `[[<content>]]^`. Example: `[[v]^A` → `[[v]]^A`.
-    RE.get_or_init(|| {
-        Regex::new(r"(\[\[[^\[\]]*)\](\^)").expect("missing_bracket_simple compiles")
-    })
+    RE.get_or_init(|| Regex::new(r"(\[\[[^\[\]]*)\](\^)").expect("missing_bracket_simple compiles"))
 }
 
 fn missing_bracket_indexed_regex() -> &'static Regex {
@@ -280,8 +280,7 @@ fn missing_bracket_indexed_regex() -> &'static Regex {
     // reference. The inner `[...]` consumes one closing bracket that should
     // have been outer. Example: `[[x[i]]^A` → `[[x[i]]]^A`.
     RE.get_or_init(|| {
-        Regex::new(r"(\[\[[^\[\]]*\[[^\[\]]*\]\])(\^)")
-            .expect("missing_bracket_indexed compiles")
+        Regex::new(r"(\[\[[^\[\]]*\[[^\[\]]*\]\])(\^)").expect("missing_bracket_indexed compiles")
     })
 }
 
@@ -341,9 +340,7 @@ fn fake_latex_fence_close_two_dollar_regex() -> &'static Regex {
     // require a preceding newline so we don't match a legitimate fenced
     // code block whose body happens to contain ```$$ mid-line. Also
     // cover the trailing-newline form.
-    RE.get_or_init(|| {
-        Regex::new(r"\n```\$\$").expect("fake_latex_fence_close_two_dollar compiles")
-    })
+    RE.get_or_init(|| Regex::new(r"\n```\$\$").expect("fake_latex_fence_close_two_dollar compiles"))
 }
 
 /// Strip the fake ```` ```latex ```` (or `mathematica`, `text`, etc.)
@@ -392,9 +389,7 @@ fn fake_math_close_regex() -> &'static Regex {
 /// delimiters. Collapses both forms to a single `$$`. Idempotent.
 pub fn strip_ocr_math_boundary_artefacts(s: &str) -> String {
     let s = fake_math_open_regex().replace_all(s, "$$$$").into_owned();
-    fake_math_close_regex()
-        .replace_all(&s, "$$$$")
-        .into_owned()
+    fake_math_close_regex().replace_all(&s, "$$$$").into_owned()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -467,8 +462,7 @@ pub fn balance_math_delimiters(s: &str) -> String {
     let mut inside_display = false;
     let mut result_lines: Vec<String> = Vec::new();
     for line in s.lines() {
-        let (new_line, ended_inside) =
-            balance_math_delimiters_line(line, inside_display);
+        let (new_line, ended_inside) = balance_math_delimiters_line(line, inside_display);
         inside_display = ended_inside;
         result_lines.push(new_line);
     }
@@ -912,7 +906,8 @@ mod tests {
         //   ```$$
         // Both open and close markers must disappear, leaving a clean
         // `$$...$$` block.
-        let input = "prose\n\n$$```latex\\\n\\mu = \\frac{1}{n} \\sum_{i=1}^{n} x_i\\\\\n```$$\n\nmore";
+        let input =
+            "prose\n\n$$```latex\\\n\\mu = \\frac{1}{n} \\sum_{i=1}^{n} x_i\\\\\n```$$\n\nmore";
         let out = strip_fake_latex_codefence(input);
         assert!(!out.contains("```latex"), "got: {out:?}");
         assert!(!out.contains("```$$"), "got: {out:?}");
@@ -987,11 +982,18 @@ mod tests {
         // If `balance_double_brackets` runs AFTER `repair_missing_inner_bracket`
         // it over-balances by doubling the legitimate `[v]`. Order must be
         // `balance_double_brackets` → `repair_missing_inner_bracket`.
-        let input = r"$$[[v]^A \leftarrow \text{SS.add}([v]^A, \text{SS.sMul}(2^{\ell-1-i}, [x[i]]^A))$$";
+        let input =
+            r"$$[[v]^A \leftarrow \text{SS.add}([v]^A, \text{SS.sMul}(2^{\ell-1-i}, [x[i]]^A))$$";
         let out = repair_latex(input);
         assert!(out.contains("[[v]]^A"), "missing-inner fixed: {out}");
-        assert!(out.contains("([v]^A"), "legitimate single `[v]` preserved: {out}");
-        assert!(!out.contains("([[v]^A"), "legitimate `[v]` not corrupted: {out}");
+        assert!(
+            out.contains("([v]^A"),
+            "legitimate single `[v]` preserved: {out}"
+        );
+        assert!(
+            !out.contains("([[v]^A"),
+            "legitimate `[v]` not corrupted: {out}"
+        );
         // Idempotent.
         assert_eq!(repair_latex(&out), out);
     }

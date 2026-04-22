@@ -155,8 +155,7 @@ impl KVStorage for PostgresKVStorage {
             .await
             .map_err(|e| StorageError::Database(format!("KV get_by_ids failed: {}", e)))?;
 
-        let map: std::collections::HashMap<String, serde_json::Value> =
-            rows.into_iter().collect();
+        let map: std::collections::HashMap<String, serde_json::Value> = rows.into_iter().collect();
 
         Ok(ids
             .iter()

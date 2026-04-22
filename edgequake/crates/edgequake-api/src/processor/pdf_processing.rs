@@ -915,7 +915,11 @@ impl DocumentTaskProcessor {
             return pdf.clone();
         };
 
-        let Some(author) = fm.first_author.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        let Some(author) = fm
+            .first_author
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
         else {
             info!(
                 pdf_id = %pdf.pdf_id,

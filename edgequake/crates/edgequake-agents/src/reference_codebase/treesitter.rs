@@ -35,10 +35,7 @@ use super::types::{CodebaseEdge, CodebaseFile, CodebaseSymbol};
 /// Returns `None` when the file's language isn't covered here — caller
 /// falls back to the regex extractor so non-targeted languages still
 /// produce a minimal `defines + calls` graph.
-pub fn parse_file(
-    file: &CodebaseFile,
-    source: &str,
-) -> Option<ParseOutput> {
+pub fn parse_file(file: &CodebaseFile, source: &str) -> Option<ParseOutput> {
     let lang = support_lang_from_name(&file.language)?;
     // ast-grep-core parses via LanguageExt::ast_grep(source); this
     // returns an AstGrep<StrDoc<SupportLang>> we can walk.
@@ -57,13 +54,7 @@ pub fn parse_file(
         _ => return None,
     };
 
-    dispatch(
-        &root,
-        file,
-        source,
-        &mut symbols,
-        &mut edges,
-    );
+    dispatch(&root, file, source, &mut symbols, &mut edges);
 
     let parse_errors = if root.text().is_empty() && !source.is_empty() {
         1
@@ -129,11 +120,7 @@ pub struct PendingEdge {
 
 type Scope<'a> = Vec<(&'a str, Uuid, usize, usize)>;
 
-fn enclosing_symbol(
-    scope: &Scope<'_>,
-    start_line: usize,
-    end_line: usize,
-) -> Option<Uuid> {
+fn enclosing_symbol(scope: &Scope<'_>, start_line: usize, end_line: usize) -> Option<Uuid> {
     // Pick the tightest-fitting open scope. O(N scope) is fine —
     // nesting depth is almost always <10.
     scope
@@ -813,8 +800,9 @@ fn is_macro_like_fn_def(fn_def: &Node<'_, StrDoc<SupportLang>>) -> bool {
     while let Some(n) = queue.pop_front() {
         match n.kind().as_ref() {
             "identifier" => return true,
-            "qualified_identifier" | "destructor_name" | "operator_name"
-            | "field_identifier" => return false,
+            "qualified_identifier" | "destructor_name" | "operator_name" | "field_identifier" => {
+                return false
+            }
             "parameter_list" | "parameter_declaration" => continue,
             _ => {}
         }
@@ -830,9 +818,7 @@ fn is_macro_like_fn_def(fn_def: &Node<'_, StrDoc<SupportLang>>) -> bool {
 /// name and the parameter_list (which contains its own identifiers);
 /// we skip parameter_list descendants so we don't accidentally return a
 /// parameter name.
-fn find_c_function_name(
-    fn_def: &Node<'_, StrDoc<SupportLang>>,
-) -> Option<String> {
+fn find_c_function_name(fn_def: &Node<'_, StrDoc<SupportLang>>) -> Option<String> {
     // BFS to find the function_declarator first.
     let mut queue: std::collections::VecDeque<Node<'_, StrDoc<SupportLang>>> =
         std::collections::VecDeque::from([fn_def.clone()]);
@@ -849,9 +835,7 @@ fn find_c_function_name(
 
 /// Inside a function_declarator, return the innermost declarator name —
 /// skipping `parameter_list` so parameter identifiers don't win.
-fn find_c_declarator_name(
-    decl: &Node<'_, StrDoc<SupportLang>>,
-) -> Option<String> {
+fn find_c_declarator_name(decl: &Node<'_, StrDoc<SupportLang>>) -> Option<String> {
     let mut queue: std::collections::VecDeque<Node<'_, StrDoc<SupportLang>>> =
         std::collections::VecDeque::from([decl.clone()]);
     while let Some(n) = queue.pop_front() {
@@ -872,9 +856,7 @@ fn find_c_declarator_name(
     None
 }
 
-fn find_function_name(
-    declarator: &Node<'_, StrDoc<SupportLang>>,
-) -> Option<String> {
+fn find_function_name(declarator: &Node<'_, StrDoc<SupportLang>>) -> Option<String> {
     // tree-sitter-c nests declarators (`*foo()`, `(foo)()`). Walk the
     // subtree, stopping at the first name-shaped leaf. `field_identifier`
     // is used for C++ method names.
@@ -917,9 +899,7 @@ pub fn slice_lines(source: &str, start_line: i32, end_line: i32) -> String {
 ///   return_type: "..."
 ///   visibility: "public" | "crate" | "private"
 ///   is_async: true
-fn extract_rust_fn_metadata(
-    fn_node: &Node<'_, StrDoc<SupportLang>>,
-) -> serde_json::Value {
+fn extract_rust_fn_metadata(fn_node: &Node<'_, StrDoc<SupportLang>>) -> serde_json::Value {
     let mut m = serde_json::Map::new();
     let mut is_async = false;
     let mut visibility: Option<&'static str> = None;
@@ -1015,10 +995,7 @@ fn extract_c_fn_metadata(fn_node: &Node<'_, StrDoc<SupportLang>>) -> serde_json:
                 if child.kind().as_ref() == "parameter_declaration" {
                     let mut obj = serde_json::Map::new();
                     if let Some(ty) = child.field("type") {
-                        obj.insert(
-                            "type".into(),
-                            serde_json::json!(ty.text().to_string()),
-                        );
+                        obj.insert("type".into(), serde_json::json!(ty.text().to_string()));
                     }
                     if let Some(decl) = child.field("declarator") {
                         if let Some(name) = find_c_param_name(&decl) {
@@ -1043,9 +1020,7 @@ fn extract_c_fn_metadata(fn_node: &Node<'_, StrDoc<SupportLang>>) -> serde_json:
     serde_json::Value::Object(m)
 }
 
-fn find_c_param_name(
-    decl: &Node<'_, StrDoc<SupportLang>>,
-) -> Option<String> {
+fn find_c_param_name(decl: &Node<'_, StrDoc<SupportLang>>) -> Option<String> {
     // BFS for the first identifier, but don't descend into nested
     // parameter_lists (function-pointer params have their own sub-signature).
     let mut queue: std::collections::VecDeque<Node<'_, StrDoc<SupportLang>>> =
@@ -1069,9 +1044,7 @@ fn find_c_param_name(
 ///   return_type: "..."
 ///   is_async: true
 ///   docstring: "..."  — the first expression_statement→string in the body.
-fn extract_python_fn_metadata(
-    fn_node: &Node<'_, StrDoc<SupportLang>>,
-) -> serde_json::Value {
+fn extract_python_fn_metadata(fn_node: &Node<'_, StrDoc<SupportLang>>) -> serde_json::Value {
     let mut m = serde_json::Map::new();
 
     let is_async = fn_node
@@ -1252,7 +1225,11 @@ int main() {
         assert!(out.symbols.iter().any(|s| s.name == "add"));
         assert!(out.symbols.iter().any(|s| s.name == "main"));
         assert!(
-            out.edges.iter().filter(|e| e.edge_type == "imports").count() >= 2,
+            out.edges
+                .iter()
+                .filter(|e| e.edge_type == "imports")
+                .count()
+                >= 2,
             "expected 2+ #include imports"
         );
         assert!(out
@@ -1322,10 +1299,7 @@ def plain(x, y):
         );
         assert_eq!(fetch.metadata["return_type"], "bytes");
         let params = fetch.metadata["parameters"].as_array().unwrap();
-        let names: Vec<&str> = params
-            .iter()
-            .map(|p| p["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = params.iter().map(|p| p["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["url", "timeout"]);
         assert_eq!(params[0]["type"], "str");
         assert_eq!(params[1]["default"], "10");
@@ -1374,11 +1348,7 @@ pub(crate) fn crate_only(y: i32) -> i32 { y }
             .unwrap();
         assert_eq!(priv_.metadata.get("visibility"), None);
 
-        let crate_only = out
-            .symbols
-            .iter()
-            .find(|s| s.name == "crate_only")
-            .unwrap();
+        let crate_only = out.symbols.iter().find(|s| s.name == "crate_only").unwrap();
         assert_eq!(crate_only.metadata["visibility"], "crate");
     }
 
@@ -1455,6 +1425,10 @@ public:
             .collect();
         // The method `m` always lands; the ctor name (`C`) should also
         // survive because its declarator is a qualified/field identifier.
-        assert!(fn_names.contains("m"), "methods must survive: {:?}", fn_names);
+        assert!(
+            fn_names.contains("m"),
+            "methods must survive: {:?}",
+            fn_names
+        );
     }
 }

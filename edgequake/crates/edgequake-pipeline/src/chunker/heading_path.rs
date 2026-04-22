@@ -67,8 +67,7 @@ impl HeadingPathIndex {
                         // The new path applies from the heading's START
                         // offset, not its end, so the heading line itself
                         // is attributed to its own section.
-                        let new_path: Vec<String> =
-                            stack.iter().map(|(_, t)| t.clone()).collect();
+                        let new_path: Vec<String> = stack.iter().map(|(_, t)| t.clone()).collect();
                         push_boundary(&mut boundaries, start_offset, new_path);
                     }
                 }
@@ -91,10 +90,7 @@ impl HeadingPathIndex {
     /// boundary's owned path.
     pub fn path_at(&self, offset: usize) -> Vec<String> {
         // Binary search for the last boundary with offset <= target.
-        let idx = match self
-            .boundaries
-            .binary_search_by_key(&offset, |b| b.offset)
-        {
+        let idx = match self.boundaries.binary_search_by_key(&offset, |b| b.offset) {
             Ok(i) => i,
             Err(0) => return Vec::new(),
             Err(i) => i - 1,

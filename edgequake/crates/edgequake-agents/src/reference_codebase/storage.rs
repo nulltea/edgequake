@@ -686,14 +686,10 @@ mod postgres {
                     depth: row.try_get("depth")?,
                     chunk_id: row.try_get::<Option<Uuid>, _>("chunk_id")?,
                     is_anchor: row.try_get("is_anchor")?,
-                    algorithm_focus: row
-                        .try_get::<f32, _>("algorithm_focus")
-                        .unwrap_or(0.0),
+                    algorithm_focus: row.try_get::<f32, _>("algorithm_focus").unwrap_or(0.0),
                     metadata: row
                         .try_get::<serde_json::Value, _>("metadata")
-                        .unwrap_or_else(|_| {
-                            serde_json::Value::Object(serde_json::Map::new())
-                        }),
+                        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
                 });
             }
 

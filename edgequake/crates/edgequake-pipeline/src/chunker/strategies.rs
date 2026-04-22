@@ -39,7 +39,7 @@ impl ChunkingStrategy for TokenBasedChunking {
                         content: s.to_string(),
                         tokens: estimate_tokens(s),
                         chunk_order_index: idx,
-                    heading_path: Vec::new(),
+                        heading_path: Vec::new(),
                     })
                     .collect());
             }
@@ -116,7 +116,7 @@ impl ChunkingStrategy for CharacterBasedChunking {
                 content: s.to_string(),
                 tokens: estimate_tokens(s),
                 chunk_order_index: idx,
-                    heading_path: Vec::new(),
+                heading_path: Vec::new(),
             })
             .collect())
     }
@@ -220,7 +220,7 @@ impl ChunkingStrategy for SentenceBoundaryChunking {
                 content: current_chunk.trim().to_string(),
                 tokens: current_tokens,
                 chunk_order_index: chunk_index,
-                    heading_path: Vec::new(),
+                heading_path: Vec::new(),
             });
         }
 
@@ -335,7 +335,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                 content: para.to_string(),
                 tokens: para_tokens,
                 chunk_order_index: chunk_index,
-                    heading_path: Vec::new(),
+                heading_path: Vec::new(),
             });
             chunk_index += 1;
             continue;
@@ -347,7 +347,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                 content: current_chunk.trim().to_string(),
                 tokens: current_tokens,
                 chunk_order_index: chunk_index,
-                    heading_path: Vec::new(),
+                heading_path: Vec::new(),
             });
             chunk_index += 1;
             current_chunk = String::new();
@@ -368,7 +368,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
             content: current_chunk.trim().to_string(),
             tokens: current_tokens,
             chunk_order_index: chunk_index,
-                    heading_path: Vec::new(),
+            heading_path: Vec::new(),
         });
     }
 
@@ -496,10 +496,9 @@ impl ChunkingStrategy for ContextAwareChunking {
                 // Only merge if (a) current is too small or already under
                 // target, (b) combined stays within target, (c) both are
                 // in the same section.
-                let should_merge =
-                    (cur.tokens < min || combined <= max)
-                        && combined <= max
-                        && cur.heading_path == next.heading_path;
+                let should_merge = (cur.tokens < min || combined <= max)
+                    && combined <= max
+                    && cur.heading_path == next.heading_path;
                 if !should_merge {
                     break;
                 }

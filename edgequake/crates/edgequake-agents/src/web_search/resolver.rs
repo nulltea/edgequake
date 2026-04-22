@@ -124,10 +124,7 @@ pub async fn resolve_repo(
     let fallback_q = build_site_github_query(&fm.title);
     debug!(primary = %primary_q, fallback = %fallback_q, "searxng queries");
 
-    let (primary, fallback) = tokio::join!(
-        searxng.search(&primary_q),
-        searxng.search(&fallback_q)
-    );
+    let (primary, fallback) = tokio::join!(searxng.search(&primary_q), searxng.search(&fallback_q));
     let primary = primary?;
     // Fallback is best-effort: a failure on it doesn't fail the whole
     // resolver — the primary query usually carries us.
@@ -261,8 +258,7 @@ fn merge_searxng_results(
             })
             .or_insert((rank, r));
     }
-    let mut merged: Vec<(usize, super::searxng::SearxngResult)> =
-        best_rank.into_values().collect();
+    let mut merged: Vec<(usize, super::searxng::SearxngResult)> = best_rank.into_values().collect();
     merged.sort_by_key(|(r, _)| *r);
     merged.into_iter().map(|(_, r)| r).collect()
 }

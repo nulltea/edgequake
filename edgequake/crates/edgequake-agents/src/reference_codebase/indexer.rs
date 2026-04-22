@@ -141,7 +141,10 @@ impl ReferenceCodebaseIndexer {
                     if symbol_by_name.contains_key(&key) {
                         continue;
                     }
-                    symbol_by_name.entry(sym.name.clone()).or_default().push(sym.id);
+                    symbol_by_name
+                        .entry(sym.name.clone())
+                        .or_default()
+                        .push(sym.id);
                     symbols_by_file
                         .entry(file.id)
                         .or_default()
@@ -203,8 +206,7 @@ impl ReferenceCodebaseIndexer {
         }
 
         // Regex-fallback `calls` edges for languages without tree-sitter.
-        let files_by_id: BTreeMap<Uuid, &CodebaseFile> =
-            files.iter().map(|f| (f.id, f)).collect();
+        let files_by_id: BTreeMap<Uuid, &CodebaseFile> = files.iter().map(|f| (f.id, f)).collect();
         for file_id in &regex_files {
             let Some(file) = files_by_id.get(file_id) else {
                 continue;

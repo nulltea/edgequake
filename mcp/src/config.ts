@@ -8,12 +8,26 @@ export interface McpConfig {
   defaultWorkspace?: string;
 }
 
+function normalizeOptionalId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  // "default" is a human-friendly placeholder used in examples/config, but
+  // EdgeQuake tenant/workspace headers must be UUIDs. Treat placeholders as
+  // unset so the MCP client auto-discovers real IDs from the backend.
+  if (["default", "undefined", "null"].includes(trimmed.toLowerCase())) {
+    return undefined;
+  }
+
+  return trimmed;
+}
+
 export function resolveConfig(): McpConfig {
   const config: McpConfig = {
     baseUrl: process.env.EDGEQUAKE_BASE_URL ?? "http://localhost:8080",
     apiKey: process.env.EDGEQUAKE_API_KEY,
-    defaultTenant: process.env.EDGEQUAKE_DEFAULT_TENANT,
-    defaultWorkspace: process.env.EDGEQUAKE_DEFAULT_WORKSPACE,
+    defaultTenant: normalizeOptionalId(process.env.EDGEQUAKE_DEFAULT_TENANT),
+    defaultWorkspace: normalizeOptionalId(process.env.EDGEQUAKE_DEFAULT_WORKSPACE),
   };
 
   // Security warning: API key should be set for production URLs

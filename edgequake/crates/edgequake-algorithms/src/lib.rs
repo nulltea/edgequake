@@ -16,5 +16,7 @@ pub mod types;
 
 pub use extractor::AlgorithmExtractor;
 #[cfg(feature = "postgres")]
-pub use storage::{AlgorithmStorage, PostgresAlgorithmStorage};
+pub use storage::{
+    score_algorithm_match, tokenize_algorithm_query, AlgorithmStorage, PostgresAlgorithmStorage,
+};
 pub use types::*;

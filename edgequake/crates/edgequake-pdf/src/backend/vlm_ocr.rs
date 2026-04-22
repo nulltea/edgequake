@@ -951,8 +951,8 @@ mod layout_model_comparison {
         use super::super::PdfConversionConfig;
         use std::sync::Arc;
 
-        let pdf_path = std::env::var("EDGEQUAKE_TEST_PDF")
-            .unwrap_or_else(|_| "/tmp/euston.pdf".to_string());
+        let pdf_path =
+            std::env::var("EDGEQUAKE_TEST_PDF").unwrap_or_else(|_| "/tmp/euston.pdf".to_string());
         let vlm_model = std::env::var("EDGEQUAKE_TEST_VLM_MODEL").ok();
         let vlm_base_url = std::env::var("OPENAI_COMPATIBLE_BASE_URL")
             .or_else(|_| std::env::var("OPENAI_BASE_URL"))
@@ -979,12 +979,16 @@ mod layout_model_comparison {
         //                     least-invasive option if the backend
         //                     honours `stop` arrays
         let configs: Vec<(&str, f32, f32, f32, Vec<String>)> = vec![
-            ("baseline",     0.0, 0.0, 1.0,  vec![]),
-            ("presence-mid", 0.0, 0.3, 1.0,  vec![]),
+            ("baseline", 0.0, 0.0, 1.0, vec![]),
+            ("presence-mid", 0.0, 0.3, 1.0, vec![]),
             ("light-repeat", 0.0, 0.0, 1.03, vec![]),
-            ("stop-runaway", 0.0, 0.0, 1.0,  vec![
-                "0, \\ldots, 0, \\ldots, 0, \\ldots".to_string(),
-            ]),
+            (
+                "stop-runaway",
+                0.0,
+                0.0,
+                1.0,
+                vec!["0, \\ldots, 0, \\ldots, 0, \\ldots".to_string()],
+            ),
         ];
 
         #[derive(Debug)]
@@ -1031,12 +1035,8 @@ mod layout_model_comparison {
                 }
             }
 
-            eprintln!(
-                "\n[sweep] ============================================================"
-            );
-            eprintln!(
-                "[sweep] {label}: freq={freq} pres={pres} repeat={repeat} stops={stops:?}"
-            );
+            eprintln!("\n[sweep] ============================================================");
+            eprintln!("[sweep] {label}: freq={freq} pres={pres} repeat={repeat} stops={stops:?}");
 
             let converter = VlmOcrConverter;
             let cfg = PdfConversionConfig {
@@ -1184,11 +1184,7 @@ mod layout_model_comparison {
                 i = j.max(i + 1);
             } else {
                 // Advance by one char (UTF-8 safe).
-                i += s[i..]
-                    .chars()
-                    .next()
-                    .map(|c| c.len_utf8())
-                    .unwrap_or(1);
+                i += s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
             }
         }
         (best, best_start)

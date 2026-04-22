@@ -336,7 +336,10 @@ mod tests {
         idx.add_document("sym_c", "softmax");
         let s_a = idx.score("port rebalance_clusters to Rust", "sym_a");
         let s_b = idx.score("port rebalance_clusters to Rust", "sym_b");
-        assert!(s_a > s_b, "exact match should outrank unrelated: {s_a} vs {s_b}");
+        assert!(
+            s_a > s_b,
+            "exact match should outrank unrelated: {s_a} vs {s_b}"
+        );
         assert!(s_a > 0.0);
     }
 

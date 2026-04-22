@@ -205,7 +205,10 @@ impl QueryContext {
                     }
                 }
                 if let Some(pseudo) = a.pseudocode.as_deref().filter(|s| !s.is_empty()) {
-                    parts.push(format!("   _pseudocode:_\n```\n{}\n```\n", pseudo.trim_end()));
+                    parts.push(format!(
+                        "   _pseudocode:_\n```\n{}\n```\n",
+                        pseudo.trim_end()
+                    ));
                 }
                 parts.push("\n".to_string());
             }

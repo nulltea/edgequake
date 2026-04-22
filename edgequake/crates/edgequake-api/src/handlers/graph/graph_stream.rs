@@ -124,10 +124,7 @@ pub async fn stream_graph(
                                         .document_id
                                         .as_deref()
                                         .map(|doc_id| {
-                                            properties_match_document(
-                                                &n.properties,
-                                                doc_id,
-                                            )
+                                            properties_match_document(&n.properties, doc_id)
                                         })
                                         .unwrap_or(true)
                                 })
@@ -174,9 +171,7 @@ pub async fn stream_graph(
                                 params_clone
                                     .document_id
                                     .as_deref()
-                                    .map(|doc_id| {
-                                        properties_match_document(&n.properties, doc_id)
-                                    })
+                                    .map(|doc_id| properties_match_document(&n.properties, doc_id))
                                     .unwrap_or(true)
                             })
                             .take(params_clone.max_nodes)

@@ -191,9 +191,7 @@ pub async fn get_graph(
                                 params
                                     .document_id
                                     .as_deref()
-                                    .map(|doc_id| {
-                                        properties_match_document(&n.properties, doc_id)
-                                    })
+                                    .map(|doc_id| properties_match_document(&n.properties, doc_id))
                                     .unwrap_or(true)
                             })
                             .take(params.max_nodes)

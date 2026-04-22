@@ -353,11 +353,7 @@ pub trait PdfDocumentStorage: Send + Sync {
     ///
     /// * `Ok(())` - Row updated (or no-op if the new name matches)
     /// * `Err(StorageError)` - If the row doesn't exist or DB update fails
-    async fn update_pdf_filename(
-        &self,
-        pdf_id: &Uuid,
-        filename: &str,
-    ) -> Result<()>;
+    async fn update_pdf_filename(&self, pdf_id: &Uuid, filename: &str) -> Result<()>;
 
     /// Link PDF to processed document.
     ///

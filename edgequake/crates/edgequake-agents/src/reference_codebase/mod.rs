@@ -15,8 +15,8 @@ mod types;
 pub use bm25::{tokenize as bm25_tokenize, Bm25Index};
 pub use entity_expansion::extract_code_entities;
 pub use indexer::{IndexLimits, ReferenceCodebaseIndexer};
-pub use treesitter::{parse_file, PendingEdge, ParseOutput};
 pub use storage::{PostgresReferenceCodebaseStorage, ReferenceCodebaseStorage};
+pub use treesitter::{parse_file, ParseOutput, PendingEdge};
 pub use types::{
     CodebaseChunk, CodebaseEdge, CodebaseFile, CodebaseIndex, CodebaseIndexMode,
     CodebaseIndexStatus, CodebaseQueryHit, CodebaseSubgraph, CodebaseSymbol, IndexBuildOutput,

@@ -449,8 +449,7 @@ async fn recover_orphaned_documents(
         }
     }
 
-    let total_recovered =
-        auto_recovered_count + needs_reupload_count + scrambled_repaired_count;
+    let total_recovered = auto_recovered_count + needs_reupload_count + scrambled_repaired_count;
     if total_recovered > 0 {
         info!(
             "🔧 Orphaned document recovery complete: {} auto-recovered (pending), {} need re-upload (failed), {} scrambled-metadata repaired",

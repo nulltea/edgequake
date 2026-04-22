@@ -402,7 +402,12 @@ pub async fn get_index_graph(
                 )));
             }
             syms
-        } else if let Some(name) = params.anchor_symbol.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        } else if let Some(name) = params
+            .anchor_symbol
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             let syms = storage
                 .symbol_ids_by_name(tenant_id, workspace_id, index_id, name, 10)
                 .await
@@ -548,8 +553,7 @@ pub async fn query(
         // Entity expansion: parse identifiers out of the NL query, fetch their
         // chunks directly. These land ahead of vector hits so exact-name
         // matches never miss just because surrounding prose is sparse.
-        let entities =
-            edgequake_agents::reference_codebase::extract_code_entities(&request.query);
+        let entities = edgequake_agents::reference_codebase::extract_code_entities(&request.query);
         let entity_hits = if entities.is_empty() {
             Vec::new()
         } else {
@@ -563,9 +567,7 @@ pub async fn query(
                     limit,
                 )
                 .await
-                .map_err(|e| {
-                    ApiError::Internal(format!("entity-expansion lookup failed: {e}"))
-                })?
+                .map_err(|e| ApiError::Internal(format!("entity-expansion lookup failed: {e}")))?
         };
 
         let query_vec = embedder
@@ -611,11 +613,7 @@ pub async fn query(
         // cheaper than a second SQL roundtrip + full corpus load per query.
         let mut bm25 = edgequake_agents::reference_codebase::Bm25Index::new();
         for h in &merged {
-            let blob = format!(
-                "{} {}",
-                h.symbol_name.as_deref().unwrap_or(""),
-                h.content
-            );
+            let blob = format!("{} {}", h.symbol_name.as_deref().unwrap_or(""), h.content);
             bm25.add_document(&h.chunk_id.to_string(), &blob);
         }
         let q_tokens = edgequake_agents::reference_codebase::bm25_tokenize(&request.query);

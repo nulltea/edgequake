@@ -146,8 +146,9 @@ pub(crate) fn extract_abstract(head: &str) -> Option<String> {
             // Keep everything after the marker on the same line. Use
             // `char_indices` so the split point is a valid char boundary —
             // `—` is a 3-byte UTF-8 codepoint; a naive `+1` slice panics.
-            if let Some((byte_idx, ch)) =
-                line.char_indices().find(|(_, c)| matches!(c, '—' | '-' | '.' | ':'))
+            if let Some((byte_idx, ch)) = line
+                .char_indices()
+                .find(|(_, c)| matches!(c, '—' | '-' | '.' | ':'))
             {
                 let tail = line[byte_idx + ch.len_utf8()..].trim();
                 if !tail.is_empty() {

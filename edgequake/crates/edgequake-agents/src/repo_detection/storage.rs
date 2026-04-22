@@ -464,9 +464,7 @@ mod postgres {
             url: &str,
         ) -> Result<DocumentRepo, RepoStorageError> {
             let (host, owner, repo) = parse_repo_url(url)
-                .ok_or_else(|| RepoStorageError::Decode(
-                    format!("cannot parse repo URL: {url}")
-                ))?;
+                .ok_or_else(|| RepoStorageError::Decode(format!("cannot parse repo URL: {url}")))?;
             let id = Uuid::new_v4();
             let row = sqlx::query(
                 r#"

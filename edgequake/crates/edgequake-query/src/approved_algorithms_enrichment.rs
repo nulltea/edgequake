@@ -38,7 +38,14 @@ pub async fn enrich_with_approved_algorithms(
     let Some(storage) = storage else {
         return; // Feature disabled.
     };
-    if let Err(e) = try_enrich(context, request, query_embedding, workspace_vectors, storage).await
+    if let Err(e) = try_enrich(
+        context,
+        request,
+        query_embedding,
+        workspace_vectors,
+        storage,
+    )
+    .await
     {
         tracing::warn!(error = %e, "approved-algorithms enrichment skipped");
     }

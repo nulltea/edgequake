@@ -688,10 +688,7 @@ fn validate_external_http_url(raw: &str) -> ApiResult<reqwest::Url> {
 /// look like a PDF OR when HEAD is unsupported; returns an error only
 /// when the server explicitly replies with non-PDF content. The magic-
 /// byte check downstream is the non-negotiable gate.
-async fn head_check_pdf_content_type(
-    client: &reqwest::Client,
-    url: &str,
-) -> ApiResult<()> {
+async fn head_check_pdf_content_type(client: &reqwest::Client, url: &str) -> ApiResult<()> {
     let resp = match client
         .head(url)
         .timeout(std::time::Duration::from_secs(10))
@@ -785,7 +782,9 @@ async fn stream_pdf_bytes(
         buf.extend_from_slice(&chunk);
     }
     if buf.is_empty() {
-        return Err(ApiError::BadRequest("Upstream returned empty body".to_string()));
+        return Err(ApiError::BadRequest(
+            "Upstream returned empty body".to_string(),
+        ));
     }
     Ok(buf)
 }
@@ -894,8 +893,7 @@ mod tests {
     #[test]
     fn derive_filename_title_without_extension() {
         let u = reqwest::Url::parse("https://arxiv.org/pdf/2506.09452").unwrap();
-        let f =
-            derive_initial_filename(&Some("MyPaper".to_string()), &u, b"%PDF-1.7 ...");
+        let f = derive_initial_filename(&Some("MyPaper".to_string()), &u, b"%PDF-1.7 ...");
         assert_eq!(f, "MyPaper.pdf");
     }
 

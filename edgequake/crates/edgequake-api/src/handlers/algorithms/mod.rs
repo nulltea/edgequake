@@ -9,7 +9,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use tracing::info;
+use std::collections::HashMap;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::error::{ApiError, ApiResult};
@@ -49,6 +50,91 @@ fn parse_tenant_context(ctx: &TenantContext) -> ApiResult<(Uuid, Uuid)> {
     let workspace_id = Uuid::parse_str(workspace_id_str)
         .map_err(|e| ApiError::BadRequest(format!("Invalid workspace_id: {e}")))?;
     Ok((tenant_id, workspace_id))
+}
+
+#[cfg(feature = "postgres")]
+fn normalize_search_query(query: Option<&str>) -> Option<String> {
+    query
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(feature = "postgres")]
+fn document_id_from_source_id(source_id: &str) -> Option<String> {
+    let candidate = source_id.split("-chunk-").next().unwrap_or(source_id);
+    Uuid::parse_str(candidate).ok()?;
+    Some(candidate.to_string())
+}
+
+#[cfg(feature = "postgres")]
+fn graph_source_document_scores(
+    nodes: Vec<(edgequake_storage::traits::GraphNode, usize)>,
+) -> HashMap<String, f64> {
+    let mut scores = HashMap::new();
+
+    for (node, degree) in nodes {
+        let node_score = 1.0 + (degree as f64).ln_1p();
+
+        if let Some(source_ids) = node.properties.get("source_ids").and_then(|v| v.as_array()) {
+            for source_id in source_ids.iter().filter_map(|v| v.as_str()) {
+                if let Some(document_id) = document_id_from_source_id(source_id) {
+                    *scores.entry(document_id).or_insert(0.0) += node_score;
+                }
+            }
+        }
+
+        if let Some(source_id) = node.properties.get("source_id").and_then(|v| v.as_str()) {
+            for source_part in source_id.split('|') {
+                if let Some(document_id) = document_id_from_source_id(source_part) {
+                    *scores.entry(document_id).or_insert(0.0) += node_score;
+                }
+            }
+        }
+    }
+
+    scores
+}
+
+#[cfg(feature = "postgres")]
+fn add_algorithm_candidate(
+    candidates: &mut HashMap<Uuid, AlgorithmCandidateScore>,
+    algorithm: edgequake_algorithms::Algorithm,
+) -> &mut AlgorithmCandidateScore {
+    candidates
+        .entry(algorithm.id)
+        .or_insert_with(|| AlgorithmCandidateScore {
+            algorithm,
+            lexical_score: 0.0,
+            semantic_score: 0.0,
+            graph_score: 0.0,
+        })
+}
+
+#[cfg(feature = "postgres")]
+struct AlgorithmCandidateScore {
+    algorithm: edgequake_algorithms::Algorithm,
+    lexical_score: f64,
+    semantic_score: f64,
+    graph_score: f64,
+}
+
+#[cfg(feature = "postgres")]
+impl AlgorithmCandidateScore {
+    fn final_score(&self, max_lexical: f64, max_graph: f64) -> f64 {
+        let lexical = if max_lexical > 0.0 {
+            self.lexical_score / max_lexical
+        } else {
+            0.0
+        };
+        let graph = if max_graph > 0.0 {
+            self.graph_score / max_graph
+        } else {
+            0.0
+        };
+
+        (0.55 * self.semantic_score) + (0.35 * lexical) + (0.10 * graph)
+    }
 }
 
 /// Trigger algorithm extraction for a document.
@@ -412,7 +498,13 @@ async fn search_algorithms_impl(
     tenant_ctx: TenantContext,
     params: SearchAlgorithmsParams,
 ) -> ApiResult<Json<AlgorithmSearchResponse>> {
-    use edgequake_algorithms::{AlgorithmStorage, PostgresAlgorithmStorage};
+    use crate::handlers::query::workspace_resolve::{
+        get_workspace_embedding_provider, get_workspace_vector_storage,
+    };
+    use edgequake_algorithms::{
+        score_algorithm_match, tokenize_algorithm_query, AlgorithmStorage, PostgresAlgorithmStorage,
+    };
+    use edgequake_storage::{AlgorithmVectorStorage, PgAlgorithmVectorStorage};
 
     let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
     let pool = state.pg_pool.as_ref().ok_or_else(|| {
@@ -420,30 +512,192 @@ async fn search_algorithms_impl(
     })?;
     let storage = PostgresAlgorithmStorage::new(std::sync::Arc::new(pool.clone()));
 
-    let status = params
-        .status
-        .as_deref()
-        .map(|s| {
-            s.parse::<AlgorithmStatus>()
-                .map_err(|e| ApiError::BadRequest(format!("Invalid status: {e}")))
-        })
-        .transpose()?;
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = params.offset.unwrap_or(0).max(0);
+    let query = normalize_search_query(params.query.as_deref());
 
-    let limit = params.limit.unwrap_or(20).min(100);
-    let offset = params.offset.unwrap_or(0);
+    if query.is_none() {
+        let (algorithms, total) = storage
+            .search_algorithms(
+                tenant_id,
+                workspace_id,
+                None,
+                params.document_id.as_deref(),
+                limit,
+                offset,
+            )
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to search algorithms: {e}")))?;
 
-    let (algorithms, total) = storage
+        return Ok(Json(AlgorithmSearchResponse {
+            algorithms,
+            total,
+            limit,
+            offset,
+        }));
+    }
+
+    let query = query.expect("query is checked above");
+    let tokens = tokenize_algorithm_query(&query);
+    let candidate_limit = (limit + offset).max(100).min(500);
+
+    let (lexical_algorithms, _) = storage
         .search_algorithms(
             tenant_id,
             workspace_id,
-            params.query.as_deref(),
-            status,
+            Some(&query),
             params.document_id.as_deref(),
-            limit,
-            offset,
+            candidate_limit,
+            0,
         )
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to search algorithms: {e}")))?;
+
+    let mut candidates = HashMap::new();
+    for algorithm in lexical_algorithms {
+        let score = score_algorithm_match(&algorithm, &tokens, &query);
+        add_algorithm_candidate(&mut candidates, algorithm).lexical_score = score;
+    }
+
+    let workspace_id_str = workspace_id.to_string();
+    let embedding_provider = get_workspace_embedding_provider(&state, &workspace_id_str)
+        .await?
+        .unwrap_or_else(|| std::sync::Arc::clone(&state.embedding_provider));
+    let vector_storage = get_workspace_vector_storage(&state, &workspace_id_str)
+        .await?
+        .unwrap_or_else(|| std::sync::Arc::clone(&state.vector_storage));
+    let document_filter = params.document_id.as_ref().map(|id| vec![id.clone()]);
+
+    match embedding_provider.embed_one(&query).await {
+        Ok(query_embedding) => {
+            let algorithm_vector_storage = PgAlgorithmVectorStorage::new(pool.clone());
+            match algorithm_vector_storage
+                .search_approved_algorithms(
+                    tenant_id,
+                    workspace_id,
+                    &vector_storage,
+                    &query_embedding,
+                    candidate_limit,
+                    1.0,
+                    document_filter.as_deref(),
+                )
+                .await
+            {
+                Ok(hits) => {
+                    for hit in hits {
+                        let Ok(algorithm_id) = Uuid::parse_str(&hit.algorithm_id) else {
+                            continue;
+                        };
+                        match storage
+                            .get_algorithm(algorithm_id, tenant_id, workspace_id)
+                            .await
+                        {
+                            Ok(Some(algorithm)) => {
+                                let candidate = add_algorithm_candidate(&mut candidates, algorithm);
+                                candidate.semantic_score = candidate
+                                    .semantic_score
+                                    .max((1.0 - hit.cosine_distance).clamp(0.0, 1.0));
+                            }
+                            Ok(None) => {}
+                            Err(e) => warn!(
+                                algorithm_id = %algorithm_id,
+                                error = %e,
+                                "Failed to hydrate semantic algorithm search hit"
+                            ),
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(error = %e, "Semantic algorithm search failed; using lexical and graph signals")
+                }
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Algorithm query embedding failed; using lexical and graph signals")
+        }
+    }
+
+    let tenant_id_str = tenant_id.to_string();
+    let mut graph_nodes = Vec::new();
+    match state
+        .graph_storage
+        .search_nodes(
+            &query,
+            24,
+            None,
+            Some(&tenant_id_str),
+            Some(&workspace_id_str),
+        )
+        .await
+    {
+        Ok(nodes) => graph_nodes.extend(nodes),
+        Err(e) => warn!(error = %e, "Full-query graph entity search failed"),
+    }
+    for token in tokens.iter().take(8) {
+        match state
+            .graph_storage
+            .search_nodes(
+                token,
+                8,
+                None,
+                Some(&tenant_id_str),
+                Some(&workspace_id_str),
+            )
+            .await
+        {
+            Ok(nodes) => graph_nodes.extend(nodes),
+            Err(e) => warn!(query = %token, error = %e, "Token graph entity search failed"),
+        }
+    }
+
+    let graph_scores = graph_source_document_scores(graph_nodes);
+    if !graph_scores.is_empty() {
+        let (graph_algorithms, _) = storage
+            .search_algorithms(
+                tenant_id,
+                workspace_id,
+                None,
+                params.document_id.as_deref(),
+                500,
+                0,
+            )
+            .await
+            .map_err(|e| {
+                ApiError::Internal(format!("Failed to load graph algorithm candidates: {e}"))
+            })?;
+
+        for algorithm in graph_algorithms {
+            let Some(score) = graph_scores.get(&algorithm.document_id).copied() else {
+                continue;
+            };
+            add_algorithm_candidate(&mut candidates, algorithm).graph_score = score;
+        }
+    }
+
+    let max_lexical = candidates
+        .values()
+        .map(|c| c.lexical_score)
+        .fold(0.0, f64::max);
+    let max_graph = candidates
+        .values()
+        .map(|c| c.graph_score)
+        .fold(0.0, f64::max);
+
+    let mut ranked = candidates.into_values().collect::<Vec<_>>();
+    ranked.sort_by(|a, b| {
+        b.final_score(max_lexical, max_graph)
+            .partial_cmp(&a.final_score(max_lexical, max_graph))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.algorithm.created_at.cmp(&a.algorithm.created_at))
+    });
+
+    let total = ranked.len() as i64;
+    let algorithms = ranked
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .map(|candidate| candidate.algorithm)
+        .collect();
 
     Ok(Json(AlgorithmSearchResponse {
         algorithms,

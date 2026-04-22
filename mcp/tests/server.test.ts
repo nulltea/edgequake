@@ -105,6 +105,16 @@ describe("MCP server unit tests", () => {
       unknown
     >;
     expect(getMdProps).toHaveProperty("document_id");
+
+    // algorithm_search is approved-only; callers cannot override status.
+    const algorithmSearch = toolMap.get("algorithm_search");
+    expect(algorithmSearch).toBeDefined();
+    const algorithmSearchProps = algorithmSearch!.inputSchema.properties as Record<
+      string,
+      unknown
+    >;
+    expect(algorithmSearchProps).toHaveProperty("query");
+    expect(algorithmSearchProps).not.toHaveProperty("status");
   });
 
   it("should list registered prompts", async () => {

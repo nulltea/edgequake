@@ -60,13 +60,9 @@ export function registerAlgorithmTools(server: McpServer): void {
   // algorithm_search
   server.tool(
     "algorithm_search",
-    "Search algorithms across the workspace by query, status, or document.",
+    "Search approved algorithms across the workspace by semantic, lexical, and graph-entity signals.",
     {
       query: z.string().optional().describe("Search query string"),
-      status: z
-        .enum(["pending", "approved", "rejected"])
-        .optional()
-        .describe("Filter by review status"),
       document_id: z.string().optional().describe("Filter by document UUID"),
       limit: z.number().optional().describe("Max results to return (default: 20)"),
       offset: z.number().optional().describe("Offset for pagination (default: 0)"),
@@ -76,7 +72,6 @@ export function registerAlgorithmTools(server: McpServer): void {
         const client = await getClient();
         const result = await client.algorithms.search({
           query: params.query,
-          status: params.status,
           document_id: params.document_id,
           limit: params.limit,
           offset: params.offset,
