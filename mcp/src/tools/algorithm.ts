@@ -60,7 +60,7 @@ export function registerAlgorithmTools(server: McpServer): void {
   // algorithm_search
   server.tool(
     "algorithm_search",
-    "Search approved algorithms across the workspace by semantic, lexical, and graph-entity signals.",
+    "Search approved algorithms across the workspace by semantic, lexical, and graph-entity signals. For best resolution, include a paper identifier such as author name, protocol/scheme name, or algorithm name. If the source paper is unclear, use document_list(search=...) first.",
     {
       query: z.string().optional().describe("Search query string"),
       document_id: z.string().optional().describe("Filter by document UUID"),
