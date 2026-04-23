@@ -52,7 +52,7 @@ export function registerReferenceCodebaseTools(server: McpServer): void {
         .array(z.string().uuid())
         .optional()
         .describe(
-          "Restrict to chunks anchored to these approved algorithm ids",
+          "Restrict search to the indexed code neighborhood connected to these approved algorithm ids",
         ),
       limit: z
         .number()

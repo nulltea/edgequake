@@ -60,9 +60,9 @@ export interface ReferenceCodebaseQueryRequest {
   /** Restrict to a specific index row (tighter than repo filter). */
   index_id?: string;
   /**
-   * Restrict to chunks whose anchor (approved `code_artifact`) is tied
-   * to one of these algorithm ids. Useful when the agent already knows
-   * the algorithm it wants.
+   * Restrict to the indexed code neighborhood connected to these
+   * approved algorithm ids. Useful when the agent already knows the
+   * algorithm context and wants surrounding implementation code too.
    */
   algorithm_ids?: string[];
   /** Max hits (default 12). */

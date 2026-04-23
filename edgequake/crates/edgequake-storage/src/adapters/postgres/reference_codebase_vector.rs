@@ -31,11 +31,13 @@ impl ReferenceCodebaseVectorStorage for PgReferenceCodebaseVectorStorage {
         max_distance: f64,
         document_repo_id: Option<Uuid>,
         index_id: Option<Uuid>,
-        algorithm_ids: Option<&[Uuid]>,
+        algorithm_context_ids: Option<&[Uuid]>,
     ) -> Result<Vec<ReferenceCodebaseSearchHit>> {
         let literal = vector_literal(query_vec);
-        let algorithm_ids_vec = algorithm_ids.map(|ids| ids.to_vec()).unwrap_or_default();
-        let use_algorithm_filter = !algorithm_ids_vec.is_empty();
+        let algorithm_context_ids_vec = algorithm_context_ids
+            .map(|ids| ids.to_vec())
+            .unwrap_or_default();
+        let use_algorithm_context = !algorithm_context_ids_vec.is_empty();
 
         let rows = sqlx::query_as::<_, Row>(SQL)
             .bind(&literal)
@@ -45,8 +47,8 @@ impl ReferenceCodebaseVectorStorage for PgReferenceCodebaseVectorStorage {
             .bind(max_distance)
             .bind(document_repo_id)
             .bind(index_id)
-            .bind(&algorithm_ids_vec)
-            .bind(use_algorithm_filter)
+            .bind(&algorithm_context_ids_vec)
+            .bind(use_algorithm_context)
             .fetch_all(&*self.pool)
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -61,17 +63,24 @@ impl ReferenceCodebaseVectorStorage for PgReferenceCodebaseVectorStorage {
         names: &[String],
         document_repo_id: Option<Uuid>,
         index_id: Option<Uuid>,
+        algorithm_context_ids: Option<&[Uuid]>,
         limit: i64,
     ) -> Result<Vec<ReferenceCodebaseSearchHit>> {
         if names.is_empty() {
             return Ok(Vec::new());
         }
+        let algorithm_context_ids_vec = algorithm_context_ids
+            .map(|ids| ids.to_vec())
+            .unwrap_or_default();
+        let use_algorithm_context = !algorithm_context_ids_vec.is_empty();
         let rows = sqlx::query_as::<_, Row>(ENTITY_SQL)
             .bind(tenant_id)
             .bind(workspace_id)
             .bind(names)
             .bind(document_repo_id)
             .bind(index_id)
+            .bind(&algorithm_context_ids_vec)
+            .bind(use_algorithm_context)
             .bind(limit)
             .fetch_all(&*self.pool)
             .await
@@ -98,6 +107,46 @@ impl ReferenceCodebaseVectorStorage for PgReferenceCodebaseVectorStorage {
 // Each candidate in $3 is probed against all three; chunks.symbol_name is still
 // an exact key per row so the index on it covers (a).
 const ENTITY_SQL: &str = r#"
+    WITH RECURSIVE algorithm_seed_symbols AS (
+        SELECT DISTINCT c.symbol_id
+        FROM reference_codebase_chunks c
+        JOIN reference_codebase_indexes i ON i.id = c.index_id
+        WHERE c.tenant_id = $1
+          AND c.workspace_id = $2
+          AND i.status = 'complete'
+          AND c.symbol_id IS NOT NULL
+          AND ($4::uuid IS NULL OR c.document_repo_id = $4)
+          AND ($5::uuid IS NULL OR c.index_id = $5)
+          AND c.algorithm_id = ANY($6::uuid[])
+    ),
+    algorithm_walk(symbol_id) AS (
+        SELECT symbol_id
+        FROM algorithm_seed_symbols
+        UNION
+        SELECT CASE
+                 WHEN e.source_symbol_id = w.symbol_id THEN e.target_symbol_id
+                 ELSE e.source_symbol_id
+               END AS symbol_id
+        FROM algorithm_walk w
+        JOIN reference_codebase_edges e
+          ON (
+                 (e.source_symbol_id = w.symbol_id AND e.target_symbol_id IS NOT NULL)
+              OR (e.target_symbol_id = w.symbol_id AND e.source_symbol_id IS NOT NULL)
+             )
+        WHERE e.source_symbol_id IS NOT NULL
+          AND e.target_symbol_id IS NOT NULL
+    ),
+    algorithm_context_chunks AS (
+        SELECT DISTINCT c.id
+        FROM reference_codebase_chunks c
+        JOIN reference_codebase_indexes i ON i.id = c.index_id
+        JOIN algorithm_walk w ON w.symbol_id = c.symbol_id
+        WHERE c.tenant_id = $1
+          AND c.workspace_id = $2
+          AND i.status = 'complete'
+          AND ($4::uuid IS NULL OR c.document_repo_id = $4)
+          AND ($5::uuid IS NULL OR c.index_id = $5)
+    )
     SELECT
         c.id                    AS chunk_id,
         c.index_id              AS index_id,
@@ -121,6 +170,7 @@ const ENTITY_SQL: &str = r#"
       AND i.status = 'complete'
       AND ($4::uuid IS NULL OR c.document_repo_id = $4)
       AND ($5::uuid IS NULL OR c.index_id = $5)
+      AND ($7::bool = false OR c.id IN (SELECT id FROM algorithm_context_chunks))
       AND (
            c.symbol_name = ANY($3::text[])
         OR EXISTS (
@@ -130,11 +180,51 @@ const ENTITY_SQL: &str = r#"
            )
       )
     ORDER BY c.symbol_name, c.start_line
-    LIMIT $6
+    LIMIT $8
 "#;
 
 const SQL: &str = r#"
-    WITH matches AS (
+    WITH RECURSIVE algorithm_seed_symbols AS (
+        SELECT DISTINCT c.symbol_id
+        FROM reference_codebase_chunks c
+        JOIN reference_codebase_indexes i ON i.id = c.index_id
+        WHERE c.tenant_id = $2
+          AND c.workspace_id = $3
+          AND i.status = 'complete'
+          AND c.symbol_id IS NOT NULL
+          AND ($6::uuid IS NULL OR c.document_repo_id = $6)
+          AND ($7::uuid IS NULL OR c.index_id = $7)
+          AND c.algorithm_id = ANY($8::uuid[])
+    ),
+    algorithm_walk(symbol_id) AS (
+        SELECT symbol_id
+        FROM algorithm_seed_symbols
+        UNION
+        SELECT CASE
+                 WHEN e.source_symbol_id = w.symbol_id THEN e.target_symbol_id
+                 ELSE e.source_symbol_id
+               END AS symbol_id
+        FROM algorithm_walk w
+        JOIN reference_codebase_edges e
+          ON (
+                 (e.source_symbol_id = w.symbol_id AND e.target_symbol_id IS NOT NULL)
+              OR (e.target_symbol_id = w.symbol_id AND e.source_symbol_id IS NOT NULL)
+             )
+        WHERE e.source_symbol_id IS NOT NULL
+          AND e.target_symbol_id IS NOT NULL
+    ),
+    algorithm_context_chunks AS (
+        SELECT DISTINCT c.id
+        FROM reference_codebase_chunks c
+        JOIN reference_codebase_indexes i ON i.id = c.index_id
+        JOIN algorithm_walk w ON w.symbol_id = c.symbol_id
+        WHERE c.tenant_id = $2
+          AND c.workspace_id = $3
+          AND i.status = 'complete'
+          AND ($6::uuid IS NULL OR c.document_repo_id = $6)
+          AND ($7::uuid IS NULL OR c.index_id = $7)
+    ),
+    matches AS (
         SELECT
             rce.chunk_id,
             rce.index_id,
@@ -146,7 +236,10 @@ const SQL: &str = r#"
           AND rci.status = 'complete'
           AND ($6::uuid IS NULL OR rce.document_repo_id = $6)
           AND ($7::uuid IS NULL OR rce.index_id = $7)
-          AND ($9::bool = false OR rce.algorithm_id = ANY($8::uuid[]))
+          AND (
+                $9::bool = false
+                OR rce.chunk_id IN (SELECT id FROM algorithm_context_chunks)
+              )
         ORDER BY rce.embedding <=> $1::vector ASC
         LIMIT $4
     )

@@ -564,6 +564,11 @@ pub async fn query(
                     &entities,
                     request.document_repo_id,
                     request.index_id,
+                    if request.algorithm_ids.is_empty() {
+                        None
+                    } else {
+                        Some(&request.algorithm_ids)
+                    },
                     limit,
                 )
                 .await

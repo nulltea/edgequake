@@ -48,7 +48,7 @@ pub trait ReferenceCodebaseVectorStorage: Send + Sync {
         max_distance: f64,
         document_repo_id: Option<Uuid>,
         index_id: Option<Uuid>,
-        algorithm_ids: Option<&[Uuid]>,
+        algorithm_context_ids: Option<&[Uuid]>,
     ) -> Result<Vec<ReferenceCodebaseSearchHit>>;
 
     /// Fetch chunks whose `symbol_name` matches one of the given candidates.
@@ -62,6 +62,7 @@ pub trait ReferenceCodebaseVectorStorage: Send + Sync {
         names: &[String],
         document_repo_id: Option<Uuid>,
         index_id: Option<Uuid>,
+        algorithm_context_ids: Option<&[Uuid]>,
         limit: i64,
     ) -> Result<Vec<ReferenceCodebaseSearchHit>>;
 }

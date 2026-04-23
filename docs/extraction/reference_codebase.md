@@ -134,7 +134,7 @@ Embed the NL query with Jina `nl2code` query prefix, HNSW cosine search against 
 
 - `document_repo_id` — restrict to one paper's repo.
 - `index_id` — restrict to one build (tighter; useful for reproducibility).
-- `algorithm_ids[]` — restrict to chunks anchored to approved algorithms.
+- `algorithm_ids[]` — restrict to the indexed code neighborhood connected to approved algorithms, not just the exact anchor chunks.
 - `limit`, `max_distance` — cap hits + similarity ceiling.
 
 Result set rank boosts anchor-focus:
