@@ -128,6 +128,11 @@ pub struct WorkspaceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_types: Option<Vec<String>>,
 
+    /// Workspace-scoped chunk cosine-similarity floor. None means the
+    /// query engine's default (SOTAQueryConfig::chunk_min_score) is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_min_score: Option<f32>,
+
     /// Creation timestamp.
     pub created_at: String,
     /// Last update timestamp.

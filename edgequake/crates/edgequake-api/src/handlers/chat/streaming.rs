@@ -232,6 +232,11 @@ pub async fn chat_completion_stream(
             engine_request = engine_request.with_workspace_id(ws_id.to_string());
         }
 
+        // Workspace-scoped chunk_min_score override (None = engine default).
+        if let Some(score) = workspace_clone.as_ref().and_then(|ws| ws.chunk_min_score) {
+            engine_request = engine_request.with_chunk_min_score(score);
+        }
+
         // SPEC-005: Resolve document filter → allowed_document_ids for RAG context scoping
         if let Some(ref filter) = request_document_filter {
             let ws_id_str = workspace_id.as_ref().map(|id| id.to_string());

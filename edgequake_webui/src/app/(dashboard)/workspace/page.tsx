@@ -14,6 +14,7 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Select,
@@ -118,6 +119,9 @@ export default function WorkspacePage() {
   // candidates are dropped before they reach the review queue.
   const [selectedAcceptUnofficial, setSelectedAcceptUnofficial] = useState<boolean>(false);
   const [selectedEntityTypes, setSelectedEntityTypes] = useState<string[]>([]);
+  // Workspace-scoped chunk cosine floor. Empty string keeps the existing value
+  // (or, for a workspace that has none set, inherits the engine default).
+  const [chunkMinScoreInput, setChunkMinScoreInput] = useState<string>('');
 
   // Fetch workspace data
   const {
@@ -180,6 +184,7 @@ export default function WorkspacePage() {
       algorithm_review_mode?: string;
       accept_unofficial_implementations?: boolean;
       entity_types?: string[];
+      chunk_min_score?: number;
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
       _visionChanged?: boolean;
@@ -200,6 +205,7 @@ export default function WorkspacePage() {
         algorithm_review_mode: data.algorithm_review_mode,
         accept_unofficial_implementations: data.accept_unofficial_implementations,
         entity_types: data.entity_types,
+        chunk_min_score: data.chunk_min_score,
       }),
     onSuccess: (_result, variables) => {
       toast.success(t('workspace.updateSuccess', 'Workspace updated successfully'));
@@ -300,6 +306,15 @@ export default function WorkspacePage() {
     data.accept_unofficial_implementations = selectedAcceptUnofficial;
     data.entity_types = selectedEntityTypes;
 
+    // Workspace chunk_min_score — empty leaves field unset (keeps current).
+    const trimmed = chunkMinScoreInput.trim();
+    if (trimmed.length > 0) {
+      const parsed = Number.parseFloat(trimmed);
+      if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) {
+        data.chunk_min_score = parsed;
+      }
+    }
+
     // Track which models changed for post-save rebuild notification
     data._embeddingChanged = embeddingModelChanged ?? false;
     data._llmChanged = llmModelChanged ?? false;
@@ -319,6 +334,9 @@ export default function WorkspacePage() {
     setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
     setSelectedAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
     setSelectedEntityTypes([...(workspace?.entity_types ?? [])]);
+    setChunkMinScoreInput(
+      workspace?.chunk_min_score !== undefined ? String(workspace.chunk_min_score) : '',
+    );
   };
 
   const handleEditStart = () => {
@@ -331,6 +349,9 @@ export default function WorkspacePage() {
     setSelectedAlgoReviewMode(workspace?.algorithm_review_mode || 'manual');
     setSelectedAcceptUnofficial(workspace?.accept_unofficial_implementations ?? false);
     setSelectedEntityTypes([...(workspace?.entity_types ?? [])]);
+    setChunkMinScoreInput(
+      workspace?.chunk_min_score !== undefined ? String(workspace.chunk_min_score) : '',
+    );
     setIsEditing(true);
   };
 
@@ -691,6 +712,60 @@ export default function WorkspacePage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Retrieval Tuning — workspace-scoped chunk cosine floor */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Layers className="h-5 w-5 text-emerald-600" />
+            {t('workspace.retrievalTuning', 'Retrieval Tuning')}
+          </CardTitle>
+          <CardDescription>
+            {t(
+              'workspace.retrievalTuningDesc',
+              'Minimum cosine similarity a chunk must reach to be returned by queries. Higher values filter weak matches; lower values broaden recall. Range 0.0–1.0. Leave blank to inherit the engine default.',
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {isEditing ? (
+            <div className="flex items-center gap-3 max-w-md">
+              <Input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                placeholder={t('workspace.chunkMinScorePlaceholder', 'Engine default (0.4)')}
+                value={chunkMinScoreInput}
+                onChange={(e) => setChunkMinScoreInput(e.target.value)}
+                className="font-mono"
+                aria-label={t('workspace.chunkMinScoreLabel', 'Chunk minimum score')}
+              />
+              <span className="text-sm text-muted-foreground whitespace-nowrap">
+                {t('workspace.chunkMinScoreRange', 'cosine 0.0 – 1.0')}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg max-w-md">
+              <div className="flex-1">
+                <div className="font-medium font-mono">
+                  {workspace?.chunk_min_score !== undefined
+                    ? workspace.chunk_min_score.toFixed(2)
+                    : t('workspace.engineDefault', 'Engine default')}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {workspace?.chunk_min_score !== undefined
+                    ? t('workspace.chunkMinScoreOverride', 'Workspace override active')
+                    : t(
+                        'workspace.chunkMinScoreInherit',
+                        'Inheriting the engine-wide chunk_min_score',
+                      )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Vision LLM Configuration - SPEC-040: PDF-to-Markdown vision model */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

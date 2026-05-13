@@ -485,6 +485,15 @@ impl WorkspaceService for WorkspaceServiceImpl {
             }
         }
 
+        // Workspace-scoped chunk_min_score override (None → engine default 0.4).
+        if let Some(score) = request.chunk_min_score {
+            workspace.chunk_min_score = Some(score);
+            workspace.metadata.insert(
+                "chunk_min_score".to_string(),
+                serde_json::json!(score),
+            );
+        }
+
         sqlx::query(
             r#"
             INSERT INTO workspaces (workspace_id, tenant_id, name, slug, description, is_active, metadata, settings, created_at, updated_at)
@@ -512,6 +521,13 @@ impl WorkspaceService for WorkspaceServiceImpl {
                 metadata.insert(
                     "pdf_parser_backend".to_string(),
                     serde_json::Value::String(pdf_parser_backend.as_str().to_string()),
+                );
+            }
+            // Workspace-scoped chunk_min_score (None → engine default).
+            if let Some(score) = workspace.chunk_min_score {
+                metadata.insert(
+                    "chunk_min_score".to_string(),
+                    serde_json::json!(score),
                 );
             }
             serde_json::json!(metadata)
@@ -771,6 +787,15 @@ impl WorkspaceService for WorkspaceServiceImpl {
                     .metadata
                     .insert("entity_types".to_string(), serde_json::json!(normalized));
             }
+        }
+
+        // Workspace-scoped chunk_min_score override.
+        if let Some(score) = request.chunk_min_score {
+            workspace.chunk_min_score = Some(score);
+            workspace.metadata.insert(
+                "chunk_min_score".to_string(),
+                serde_json::json!(score),
+            );
         }
 
         workspace.updated_at = chrono::Utc::now();
@@ -1625,6 +1650,10 @@ impl WorkspaceRow {
         let accept_unofficial_implementations = metadata
             .get("accept_unofficial_implementations")
             .and_then(|v| v.as_bool());
+        let chunk_min_score = metadata
+            .get("chunk_min_score")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32);
 
         Workspace {
             workspace_id: self.workspace_id,
@@ -1650,6 +1679,7 @@ impl WorkspaceRow {
             algorithm_extraction_llm_model,
             algorithm_review_mode,
             accept_unofficial_implementations,
+            chunk_min_score,
         }
     }
 }

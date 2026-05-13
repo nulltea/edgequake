@@ -14,40 +14,6 @@ use edgequake_storage::traits::{MetadataFilter, VectorStorage};
 use super::{QueryEmbeddings, SOTAQueryEngine};
 
 impl SOTAQueryEngine {
-    pub(super) async fn query_naive_with_vector_storage(
-        &self,
-        embeddings: &QueryEmbeddings,
-        tenant_id: Option<String>,
-        workspace_id: Option<String>,
-        vector_storage: &Arc<dyn VectorStorage>,
-    ) -> Result<QueryContext> {
-        let mut context = QueryContext::new();
-        let mf = MetadataFilter::from_tenant_workspace(tenant_id, workspace_id);
-
-        // WHY 2x oversampling: Vector storage returns all types (entities, relationships, chunks).
-        // We retrieve 2x max_chunks to compensate for non-chunk results in top results.
-        // SPEC-007: tenant/workspace filter pushed to storage layer via query_filtered.
-        let results = vector_storage
-            .query_filtered(
-                &embeddings.query,
-                self.config.max_chunks * 2,
-                None,
-                mf.as_ref(),
-            )
-            .await?;
-
-        let chunk_results = filter_by_type(results, VectorType::Chunk);
-
-        for result in chunk_results
-            .iter()
-            .filter(|r| r.score >= self.config.min_score)
-            .take(self.config.max_chunks)
-        {
-            context.add_chunk(build_chunk_from_result(result));
-        }
-
-        Ok(context)
-    }
 
     /// Local mode with workspace-specific vector storage.
     pub(super) async fn query_local_with_vector_storage(
@@ -236,8 +202,11 @@ impl SOTAQueryEngine {
                 "OODA-231: Chunk retrieval result (top-k by cosine similarity)"
             );
 
-            for result in results {
-                context.add_chunk(build_chunk_from_result(&result));
+            for result in results
+                .iter()
+                .filter(|r| r.score >= self.config.chunk_min_score)
+            {
+                context.add_chunk(build_chunk_from_result(result));
             }
         }
 
@@ -443,8 +412,11 @@ impl SOTAQueryEngine {
                 )
                 .await?;
 
-            for result in results {
-                context.add_chunk(build_chunk_from_result(&result));
+            for result in results
+                .iter()
+                .filter(|r| r.score >= self.config.chunk_min_score)
+            {
+                context.add_chunk(build_chunk_from_result(result));
             }
         }
 
@@ -454,19 +426,16 @@ impl SOTAQueryEngine {
     /// Hybrid mode with workspace-specific vector storage.
     pub(super) async fn query_hybrid_with_vector_storage(
         &self,
-        query: &str,
         keywords: &ExtractedKeywords,
         embeddings: &QueryEmbeddings,
         tenant_id: Option<String>,
         workspace_id: Option<String>,
         vector_storage: &Arc<dyn VectorStorage>,
     ) -> Result<QueryContext> {
-        // WHY: Run entity-based (local+global), dense chunk retrieval, and sparse BM25 in parallel.
-        // Entity-based retrieval provides graph context (entities, relationships),
-        // but ONLY finds chunks linked to matching entities.
-        // Naive retrieval finds chunks by direct semantic similarity to the query,
-        // ensuring high recall even when entity extraction doesn't match.
-        let (local_context, global_context, naive_context, sparse_context) = tokio::join!(
+        // Run entity-based local + global retrieval in parallel against
+        // the workspace's vector storage. Each path preserves its chunks'
+        // cosine scores from `vector_storage.query_filtered`.
+        let (local_context, global_context) = tokio::join!(
             self.query_local_with_vector_storage(
                 keywords,
                 embeddings,
@@ -481,43 +450,41 @@ impl SOTAQueryEngine {
                 workspace_id.clone(),
                 vector_storage,
             ),
-            self.query_naive_with_vector_storage(
-                embeddings,
-                tenant_id.clone(),
-                workspace_id.clone(),
-                vector_storage,
-            ),
-            self.query_sparse_chunks(query, tenant_id.clone(), workspace_id.clone(),),
         );
 
         let local_context = local_context?;
         let global_context = global_context?;
-        let naive_context = naive_context?;
-        let sparse_context = sparse_context?;
 
         tracing::debug!(
-            naive_chunks = naive_context.chunks.len(),
-            sparse_chunks = sparse_context.chunks.len(),
             local_chunks = local_context.chunks.len(),
             local_entities = local_context.entities.len(),
             global_chunks = global_context.chunks.len(),
             global_entities = global_context.entities.len(),
-            "Hybrid merge: RRF chunks (local, global, naive, sparse)"
+            "Hybrid merge: round-robin (local, global)"
         );
 
         let mut merged = QueryContext::new();
 
-        let fused_chunks = self.rrf_fuse_chunks(vec![
-            &local_context.chunks,
-            &global_context.chunks,
-            &naive_context.chunks,
-            &sparse_context.chunks,
-        ]);
-        for chunk in fused_chunks {
-            merged.add_chunk(chunk);
+        // Round-robin chunks (preserves cosine scores).
+        let mut seen_chunks = std::collections::HashSet::new();
+        let max_chunk_len = local_context
+            .chunks
+            .len()
+            .max(global_context.chunks.len());
+        for i in 0..max_chunk_len {
+            if let Some(c) = local_context.chunks.get(i) {
+                if seen_chunks.insert(c.id.clone()) {
+                    merged.add_chunk(c.clone());
+                }
+            }
+            if let Some(c) = global_context.chunks.get(i) {
+                if seen_chunks.insert(c.id.clone()) {
+                    merged.add_chunk(c.clone());
+                }
+            }
         }
 
-        // Round-robin entities from local+global
+        // Round-robin entities.
         let mut seen_entities = std::collections::HashSet::new();
         let max_entity_len = local_context
             .entities
@@ -536,7 +503,7 @@ impl SOTAQueryEngine {
             }
         }
 
-        // Add relationships from local+global (dedup by key)
+        // Relationships from local+global (dedup by triple key).
         let mut seen_rels = std::collections::HashSet::new();
         for rel in local_context
             .relationships
@@ -553,7 +520,7 @@ impl SOTAQueryEngine {
             merged_chunks = merged.chunks.len(),
             merged_entities = merged.entities.len(),
             merged_relationships = merged.relationships.len(),
-            "Hybrid merge complete (RRF)"
+            "Hybrid merge complete (round-robin)"
         );
 
         Ok(merged)
@@ -562,7 +529,6 @@ impl SOTAQueryEngine {
     /// Mix mode with workspace-specific vector storage.
     pub(super) async fn query_mix_with_vector_storage(
         &self,
-        query: &str,
         keywords: &ExtractedKeywords,
         embeddings: &QueryEmbeddings,
         tenant_id: Option<String>,
@@ -571,7 +537,6 @@ impl SOTAQueryEngine {
     ) -> Result<QueryContext> {
         // Adaptive blend - delegates to hybrid for now
         self.query_hybrid_with_vector_storage(
-            query,
             keywords,
             embeddings,
             tenant_id,

@@ -133,7 +133,6 @@ async-openai = { version = "0.32", features = ["chat-completion", "embedding"] }
 
 # Text processing
 tiktoken-rs = "0.9"
-tantivy = "0.22"
 
 # Utilities
 uuid = { version = "1.11", features = ["v4", "serde"] }

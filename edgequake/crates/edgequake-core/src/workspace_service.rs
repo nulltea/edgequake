@@ -400,6 +400,11 @@ impl WorkspaceService for InMemoryWorkspaceService {
             }
         }
 
+        // Workspace-scoped chunk_min_score override.
+        if let Some(score) = request.chunk_min_score {
+            workspace.chunk_min_score = Some(score);
+        }
+
         let mut workspaces = self.workspaces.write().await;
         workspaces.insert(workspace.workspace_id, workspace.clone());
 
@@ -513,6 +518,9 @@ impl WorkspaceService for InMemoryWorkspaceService {
         }
         if let Some(embedding_dimension) = request.embedding_dimension {
             workspace.embedding_dimension = embedding_dimension;
+        }
+        if let Some(score) = request.chunk_min_score {
+            workspace.chunk_min_score = Some(score);
         }
 
         workspace.updated_at = chrono::Utc::now();

@@ -88,6 +88,10 @@ pub struct CreateWorkspaceRequest {
     ///
     /// @implements SPEC-085: Custom entity configuration from UI
     pub entity_types: Option<Vec<String>>,
+
+    /// Minimum chunk cosine-similarity floor for query retrieval.
+    /// `None` keeps the engine default (`SOTAQueryConfig::chunk_min_score`).
+    pub chunk_min_score: Option<f32>,
 }
 
 impl CreateWorkspaceRequest {
@@ -298,6 +302,9 @@ pub struct UpdateWorkspaceRequest {
     /// Workspace-scoped entity types for extraction.
     /// If None, keep the current workspace setting.
     pub entity_types: Option<Vec<String>>,
+    /// Minimum chunk cosine-similarity floor for query retrieval.
+    /// If None, keep the current workspace setting.
+    pub chunk_min_score: Option<f32>,
 }
 
 /// Statistics for a workspace.

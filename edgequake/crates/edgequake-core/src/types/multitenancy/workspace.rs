@@ -156,6 +156,17 @@ pub struct Workspace {
     /// verdicts, plus candidates the verifier couldn't score at all, are
     /// surfaced for review. Applies to Layer A and Layer B identically.
     pub accept_unofficial_implementations: Option<bool>,
+
+    // === Retrieval Tuning ===
+    /// Minimum cosine similarity for chunk vector matches, overriding the
+    /// engine default (`SOTAQueryConfig::chunk_min_score`, 0.4).
+    ///
+    /// Calibrate per workspace based on the embedder + corpus baseline:
+    /// for `qwen3-embedding:0.6b` against a technical corpus, irrelevant
+    /// queries plateau ~0.30 cosine on chunks; 0.40 separates noise from
+    /// real matches. Different embedders may need a different floor.
+    /// `None` keeps the engine default.
+    pub chunk_min_score: Option<f32>,
 }
 
 impl Workspace {
@@ -197,6 +208,7 @@ impl Workspace {
             algorithm_extraction_llm_model: None,
             algorithm_review_mode: None,
             accept_unofficial_implementations: None,
+            chunk_min_score: None,
         }
     }
 
@@ -419,6 +431,12 @@ impl Workspace {
     /// Use this when auto-detection doesn't work for custom models.
     pub fn with_embedding_dimension(mut self, dimension: usize) -> Self {
         self.embedding_dimension = dimension;
+        self
+    }
+
+    /// Override the engine-wide chunk-cosine floor for this workspace.
+    pub fn with_chunk_min_score(mut self, score: f32) -> Self {
+        self.chunk_min_score = Some(score);
         self
     }
 

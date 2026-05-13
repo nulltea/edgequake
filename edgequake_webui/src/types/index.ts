@@ -739,6 +739,11 @@ export interface Workspace {
    * @implements SPEC-085: Custom entity configuration from UI
    */
   entity_types?: string[];
+  /**
+   * Minimum cosine similarity floor applied to chunk results for this
+   * workspace. Undefined → engine default. Range 0.0–1.0.
+   */
+  chunk_min_score?: number;
   /** Creation timestamp. */
   created_at: string;
   /** Last update timestamp. */
@@ -809,6 +814,11 @@ export interface CreateWorkspaceRequest {
    * @implements SPEC-085: Custom entity configuration from UI
    */
   entity_types?: string[];
+  /**
+   * Minimum cosine-similarity floor for chunk retrieval (range 0.0–1.0).
+   * If omitted, the server uses the engine default.
+   */
+  chunk_min_score?: number;
 }
 
 /**

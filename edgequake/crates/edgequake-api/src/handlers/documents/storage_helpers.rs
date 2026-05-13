@@ -600,13 +600,6 @@ pub(super) async fn delete_document_for_reingestion(
                 "Failed to delete chunk embeddings during re-ingestion"
             );
         }
-        if let Err(e) = state.sparse_chunk_storage.delete_chunks(&chunk_ids).await {
-            tracing::warn!(
-                document_id = %document_id,
-                error = %e,
-                "Failed to delete sparse BM25 chunks during re-ingestion"
-            );
-        }
     }
 
     // Collect all KV keys to delete (chunks, metadata, content)

@@ -13,13 +13,13 @@ use edgequake_pipeline::Pipeline;
 use edgequake_query::{QueryEngine, QueryEngineConfig, SOTAQueryConfig, SOTAQueryEngine};
 use edgequake_rate_limiter::{RateLimitConfig as TokenBucketConfig, RateLimiter};
 use edgequake_storage::{
-    traits::{GraphStorage, KVStorage, SparseChunkStorage, VectorStorage},
+    traits::{GraphStorage, KVStorage, VectorStorage},
     PgVectorStorage, PgWorkspaceVectorRegistry, PostgresAGEGraphStorage, PostgresKVStorage,
 };
 use edgequake_tasks::PipelineState;
 
 use super::config::{AppConfig, SharedConversationService, SharedWorkspaceService, StorageMode};
-use super::{create_bm25_reranker, AppState};
+use super::AppState;
 use crate::cache_manager::CacheManager;
 use crate::handlers::ProgressBroadcaster;
 
@@ -290,24 +290,13 @@ impl AppState {
         ));
 
         // Create SOTA query engine with LightRAG-style enhancements
-        let reranker = create_bm25_reranker();
-        let bm25_dir =
-            std::env::var("EDGEQUAKE_BM25_INDEX_DIR").unwrap_or_else(|_| "./data/bm25".to_string());
-        let sparse_chunk_storage = Arc::new(edgequake_storage::TantivySparseChunkStorage::new(
-            &bm25_dir,
-        )?);
-        sparse_chunk_storage.initialize().await?;
-        tracing::info!(path = %bm25_dir, "✓ Sparse BM25 chunk storage initialized");
         let mut sota_builder = SOTAQueryEngine::new(
             SOTAQueryConfig::default(),
             Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
             Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
             Arc::clone(&embedding_provider),
             Arc::clone(&llm_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
-        )
-        .with_reranker(reranker)
-        .with_sparse_chunk_storage(Arc::clone(&sparse_chunk_storage)
-            as Arc<dyn edgequake_storage::traits::SparseChunkStorage>);
+        );
 
         // Phase 1 Reference Code GraphRAG: wire the code-embedder + vector
         // store when the embedder URL is configured. Missing env → feature
@@ -375,8 +364,6 @@ impl AppState {
             kv_storage: Arc::clone(&kv_storage) as Arc<dyn edgequake_storage::traits::KVStorage>,
             vector_storage: Arc::clone(&vector_storage)
                 as Arc<dyn edgequake_storage::traits::VectorStorage>,
-            sparse_chunk_storage: Arc::clone(&sparse_chunk_storage)
-                as Arc<dyn edgequake_storage::traits::SparseChunkStorage>,
             vector_registry,
             graph_storage: Arc::clone(&graph_storage)
                 as Arc<dyn edgequake_storage::traits::GraphStorage>,

@@ -77,17 +77,14 @@ pub use error::StorageError;
 pub use traits::{
     AlgorithmSearchHit, AlgorithmStepSummary, AlgorithmVectorStorage, CodeSearchHit,
     CodeVectorStorage, GraphEdge, GraphNode, GraphStorage, KVStorage, KnowledgeGraph,
-    MetadataFilter, ReferenceCodebaseSearchHit, ReferenceCodebaseVectorStorage,
-    SparseChunkDocument, SparseChunkSearchResult, SparseChunkStorage, VectorSearchResult,
+    MetadataFilter, ReferenceCodebaseSearchHit, ReferenceCodebaseVectorStorage, VectorSearchResult,
     VectorStorage, WorkspaceVectorConfig, WorkspaceVectorRegistry,
 };
 
 // Re-export adapters
 pub use adapters::memory::{
-    MemoryGraphStorage, MemoryKVStorage, MemorySparseChunkStorage, MemoryVectorStorage,
-    MemoryWorkspaceVectorRegistry,
+    MemoryGraphStorage, MemoryKVStorage, MemoryVectorStorage, MemoryWorkspaceVectorRegistry,
 };
-pub use adapters::TantivySparseChunkStorage;
 
 // Conditionally export PostgreSQL adapters
 #[cfg(feature = "postgres")]

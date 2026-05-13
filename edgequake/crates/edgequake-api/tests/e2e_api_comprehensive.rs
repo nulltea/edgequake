@@ -549,31 +549,6 @@ mod query_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
     }
-
-    #[tokio::test]
-    async fn test_query_with_reranking() {
-        let app = create_test_app();
-
-        let request = json!({
-            "query": "Test with reranking",
-            "enable_rerank": true,
-            "rerank_top_k": 5
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/query")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(serde_json::to_string(&request).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
 }
 
 // ============================================================================

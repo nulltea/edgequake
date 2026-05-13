@@ -433,14 +433,6 @@ pub async fn delete_document(
     // Delete all document data from KV storage
     state.kv_storage.delete(&keys_to_delete).await?;
 
-    if let Err(e) = state
-        .sparse_chunk_storage
-        .delete_by_document_id(&document_id)
-        .await
-    {
-        tracing::warn!(document_id = %document_id, error = %e, "Failed to delete sparse BM25 chunks");
-    }
-
     // FIX-ISSUE-73: Cascade delete pdf_documents, chunks, and the documents row.
     // WHY: Previously only KV/graph/vector data was cleaned up, leaving orphaned rows
     // in pdf_documents, chunks, and documents tables (GitHub Issue #73).

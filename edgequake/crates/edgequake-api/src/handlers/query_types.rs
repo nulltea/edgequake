@@ -7,15 +7,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 // ============================================================================
-// Default value helper functions
-// ============================================================================
-
-/// Default enable reranking (true).
-pub fn default_enable_rerank() -> bool {
-    true
-}
-
-// ============================================================================
 // Request DTOs
 // ============================================================================
 
@@ -84,18 +75,6 @@ pub struct QueryRequest {
     /// Conversation history for multi-turn context.
     #[serde(default)]
     pub conversation_history: Option<Vec<ConversationMessage>>,
-
-    /// Enable reranking of retrieved chunks for better relevance.
-    #[serde(default = "default_enable_rerank")]
-    pub enable_rerank: bool,
-
-    /// Rerank model to use (e.g., "cohere-rerank-v3").
-    #[serde(default)]
-    pub rerank_model: Option<String>,
-
-    /// Top K chunks to keep after reranking.
-    #[serde(default)]
-    pub rerank_top_k: Option<usize>,
 
     /// LLM provider to use for this query (e.g., "openai", "ollama", "lmstudio").
     /// If not provided, uses the workspace or server default.
@@ -251,10 +230,6 @@ pub struct QueryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
 
-    /// Whether reranking was applied.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub reranked: bool,
-
     /// Approved reference-code snippets attached to the query via the
     /// Reference Code GraphRAG enrichment (Phase 1). Empty unless the
     /// workspace has approved code_artifacts whose embedding is close to
@@ -336,10 +311,6 @@ pub struct SourceReference {
     /// Relevance score.
     pub score: f32,
 
-    /// Rerank score (if reranking was applied).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rerank_score: Option<f32>,
-
     /// Content snippet.
     pub snippet: Option<String>,
 
@@ -406,10 +377,6 @@ pub struct QueryStats {
     /// Number of sources retrieved.
     pub sources_retrieved: usize,
 
-    /// Rerank time in ms (if reranking was applied).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rerank_time_ms: Option<u64>,
-
     // ========================================================================
     // SPEC-032: Token metrics and model lineage (Items 18, 22)
     // ========================================================================
@@ -439,16 +406,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_enable_rerank() {
-        assert!(default_enable_rerank());
-    }
-
-    #[test]
     fn test_query_request_minimal() {
         let json = r#"{"query": "What is RAG?"}"#;
         let req: QueryRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.query, "What is RAG?");
-        assert!(req.enable_rerank); // default is true
         assert!(!req.context_only);
         assert!(!req.prompt_only);
     }
@@ -460,16 +421,12 @@ mod tests {
             "mode": "hybrid",
             "context_only": true,
             "include_references": true,
-            "max_results": 10,
-            "enable_rerank": false,
-            "rerank_top_k": 5
+            "max_results": 10
         }"#;
         let req: QueryRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.mode, Some("hybrid".to_string()));
         assert!(req.context_only);
         assert!(req.include_references);
-        assert!(!req.enable_rerank);
-        assert_eq!(req.rerank_top_k, Some(5));
     }
 
     #[test]
@@ -494,7 +451,6 @@ mod tests {
             source_type: "chunk".to_string(),
             id: "chunk_123".to_string(),
             score: 0.95,
-            rerank_score: Some(0.98),
             snippet: Some("This is a test snippet".to_string()),
             reference_id: Some(1),
             document_id: Some("doc_456".to_string()),
@@ -519,7 +475,6 @@ mod tests {
             source_type: "entity".to_string(),
             id: "ENT_ABC".to_string(),
             score: 0.8,
-            rerank_score: None,
             snippet: None,
             reference_id: None,
             document_id: None,
@@ -532,7 +487,6 @@ mod tests {
             source_chunk_ids: Some(vec!["chunk-1".to_string()]),
         };
         let json = serde_json::to_value(&source).unwrap();
-        assert!(json.get("rerank_score").is_none());
         assert!(json.get("reference_id").is_none());
         // SPEC-006: Verify entity metadata fields are serialized
         assert_eq!(json["entity_type"], "ORGANIZATION");
@@ -548,7 +502,6 @@ mod tests {
             generation_time_ms: 500,
             total_time_ms: 650,
             sources_retrieved: 5,
-            rerank_time_ms: Some(25),
             // SPEC-032 Item 18, 22: Token metrics and model lineage
             tokens_used: Some(124),
             tokens_per_second: Some(248.0),
@@ -558,7 +511,6 @@ mod tests {
         let json = serde_json::to_value(&stats).unwrap();
         assert_eq!(json["total_time_ms"], 650);
         assert_eq!(json["sources_retrieved"], 5);
-        assert_eq!(json["rerank_time_ms"], 25);
         // SPEC-032: Verify new fields
         assert_eq!(json["tokens_used"], 124);
         assert_eq!(json["tokens_per_second"], 248.0);
@@ -578,7 +530,6 @@ mod tests {
                 generation_time_ms: 100,
                 total_time_ms: 130,
                 sources_retrieved: 0,
-                rerank_time_ms: None,
                 // SPEC-032 Item 18, 22: Token metrics and model lineage (optional in test)
                 tokens_used: None,
                 tokens_per_second: None,
@@ -586,14 +537,12 @@ mod tests {
                 llm_model: None,
             },
             conversation_id: None,
-            reranked: false,
             reference_code: Vec::new(),
             approved_algorithms: Vec::new(),
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["mode"], "hybrid");
         assert!(json.get("conversation_id").is_none());
-        assert!(json.get("reranked").is_none()); // skip_serializing_if
         assert!(json.get("approved_algorithms").is_none()); // skip_serializing_if (empty)
     }
 }

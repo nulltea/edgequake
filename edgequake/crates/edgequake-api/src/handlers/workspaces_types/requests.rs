@@ -180,6 +180,12 @@ pub struct CreateWorkspaceApiRequest {
     /// Maximum 20 types.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_types: Option<Vec<String>>,
+
+    /// Minimum chunk cosine-similarity floor for query retrieval.
+    /// Overrides the engine default (SOTAQueryConfig::chunk_min_score).
+    /// Range: 0.0–1.0. Omit to inherit the engine default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_min_score: Option<f32>,
 }
 
 /// Request to update a workspace.
@@ -268,4 +274,9 @@ pub struct UpdateWorkspaceApiRequest {
     /// If omitted, keeps the current workspace configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_types: Option<Vec<String>>,
+
+    /// Update the workspace's chunk cosine-similarity floor.
+    /// Range: 0.0–1.0. Omit to keep the current value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_min_score: Option<f32>,
 }

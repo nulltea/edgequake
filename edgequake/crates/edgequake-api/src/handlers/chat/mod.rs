@@ -191,7 +191,6 @@ pub(crate) fn build_sources(context: &edgequake_query::QueryContext) -> Vec<Sour
             source_type: "chunk".to_string(),
             id: chunk.id.clone(),
             score: chunk.score,
-            rerank_score: None,
             snippet: Some(chunk.content.chars().take(200).collect()),
             reference_id: Some(ref_counter),
             document_id: chunk.document_id.clone(),
@@ -219,7 +218,6 @@ pub(crate) fn build_sources(context: &edgequake_query::QueryContext) -> Vec<Sour
             source_type: "entity".to_string(),
             id: entity.name.clone(),
             score: entity.score,
-            rerank_score: None,
             snippet: Some(entity.description.chars().take(200).collect()),
             reference_id: Some(ref_counter),
             // Source tracking for citations (LightRAG parity)
@@ -256,7 +254,6 @@ pub(crate) fn build_sources(context: &edgequake_query::QueryContext) -> Vec<Sour
             source_type: "relationship".to_string(),
             id: format!("{}->{}", rel.source, rel.target),
             score: rel.score,
-            rerank_score: None,
             snippet: Some(format!(
                 "{} {} {}",
                 rel.source, rel.relation_type, rel.target
@@ -468,7 +465,6 @@ mod tests {
             source_type: "chunk".to_string(),
             id: "doc-123-chunk-0".to_string(),
             score: 0.95,
-            rerank_score: None,
             snippet: Some("Test content".to_string()),
             reference_id: Some(1),
             document_id: Some("doc-123".to_string()),
@@ -496,7 +492,6 @@ mod tests {
             source_type: "chunk".to_string(),
             id: "doc-456-chunk-0".to_string(),
             score: 0.8,
-            rerank_score: None,
             snippet: Some("Content".to_string()),
             reference_id: Some(1),
             document_id: Some("doc-456".to_string()),
@@ -522,7 +517,6 @@ mod tests {
             source_type: "chunk".to_string(),
             id: "doc-789-chunk-0".to_string(),
             score: 0.7,
-            rerank_score: None,
             snippet: Some("Some text".to_string()),
             reference_id: Some(1),
             document_id: None,

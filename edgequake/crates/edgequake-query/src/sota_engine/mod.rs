@@ -85,9 +85,8 @@ use crate::truncation::TruncationConfig;
 
 use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
-use edgequake_llm::Reranker;
 use edgequake_storage::traits::{
-    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, SparseChunkStorage, VectorStorage,
+    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, VectorStorage,
 };
 
 /// Configuration for the SOTA query engine.
@@ -111,8 +110,19 @@ pub struct SOTAQueryConfig {
     /// Graph traversal depth.
     pub graph_depth: usize,
 
-    /// Minimum similarity score threshold.
+    /// Minimum cosine similarity for entity / relationship vector matches.
+    /// Used by the graph-side retrieval paths (Local entity-vector,
+    /// Global relationship-vector). Calibrated for entity-vector noise.
     pub min_score: f32,
+
+    /// Minimum cosine similarity for chunk vector matches.
+    ///
+    /// Chunk embeddings sit at a higher baseline cosine than entity/relationship
+    /// embeddings against typical technical corpora — for embedders like
+    /// qwen3-embedding:0.6b, irrelevant queries still produce ~0.30 cosine on
+    /// chunks. A separate floor keeps the chunk recall tight without
+    /// over-filtering graph nodes.
+    pub chunk_min_score: f32,
 
     /// Whether to use keyword extraction.
     pub use_keyword_extraction: bool,
@@ -126,23 +136,6 @@ pub struct SOTAQueryConfig {
     /// Keyword cache TTL in seconds.
     pub keyword_cache_ttl_secs: u64,
 
-    /// Enable reranking for improved retrieval precision.
-    pub enable_rerank: bool,
-
-    /// Minimum rerank score threshold (0.0 - 1.0).
-    pub min_rerank_score: f32,
-
-    /// Top K results to keep after reranking.
-    pub rerank_top_k: usize,
-
-    /// Enable sparse BM25 branch in Hybrid/Mix retrieval.
-    pub enable_sparse_hybrid: bool,
-
-    /// Number of sparse BM25 chunk candidates to retrieve before RRF fusion.
-    pub sparse_top_k: usize,
-
-    /// Reciprocal Rank Fusion rank constant.
-    pub rrf_k: f32,
 }
 
 impl Default for SOTAQueryConfig {
@@ -164,6 +157,11 @@ impl Default for SOTAQueryConfig {
             max_context_tokens: 30000,
             graph_depth: 2,
             min_score: 0.1,
+            // WHY 0.4: Calibrated against qwen3-embedding:0.6b on a technical corpus.
+            // Empirically, irrelevant queries plateau around 0.28-0.32 chunk cosine
+            // while relevant chunks score 0.46+. A 0.4 floor cleanly separates the
+            // two regimes. Retune per workspace/embedder if false negatives appear.
+            chunk_min_score: 0.4,
             use_keyword_extraction: true,
             use_adaptive_mode: true,
             // WHY derived from max_context_tokens: The truncation budget MUST match
@@ -176,15 +174,6 @@ impl Default for SOTAQueryConfig {
                 max_total_tokens: 30000,
             },
             keyword_cache_ttl_secs: 24 * 60 * 60, // 24 hours
-            enable_rerank: true,                  // Enable by default for SOTA quality
-            // WHY 0.1: BM25 scores can be low for short documents or simple queries.
-            // 0.3 was too aggressive and filtered out valid chunks. 0.1 matches min_score.
-            min_rerank_score: 0.1,
-            // WHY 20: Match max_chunks to keep all chunk candidates after reranking.
-            rerank_top_k: 20,
-            enable_sparse_hybrid: true,
-            sparse_top_k: 40,
-            rrf_k: 60.0,
         }
     }
 }
@@ -262,8 +251,6 @@ pub struct SOTAQueryEngine {
     llm_provider: Arc<dyn LLMProvider>,
     keyword_extractor: Arc<dyn KeywordExtractor>,
     tokenizer: Arc<dyn Tokenizer>,
-    /// Optional reranker for improved retrieval precision.
-    reranker: Option<Arc<dyn Reranker>>,
     /// Cache for keyword validation (keyword -> exists_in_graph).
     /// WHY: Avoids repeated graph lookups for the same keywords.
     keyword_validation_cache: Arc<tokio::sync::RwLock<std::collections::HashMap<String, bool>>>,
@@ -276,8 +263,6 @@ pub struct SOTAQueryEngine {
     /// Approved-algorithm vector store used by the sibling enrichment pass.
     /// `None` disables the post-retrieval algorithm-enrichment step.
     algorithm_vector_storage: Option<Arc<dyn AlgorithmVectorStorage>>,
-    /// Optional sparse BM25 chunk storage used by Hybrid/Mix retrieval.
-    sparse_chunk_storage: Option<Arc<dyn SparseChunkStorage>>,
 }
 
 impl SOTAQueryEngine {
@@ -306,21 +291,13 @@ impl SOTAQueryEngine {
             llm_provider,
             keyword_extractor,
             tokenizer: Arc::new(SimpleTokenizer),
-            reranker: None, // No reranker by default
             keyword_validation_cache: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
-            sparse_chunk_storage: None,
         }
-    }
-
-    /// Create with a reranker for improved retrieval precision.
-    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
-        self.reranker = Some(reranker);
-        self
     }
 
     /// Create with mock keyword extractor (for testing).
@@ -341,14 +318,12 @@ impl SOTAQueryEngine {
             llm_provider,
             keyword_extractor,
             tokenizer: Arc::new(SimpleTokenizer),
-            reranker: None,
             keyword_validation_cache: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
-            sparse_chunk_storage: None,
         }
     }
 
@@ -394,20 +369,9 @@ impl SOTAQueryEngine {
         self
     }
 
-    /// Wire in sparse BM25 chunk retrieval for Hybrid/Mix mode.
-    pub fn with_sparse_chunk_storage(mut self, storage: Arc<dyn SparseChunkStorage>) -> Self {
-        self.sparse_chunk_storage = Some(storage);
-        self
-    }
-
     /// Accessor for the algorithm vector store (None = feature off).
     pub fn algorithm_vector_storage(&self) -> Option<&Arc<dyn AlgorithmVectorStorage>> {
         self.algorithm_vector_storage.as_ref()
-    }
-
-    /// Accessor for sparse chunk storage (None = feature off).
-    pub fn sparse_chunk_storage(&self) -> Option<&Arc<dyn SparseChunkStorage>> {
-        self.sparse_chunk_storage.as_ref()
     }
 }
 
@@ -418,11 +382,10 @@ impl SOTAQueryEngine {
     }
 }
 
+mod keyword_validation;
 mod prompt;
 mod query_entry;
 mod query_modes;
-mod reranking;
-mod sparse_fusion;
 mod vector_queries;
 
 #[cfg(test)]

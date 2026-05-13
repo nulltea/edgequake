@@ -122,6 +122,15 @@ impl QueryContext {
         self.relationships.push(rel);
     }
 
+    /// Drop chunks whose cosine score is below `min_score`.
+    ///
+    /// Used to apply a per-query chunk floor override (typically sourced
+    /// from `workspace.chunk_min_score`) on top of the engine-level default
+    /// already applied during retrieval.
+    pub fn filter_chunks_by_score(&mut self, min_score: f32) {
+        self.chunks.retain(|c| c.score >= min_score);
+    }
+
     /// Build a text representation for LLM context.
     pub fn to_context_string(&self) -> String {
         let mut parts = Vec::new();

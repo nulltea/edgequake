@@ -15,8 +15,7 @@ use edgequake_query::{
     QueryRequest, SOTAQueryConfig, SOTAQueryEngine,
 };
 use edgequake_storage::{
-    GraphStorage, MemoryGraphStorage, MemorySparseChunkStorage, MemoryVectorStorage,
-    SparseChunkDocument, SparseChunkStorage, VectorStorage,
+    GraphStorage, MemoryGraphStorage, MemoryVectorStorage, VectorStorage,
 };
 use serde_json::json;
 
@@ -279,16 +278,11 @@ mod sota_config_tests {
             max_context_tokens: 6000,
             graph_depth: 3,
             min_score: 0.2,
+            chunk_min_score: 0.4,
             use_keyword_extraction: false,
             use_adaptive_mode: false,
             truncation: Default::default(),
             keyword_cache_ttl_secs: 3600,
-            enable_rerank: true,
-            min_rerank_score: 0.3,
-            rerank_top_k: 10,
-            enable_sparse_hybrid: true,
-            sparse_top_k: 30,
-            rrf_k: 60.0,
         };
 
         assert_eq!(config.default_mode, QueryMode::Local);
@@ -849,204 +843,6 @@ mod keywords_tests {
     }
 }
 
-// =============================================================================
-// BM25 Reranker Integration Tests (OODA Loop 15)
-// =============================================================================
-
-mod reranker_integration_tests {
-    use super::*;
-    use edgequake_llm::{BM25Reranker, Reranker};
-
-    /// Test BM25 reranker integration with query engine.
-    #[tokio::test]
-    async fn test_bm25_reranker_with_query_engine() {
-        let vector_storage = create_test_vector_storage().await;
-        let graph_storage = create_test_graph_storage().await;
-        let llm = create_mock_provider();
-        let embedding = create_mock_embedding();
-
-        let config = SOTAQueryConfig {
-            enable_rerank: true,
-            min_rerank_score: 0.01, // Low threshold for test
-            rerank_top_k: 10,
-            ..Default::default()
-        };
-
-        let reranker = Arc::new(BM25Reranker::new());
-
-        let engine = SOTAQueryEngine::with_mock_keywords(
-            config,
-            vector_storage,
-            graph_storage,
-            embedding,
-            llm,
-        )
-        .with_reranker(reranker);
-
-        let request = QueryRequest::new("EdgeQuake knowledge graph").with_mode(QueryMode::Naive);
-
-        let response = engine.query(request).await.unwrap();
-
-        // Should return a response (context found and reranked)
-        assert!(!response.answer.is_empty());
-    }
-
-    /// Test BM25 precision for car model queries.
-    #[tokio::test]
-    async fn test_bm25_reranker_car_models() {
-        let reranker = BM25Reranker::new();
-
-        // Simulating Peugeot car spec search
-        let query = "Peugeot 2008 ENVY";
-        let documents = vec![
-            "Peugeot 208 is a compact hatchback.".to_string(),
-            "Peugeot 2008 ENVY is an SUV with premium features.".to_string(),
-            "Peugeot 3008 GT is a larger crossover.".to_string(),
-            "Citroën C3 is a city car.".to_string(),
-        ];
-
-        let results = reranker.rerank(query, &documents, None).await.unwrap();
-
-        // "2008 ENVY" should rank first due to exact match
-        assert_eq!(results[0].index, 1, "Peugeot 2008 ENVY should be first");
-
-        // Score should be significantly higher than others
-        assert!(results[0].relevance_score > results[1].relevance_score * 1.3);
-    }
-
-    /// Test BM25 handles French accent normalization.
-    #[tokio::test]
-    async fn test_bm25_french_car_specs() {
-        let reranker = BM25Reranker::new();
-
-        let query = "vehicule electrique";
-        let documents = vec![
-            "Le véhicule électrique Peugeot e-2008 offre 320km d'autonomie.".to_string(),
-            "La motorisation diesel reste populaire.".to_string(),
-            "Le système hybrid rechargeable combine deux moteurs.".to_string(),
-        ];
-
-        let results = reranker.rerank(query, &documents, None).await.unwrap();
-
-        // Electric vehicle doc should rank first
-        assert_eq!(results[0].index, 0);
-        assert!(results[0].relevance_score > 0.0);
-    }
-
-    /// Test BM25 IDF weighting with rare terms.
-    #[tokio::test]
-    async fn test_bm25_idf_rare_terms() {
-        let reranker = BM25Reranker::new();
-
-        // "ENVY" is rare (1 doc), "Peugeot" is common (all docs)
-        let query = "ENVY";
-        let documents = vec![
-            "Peugeot 208 Style is available.".to_string(),
-            "Peugeot 2008 ENVY has premium trim.".to_string(),
-            "Peugeot 3008 GT Line offers sport styling.".to_string(),
-        ];
-
-        let results = reranker.rerank(query, &documents, None).await.unwrap();
-
-        // Doc with rare "ENVY" term should rank first
-        assert_eq!(results[0].index, 1);
-        // Other docs should have 0 score (no matching term)
-        assert_eq!(results[1].relevance_score, 0.0);
-        assert_eq!(results[2].relevance_score, 0.0);
-    }
-
-    /// Test reranker trait is properly implemented.
-    #[tokio::test]
-    async fn test_bm25_reranker_trait() {
-        let reranker: Arc<dyn Reranker> = Arc::new(BM25Reranker::new());
-
-        assert_eq!(reranker.name(), "bm25");
-        assert_eq!(reranker.model(), "bm25-reranker");
-
-        let results = reranker
-            .rerank("test", &["test document".to_string()], None)
-            .await
-            .unwrap();
-        assert_eq!(results.len(), 1);
-    }
-
-    /// Test for_rag() preset with stemming (OODA Loop 13).
-    ///
-    /// Verifies that stemming improves matching:
-    /// - Query "running" should match document containing "run"
-    #[tokio::test]
-    async fn test_bm25_for_rag_stemming() {
-        let reranker = BM25Reranker::for_rag();
-
-        // Query uses different morphological form
-        let query = "running fast";
-        let documents = vec![
-            "The athlete runs very fast in the race.".to_string(), // "runs" stems to "run"
-            "Swimming is a different sport.".to_string(),
-            "The car is parked.".to_string(),
-        ];
-
-        let results = reranker.rerank(query, &documents, None).await.unwrap();
-
-        // First doc should rank highest due to stemming match
-        assert_eq!(
-            results[0].index, 0,
-            "Stemming should match 'running' to 'runs'"
-        );
-        assert!(results[0].relevance_score > 0.0);
-    }
-
-    /// Test for_semantic() preset with phrase boosting (OODA Loop 13).
-    ///
-    /// Verifies that phrase boosting rewards adjacent terms:
-    /// - "knowledge graph" should score higher than "graph of knowledge"
-    #[tokio::test]
-    async fn test_bm25_for_semantic_phrase_boost() {
-        let reranker = BM25Reranker::for_semantic();
-
-        let query = "knowledge graph";
-        let documents = vec![
-            "A knowledge graph stores relationships between entities.".to_string(),
-            "The graph of knowledge is complex.".to_string(),
-            "Machine learning models are trained on data.".to_string(),
-        ];
-
-        let results = reranker.rerank(query, &documents, None).await.unwrap();
-
-        // Both first two docs have "knowledge" and "graph"
-        // But first should rank higher due to phrase adjacency
-        assert_eq!(
-            results[0].index, 0,
-            "Phrase boost should prefer adjacent terms"
-        );
-
-        // First two should score higher than third (which has no matches)
-        assert!(results[0].relevance_score > results[2].relevance_score);
-        assert!(results[1].relevance_score > results[2].relevance_score);
-    }
-
-    /// Test new_enhanced() vs new() for Unicode handling (OODA Loop 13).
-    #[tokio::test]
-    async fn test_bm25_enhanced_unicode() {
-        let enhanced = BM25Reranker::new_enhanced();
-        let minimal = BM25Reranker::new();
-
-        // Query without accent
-        let query = "resume";
-        let documents = vec![
-            "Le résumé du document est clair.".to_string(), // French with accent
-            "A random sentence about nothing.".to_string(),
-        ];
-
-        let enhanced_results = enhanced.rerank(query, &documents, None).await.unwrap();
-        let minimal_results = minimal.rerank(query, &documents, None).await.unwrap();
-
-        // Both should normalize Unicode, but enhanced also stems
-        // Both should rank the French doc first
-        assert_eq!(enhanced_results[0].index, 0);
-        assert_eq!(minimal_results[0].index, 0);
-    }
-}
 
 // =============================================================================
 // Chunk Ranking & Hybrid E2E Tests
@@ -1058,7 +854,6 @@ mod reranker_integration_tests {
 
 mod chunk_ranking_and_hybrid_tests {
     use super::*;
-    use edgequake_llm::{BM25Reranker, Reranker};
 
     /// Create a 1536-dim vector with controlled direction in dims 0 and 1.
     ///
@@ -1073,12 +868,14 @@ mod chunk_ranking_and_hybrid_tests {
 
     /// Build the base config used by most tests in this module.
     ///
-    /// Disables keyword extraction, adaptive mode, and reranking so that
-    /// test assertions reflect pure cosine-similarity ranking.
+    /// Disables keyword extraction and adaptive mode so that test
+    /// assertions reflect pure cosine-similarity ranking.
     fn base_config() -> SOTAQueryConfig {
         SOTAQueryConfig {
             min_score: 0.0,
-            enable_rerank: false,
+            // Tests assert on raw ranking of small synthetic vectors —
+            // production chunk floor (0.4) would filter the test fixtures.
+            chunk_min_score: 0.0,
             use_keyword_extraction: false,
             use_adaptive_mode: false,
             ..Default::default()
@@ -1937,200 +1734,7 @@ mod chunk_ranking_and_hybrid_tests {
         assert_eq!(config.default_mode, QueryMode::Hybrid);
         assert!(config.use_keyword_extraction);
         assert!(config.use_adaptive_mode);
-        assert!(config.enable_rerank);
     }
 
     // -----------------------------------------------------------------
-    // Test 10
-    // -----------------------------------------------------------------
-
-    /// When the BM25 reranker is attached, chunks with matching terms must
-    /// outrank chunks that only have high cosine similarity but no term overlap.
-    #[tokio::test]
-    async fn test_reranker_preserves_score_ranking() {
-        let vs = Arc::new(MemoryVectorStorage::new("test", 1536));
-        vs.initialize().await.unwrap();
-
-        vs.upsert(&[(
-            "entity-alpha".into(),
-            make_directional_vec(0.9, 0.3),
-            json!({
-                "type": "entity",
-                "entity_name": "ALPHA",
-                "entity_type": "CONCEPT",
-                "description": "Alpha"
-            }),
-        )])
-        .await
-        .unwrap();
-
-        // chunk-cosine: HIGH cosine sim, but content has NO matching query terms
-        // chunk-bm25:   lower cosine sim, but content MATCHES "EdgeQuake knowledge graph"
-        vs.upsert(&[
-            (
-                "chunk-cosine".into(),
-                make_directional_vec(0.99, 0.1),
-                json!({
-                    "type": "chunk",
-                    "content": "Vector storage optimization and indexing strategies"
-                }),
-            ),
-            (
-                "chunk-bm25".into(),
-                make_directional_vec(0.5, 0.5),
-                json!({
-                    "type": "chunk",
-                    "content": "EdgeQuake is a knowledge graph system for RAG"
-                }),
-            ),
-        ])
-        .await
-        .unwrap();
-
-        let gs = Arc::new(MemoryGraphStorage::new("test"));
-        gs.initialize().await.unwrap();
-        gs.upsert_node(
-            "ALPHA",
-            [
-                ("entity_type".to_string(), json!("CONCEPT")),
-                ("description".to_string(), json!("Alpha")),
-                (
-                    "source_chunk_ids".to_string(),
-                    json!(["chunk-cosine", "chunk-bm25"]),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        )
-        .await
-        .unwrap();
-
-        let provider = Arc::new(MockProvider::new());
-        enqueue_directional_embeddings(&provider).await;
-
-        let mut config = base_config();
-        config.enable_rerank = true;
-        config.min_rerank_score = 0.0; // Keep all chunks including zero-score
-        config.rerank_top_k = 10;
-
-        let reranker: Arc<dyn Reranker> = Arc::new(BM25Reranker::new());
-
-        let engine =
-            SOTAQueryEngine::with_mock_keywords(config, vs, gs, provider.clone(), provider)
-                .with_reranker(reranker);
-
-        let request = QueryRequest::new("EdgeQuake knowledge graph")
-            .with_mode(QueryMode::Local)
-            .context_only();
-
-        let response = engine.query(request).await.unwrap();
-
-        assert!(
-            response.context.chunks.len() >= 2,
-            "Expected at least 2 chunks, got {}",
-            response.context.chunks.len()
-        );
-
-        // BM25 reranking should put chunk-bm25 first because its content
-        // matches "EdgeQuake knowledge graph" while chunk-cosine does not.
-        assert_eq!(
-            response.context.chunks[0].id,
-            "chunk-bm25",
-            "BM25 reranker should rank chunk-bm25 first due to term matching, \
-             but got: {:?}",
-            response
-                .context
-                .chunks
-                .iter()
-                .map(|c| (c.id.as_str(), c.score))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_hybrid_rrf_promotes_sparse_exact_match() {
-        let vs = Arc::new(MemoryVectorStorage::new("test", 1536));
-        vs.initialize().await.unwrap();
-
-        vs.upsert(&[
-            (
-                "chunk-cosine".into(),
-                vec![1.0; 1536],
-                json!({
-                    "type": "chunk",
-                    "content": "Vector storage optimization and approximate nearest neighbors",
-                    "document_id": "doc-1",
-                }),
-            ),
-            (
-                "chunk-exact".into(),
-                make_directional_vec(1.0, 0.0),
-                json!({
-                    "type": "chunk",
-                    "content": "Euston non-interactivity transformer privacy inference",
-                    "document_id": "doc-1",
-                }),
-            ),
-        ])
-        .await
-        .unwrap();
-
-        let sparse = Arc::new(MemorySparseChunkStorage::new());
-        sparse.initialize().await.unwrap();
-        sparse
-            .upsert_chunks(&[
-                SparseChunkDocument::new(
-                    "chunk-cosine",
-                    "Vector storage optimization and approximate nearest neighbors",
-                    json!({
-                        "type": "chunk",
-                        "content": "Vector storage optimization and approximate nearest neighbors",
-                        "document_id": "doc-1",
-                    }),
-                ),
-                SparseChunkDocument::new(
-                    "chunk-exact",
-                    "Euston non-interactivity transformer privacy inference",
-                    json!({
-                        "type": "chunk",
-                        "content": "Euston non-interactivity transformer privacy inference",
-                        "document_id": "doc-1",
-                    }),
-                ),
-            ])
-            .await
-            .unwrap();
-
-        let gs = Arc::new(MemoryGraphStorage::new("test"));
-        gs.initialize().await.unwrap();
-
-        let provider = Arc::new(MockProvider::new());
-        enqueue_directional_embeddings(&provider).await;
-
-        let mut config = base_config();
-        config.max_chunks = 10;
-        config.sparse_top_k = 10;
-
-        let engine =
-            SOTAQueryEngine::with_mock_keywords(config, vs, gs, provider.clone(), provider)
-                .with_sparse_chunk_storage(sparse);
-
-        let request = QueryRequest::new("Euston non-interactivity")
-            .with_mode(QueryMode::Hybrid)
-            .context_only();
-
-        let response = engine.query(request).await.unwrap();
-
-        assert_eq!(
-            response.context.chunks.first().map(|c| c.id.as_str()),
-            Some("chunk-exact"),
-            "RRF should promote the exact sparse match over a dense-only high-cosine chunk: {:?}",
-            response
-                .context
-                .chunks
-                .iter()
-                .map(|c| (c.id.as_str(), c.score))
-                .collect::<Vec<_>>()
-        );
-    }
 }

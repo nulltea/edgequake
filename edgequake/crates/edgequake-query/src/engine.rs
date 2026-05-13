@@ -107,14 +107,6 @@ pub struct QueryRequest {
     #[serde(default)]
     pub conversation_history: Vec<ConversationMessage>,
 
-    /// Override: enable or disable reranking for this request.
-    #[serde(default)]
-    pub enable_rerank: Option<bool>,
-
-    /// Override: rerank top K results.
-    #[serde(default)]
-    pub rerank_top_k: Option<usize>,
-
     /// Override: LLM provider to use for answer generation.
     /// Format: provider name (e.g., "ollama", "openai", "lmstudio").
     /// If not provided, uses the server default.
@@ -140,6 +132,13 @@ pub struct QueryRequest {
     /// @implements SPEC-005: Document date and pattern filters
     #[serde(default)]
     pub allowed_document_ids: Option<Vec<String>>,
+
+    /// Per-request override for the chunk cosine-similarity floor.
+    /// When `Some(x)`, the engine uses `x` instead of `SOTAQueryConfig::chunk_min_score`
+    /// for this query only. Plumbed from `workspace.chunk_min_score` at the
+    /// API layer.
+    #[serde(default)]
+    pub chunk_min_score: Option<f32>,
 }
 
 /// A single message in conversation history.
@@ -163,13 +162,18 @@ impl QueryRequest {
             prompt_only: false,
             params: HashMap::new(),
             conversation_history: Vec::new(),
-            enable_rerank: None,
-            rerank_top_k: None,
             llm_provider: None,
             llm_model: None,
             system_prompt: None,
             allowed_document_ids: None,
+            chunk_min_score: None,
         }
+    }
+
+    /// Set the chunk cosine-similarity floor for this request.
+    pub fn with_chunk_min_score(mut self, score: f32) -> Self {
+        self.chunk_min_score = Some(score);
+        self
     }
 
     /// Set the query mode.
@@ -263,18 +267,6 @@ impl QueryRequest {
             .get("workspace_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-    }
-
-    /// Override reranking for this request.
-    pub fn with_rerank(mut self, enable: bool) -> Self {
-        self.enable_rerank = Some(enable);
-        self
-    }
-
-    /// Set the rerank top K for this request.
-    pub fn with_rerank_top_k(mut self, top_k: usize) -> Self {
-        self.rerank_top_k = Some(top_k);
-        self
     }
 
     /// Set pre-resolved document IDs for filtering.

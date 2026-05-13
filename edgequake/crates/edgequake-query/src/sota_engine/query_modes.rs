@@ -185,8 +185,11 @@ impl SOTAQueryEngine {
                 )
                 .await?;
 
-            for result in results {
-                context.add_chunk(build_chunk_from_result(&result));
+            for result in results
+                .iter()
+                .filter(|r| r.score >= self.config.chunk_min_score)
+            {
+                context.add_chunk(build_chunk_from_result(result));
             }
         }
 
@@ -370,7 +373,7 @@ impl SOTAQueryEngine {
         let chunk_vectors = filter_by_type(vector_results, VectorType::Chunk);
         for result in chunk_vectors
             .iter()
-            .filter(|r| r.score >= self.config.min_score)
+            .filter(|r| r.score >= self.config.chunk_min_score)
             .take(self.config.max_chunks)
         {
             context.add_chunk(build_chunk_from_result(result));
@@ -415,12 +418,15 @@ impl SOTAQueryEngine {
             let existing_chunk_ids: std::collections::HashSet<_> =
                 context.chunks.iter().map(|c| c.id.clone()).collect();
 
-            for result in results {
+            for result in results
+                .iter()
+                .filter(|r| r.score >= self.config.chunk_min_score)
+            {
                 if existing_chunk_ids.contains(&result.id) {
                     continue;
                 }
 
-                context.add_chunk(build_chunk_from_result(&result));
+                context.add_chunk(build_chunk_from_result(result));
             }
         }
 
@@ -432,14 +438,13 @@ impl SOTAQueryEngine {
     /// @implements FEAT0103 (Hybrid Search Mode - combined local+global)
     pub(super) async fn query_hybrid(
         &self,
-        query: &str,
         keywords: &ExtractedKeywords,
         embeddings: &QueryEmbeddings,
         tenant_id: Option<String>,
         workspace_id: Option<String>,
     ) -> Result<QueryContext> {
         // Run local and global in parallel
-        let (local_result, global_result, sparse_result) = tokio::join!(
+        let (local_result, global_result) = tokio::join!(
             self.query_local(
                 keywords,
                 embeddings,
@@ -452,12 +457,10 @@ impl SOTAQueryEngine {
                 tenant_id.clone(),
                 workspace_id.clone()
             ),
-            self.query_sparse_chunks(query, tenant_id.clone(), workspace_id.clone()),
         );
 
         let local = local_result?;
         let global = global_result?;
-        let sparse = sparse_result?;
 
         // Round-robin merge with deduplication
         let mut context = QueryContext::new();
@@ -496,10 +499,20 @@ impl SOTAQueryEngine {
             }
         }
 
-        let fused_chunks =
-            self.rrf_fuse_chunks(vec![&local.chunks, &global.chunks, &sparse.chunks]);
-        for chunk in fused_chunks {
-            context.add_chunk(chunk);
+        // Interleave chunks (preserves each chunk's cosine score from vector search).
+        let mut seen_chunks = std::collections::HashSet::new();
+        let max_chunk_len = local.chunks.len().max(global.chunks.len());
+        for i in 0..max_chunk_len {
+            if let Some(c) = local.chunks.get(i) {
+                if seen_chunks.insert(c.id.clone()) {
+                    context.add_chunk(c.clone());
+                }
+            }
+            if let Some(c) = global.chunks.get(i) {
+                if seen_chunks.insert(c.id.clone()) {
+                    context.add_chunk(c.clone());
+                }
+            }
         }
 
         Ok(context)
@@ -510,7 +523,6 @@ impl SOTAQueryEngine {
     /// @implements FEAT0105 (Mix Weighted Search - hybrid + direct chunks)
     pub(super) async fn query_mix(
         &self,
-        query: &str,
         keywords: &ExtractedKeywords,
         embeddings: &QueryEmbeddings,
         tenant_id: Option<String>,
@@ -522,7 +534,6 @@ impl SOTAQueryEngine {
         // SPEC-007: tenant/workspace filter pushed to storage layer via query_filtered.
         let (hybrid_result, chunk_results) = tokio::join!(
             self.query_hybrid(
-                query,
                 keywords,
                 embeddings,
                 tenant_id.clone(),
@@ -548,7 +559,7 @@ impl SOTAQueryEngine {
 
         for result in chunk_vectors
             .iter()
-            .filter(|r| r.score >= self.config.min_score)
+            .filter(|r| r.score >= self.config.chunk_min_score)
             .take(self.config.max_chunks)
         {
             if !existing_chunk_ids.contains(&result.id) {
@@ -587,7 +598,7 @@ impl SOTAQueryEngine {
 
         for result in chunk_results
             .iter()
-            .filter(|r| r.score >= self.config.min_score)
+            .filter(|r| r.score >= self.config.chunk_min_score)
             .take(self.config.max_chunks)
         {
             context.add_chunk(build_chunk_from_result(result));

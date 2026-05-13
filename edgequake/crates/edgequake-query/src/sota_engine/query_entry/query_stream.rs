@@ -79,7 +79,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -89,7 +88,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -103,28 +101,17 @@ impl SOTAQueryEngine {
             }
         };
 
-        // Step 4.5: Rerank chunks for improved precision (streaming version)
         let mut context = context;
         // SPEC-005: Filter context by allowed document IDs
         crate::context_filter::filter_context_by_document_ids(
             &mut context,
             request.allowed_document_ids.as_deref(),
         );
-        let should_rerank = request.enable_rerank.unwrap_or(self.config.enable_rerank);
-        if should_rerank && self.reranker.is_some() {
-            let reranked_chunks = self
-                .rerank_chunks(
-                    &request.query,
-                    context.chunks,
-                    request.enable_rerank,
-                    request.rerank_top_k,
-                )
-                .await;
-            context.chunks = reranked_chunks;
-            tracing::debug!(streaming = true, "Reranking completed for streaming query");
+        if let Some(min) = request.chunk_min_score {
+            context.filter_chunks_by_score(min);
         }
 
-        // Step 4.6: Sort entities by degree for importance-based ranking
+        // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
 
         // Step 5: Apply truncation
@@ -416,7 +403,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid_with_vector_storage(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -427,7 +413,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix_with_vector_storage(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -437,37 +422,22 @@ impl SOTAQueryEngine {
                 .await?
             }
             QueryMode::Naive => {
-                self.query_naive_with_vector_storage(
-                    &embeddings,
-                    request.tenant_id(),
-                    request.workspace_id(),
-                    &vector_storage,
-                )
-                .await?
+                self.query_naive(&embeddings, request.tenant_id(), request.workspace_id())
+                    .await?
             }
         };
 
-        // Step 4.5: Rerank chunks
         let mut context = context;
         // SPEC-005: Filter context by allowed document IDs
         crate::context_filter::filter_context_by_document_ids(
             &mut context,
             request.allowed_document_ids.as_deref(),
         );
-        let should_rerank = request.enable_rerank.unwrap_or(self.config.enable_rerank);
-        if should_rerank && self.reranker.is_some() {
-            let reranked_chunks = self
-                .rerank_chunks(
-                    &request.query,
-                    context.chunks,
-                    request.enable_rerank,
-                    request.rerank_top_k,
-                )
-                .await;
-            context.chunks = reranked_chunks;
+        if let Some(min) = request.chunk_min_score {
+            context.filter_chunks_by_score(min);
         }
 
-        // Step 4.6: Sort entities by degree
+        // Sort entities by degree
         self.sort_entities_by_degree(&mut context.entities);
 
         // Step 5: Apply truncation

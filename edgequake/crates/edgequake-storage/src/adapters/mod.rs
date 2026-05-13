@@ -22,9 +22,6 @@
 //! - [`BR0202`]: PostgreSQL adapter for production persistence
 
 pub mod memory;
-mod tantivy_sparse;
 
 #[cfg(feature = "postgres")]
 pub mod postgres;
-
-pub use tantivy_sparse::TantivySparseChunkStorage;

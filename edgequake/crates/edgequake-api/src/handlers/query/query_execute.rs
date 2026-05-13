@@ -111,18 +111,17 @@ pub async fn execute_query(
         engine_request = engine_request.with_workspace_id(workspace_id.clone());
     }
 
+    // Workspace-scoped chunk_min_score override (None = engine default).
+    if let Some(score) = workspace.as_ref().and_then(|ws| ws.chunk_min_score) {
+        engine_request = engine_request.with_chunk_min_score(score);
+    }
+
     if request.context_only {
         engine_request = engine_request.context_only();
     }
 
     if request.prompt_only {
         engine_request = engine_request.prompt_only();
-    }
-
-    // Add rerank settings to engine request
-    engine_request = engine_request.with_rerank(request.enable_rerank);
-    if let Some(top_k) = request.rerank_top_k {
-        engine_request = engine_request.with_rerank_top_k(top_k);
     }
 
     // SPEC-032: Add LLM provider/model overrides if provided in request
@@ -311,34 +310,12 @@ pub async fn execute_query(
     // Convert sources from context
     let mut sources = Vec::new();
 
-    // Apply simple relevance-based reranking if enabled
-    // In a production environment, this would call an external reranker service (e.g., Cohere)
-    let reranked = request.enable_rerank;
-    let rerank_time_ms = if reranked {
-        // Simulate rerank time for now - actual implementation would call rerank API
-        Some(5u64)
-    } else {
-        None
-    };
-
-    // Get rerank_top_k or default to all results
-    let rerank_top_k = request.rerank_top_k.unwrap_or(usize::MAX);
-
-    // Build chunk sources with rerank scores
     let mut ref_counter = 1usize;
     let mut chunk_sources: Vec<SourceReference> = result
         .context
         .chunks
         .iter()
         .map(|chunk| {
-            // Calculate simulated rerank score based on original score
-            let rerank_score = if reranked {
-                // Normalize score to 0-1 range and apply slight boost
-                Some((chunk.score.min(1.0) * 0.95 + 0.05).min(1.0))
-            } else {
-                None
-            };
-
             let ref_id = ref_counter;
             ref_counter += 1;
 
@@ -346,7 +323,6 @@ pub async fn execute_query(
                 source_type: "chunk".to_string(),
                 id: chunk.id.clone(),
                 score: chunk.score,
-                rerank_score,
                 snippet: Some(if request.context_only {
                     chunk.content.clone()
                 } else {
@@ -377,17 +353,6 @@ pub async fn execute_query(
             .starts_with("injection::")
     });
 
-    // Sort by rerank score if reranking is enabled
-    if reranked {
-        chunk_sources.sort_by(|a, b| {
-            b.rerank_score
-                .unwrap_or(0.0)
-                .partial_cmp(&a.rerank_score.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        chunk_sources.truncate(rerank_top_k);
-    }
-
     sources.extend(chunk_sources);
 
     for entity in &result.context.entities {
@@ -410,7 +375,6 @@ pub async fn execute_query(
             source_type: "entity".to_string(),
             id: entity.name.clone(),
             score: entity.score,
-            rerank_score: None,
             snippet: Some(if request.context_only {
                 entity.description.clone()
             } else {
@@ -455,7 +419,6 @@ pub async fn execute_query(
             source_type: "relationship".to_string(),
             id: format!("{}->{}", rel.source, rel.target),
             score: rel.score,
-            rerank_score: None,
             snippet: Some(format!(
                 "{} {} {}",
                 rel.source, rel.relation_type, rel.target
@@ -564,7 +527,6 @@ pub async fn execute_query(
             sources_retrieved: result.context.chunks.len()
                 + result.context.entities.len()
                 + result.context.relationships.len(),
-            rerank_time_ms,
             // SPEC-032 Item 18, 22: Token metrics and model lineage
             tokens_used,
             tokens_per_second,
@@ -572,7 +534,6 @@ pub async fn execute_query(
             llm_model,
         },
         conversation_id,
-        reranked,
         reference_code,
         approved_algorithms,
     };

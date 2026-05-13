@@ -302,6 +302,11 @@ export interface UpdateWorkspaceRequest {
    * Empty or omitted values allow the server to use its defaults.
    */
   entity_types?: string[];
+  /**
+   * Minimum cosine-similarity floor for chunk retrieval (0.0–1.0).
+   * Overrides the server's default for this workspace's queries.
+   */
+  chunk_min_score?: number;
 }
 
 /**

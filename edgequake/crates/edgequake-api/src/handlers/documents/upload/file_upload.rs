@@ -302,36 +302,6 @@ pub async fn upload_file(
         "VECTOR STORAGE: Chunk embedding storage complete"
     );
 
-    let sparse_chunks: Vec<_> = result
-        .chunks
-        .iter()
-        .map(|chunk| {
-            let mut metadata = serde_json::json!({
-                "type": "chunk",
-                "document_id": document_id,
-                "index": chunk.index,
-                "content": chunk.content,
-                "source_file": filename,
-            });
-            if let Some(ref tid) = tenant_id_for_storage {
-                metadata["tenant_id"] = serde_json::json!(tid);
-            }
-            metadata["workspace_id"] = serde_json::json!(&workspace_id_for_storage);
-            edgequake_storage::SparseChunkDocument::new(
-                chunk.id.clone(),
-                chunk.content.clone(),
-                metadata,
-            )
-        })
-        .collect();
-    if let Err(e) = state
-        .sparse_chunk_storage
-        .upsert_chunks(&sparse_chunks)
-        .await
-    {
-        tracing::warn!(document_id = %document_id, error = %e, "Failed to update sparse BM25 index");
-    }
-
     // Store entities and relationships in graph storage
     tracing::info!(
         extraction_count = result.extractions.len(),

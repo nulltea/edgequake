@@ -95,6 +95,7 @@ pub async fn create_workspace(
             .and_then(PdfParserBackend::from_env_str),
         // SPEC-085: Pass entity_types from HTTP request body if provided
         entity_types: request.entity_types.clone(),
+        chunk_min_score: request.chunk_min_score,
     };
 
     // Store workspace via workspace service
@@ -278,6 +279,7 @@ pub async fn update_workspace(
         algorithm_review_mode: request.algorithm_review_mode,
         accept_unofficial_implementations: request.accept_unofficial_implementations,
         entity_types: request.entity_types,
+        chunk_min_score: request.chunk_min_score,
     };
 
     let workspace = state

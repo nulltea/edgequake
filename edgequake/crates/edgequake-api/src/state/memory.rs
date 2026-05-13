@@ -13,13 +13,12 @@ use edgequake_pipeline::Pipeline;
 use edgequake_query::{QueryEngine, QueryEngineConfig, SOTAQueryConfig, SOTAQueryEngine};
 use edgequake_rate_limiter::{RateLimitConfig as TokenBucketConfig, RateLimiter};
 use edgequake_storage::adapters::memory::{
-    MemoryGraphStorage, MemoryKVStorage, MemorySparseChunkStorage, MemoryVectorStorage,
-    MemoryWorkspaceVectorRegistry,
+    MemoryGraphStorage, MemoryKVStorage, MemoryVectorStorage, MemoryWorkspaceVectorRegistry,
 };
 use edgequake_tasks::PipelineState;
 
 use super::config::{AppConfig, SharedConversationService, SharedWorkspaceService, StorageMode};
-use super::{create_bm25_reranker, AppState};
+use super::AppState;
 use crate::cache_manager::CacheManager;
 use crate::handlers::ProgressBroadcaster;
 
@@ -34,7 +33,6 @@ impl AppState {
     pub fn new(
         kv_storage: Arc<dyn edgequake_storage::traits::KVStorage>,
         vector_storage: Arc<dyn edgequake_storage::traits::VectorStorage>,
-        sparse_chunk_storage: Arc<dyn edgequake_storage::traits::SparseChunkStorage>,
         vector_registry: Arc<dyn edgequake_storage::traits::WorkspaceVectorRegistry>,
         graph_storage: Arc<dyn edgequake_storage::traits::GraphStorage>,
         llm_provider: Arc<dyn edgequake_llm::traits::LLMProvider>,
@@ -56,7 +54,6 @@ impl AppState {
         Self {
             kv_storage,
             vector_storage,
-            sparse_chunk_storage,
             vector_registry,
             graph_storage,
             llm_provider,
@@ -131,7 +128,6 @@ impl AppState {
 
         let kv_storage = Arc::new(MemoryKVStorage::new("default"));
         let vector_storage = Arc::new(MemoryVectorStorage::new("default", embedding_dim));
-        let sparse_chunk_storage = Arc::new(MemorySparseChunkStorage::new());
         let graph_storage = Arc::new(MemoryGraphStorage::new("default"));
 
         // Log provider and dimension configuration for debugging
@@ -173,19 +169,13 @@ impl AppState {
         ));
 
         // Create SOTA query engine with LightRAG-style enhancements
-        let reranker = create_bm25_reranker();
-        let sota_engine = Arc::new(
-            SOTAQueryEngine::new(
-                SOTAQueryConfig::default(),
-                Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
-                Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
-                Arc::clone(&embedding_provider),
-                Arc::clone(&llm_provider),
-            )
-            .with_reranker(reranker)
-            .with_sparse_chunk_storage(Arc::clone(&sparse_chunk_storage)
-                as Arc<dyn edgequake_storage::traits::SparseChunkStorage>),
-        );
+        let sota_engine = Arc::new(SOTAQueryEngine::new(
+            SOTAQueryConfig::default(),
+            Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
+            Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
+            Arc::clone(&embedding_provider),
+            Arc::clone(&llm_provider),
+        ));
 
         // Create workspace vector registry for per-workspace dimensions
         let vector_registry: Arc<dyn edgequake_storage::traits::WorkspaceVectorRegistry> =
@@ -203,8 +193,6 @@ impl AppState {
             kv_storage: Arc::clone(&kv_storage) as Arc<dyn edgequake_storage::traits::KVStorage>,
             vector_storage: Arc::clone(&vector_storage)
                 as Arc<dyn edgequake_storage::traits::VectorStorage>,
-            sparse_chunk_storage: Arc::clone(&sparse_chunk_storage)
-                as Arc<dyn edgequake_storage::traits::SparseChunkStorage>,
             vector_registry,
             graph_storage: Arc::clone(&graph_storage)
                 as Arc<dyn edgequake_storage::traits::GraphStorage>,
@@ -253,7 +241,6 @@ impl AppState {
         let mock_provider = Arc::new(MockProvider::new());
         let kv_storage = Arc::new(MemoryKVStorage::new("test"));
         let vector_storage = Arc::new(MemoryVectorStorage::new("test", 1536)); // Match MockProvider dimension
-        let sparse_chunk_storage = Arc::new(MemorySparseChunkStorage::new());
         let graph_storage = Arc::new(MemoryGraphStorage::new("test"));
         let pipeline = Arc::new(Pipeline::default_pipeline());
 
@@ -279,17 +266,13 @@ impl AppState {
         ));
 
         // Create SOTA query engine with mock keywords for testing
-        let sota_engine = Arc::new(
-            SOTAQueryEngine::with_mock_keywords(
-                SOTAQueryConfig::default(),
-                Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
-                Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
-                Arc::clone(&mock_provider) as Arc<dyn edgequake_llm::traits::EmbeddingProvider>,
-                Arc::clone(&mock_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
-            )
-            .with_sparse_chunk_storage(Arc::clone(&sparse_chunk_storage)
-                as Arc<dyn edgequake_storage::traits::SparseChunkStorage>),
-        );
+        let sota_engine = Arc::new(SOTAQueryEngine::with_mock_keywords(
+            SOTAQueryConfig::default(),
+            Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
+            Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
+            Arc::clone(&mock_provider) as Arc<dyn edgequake_llm::traits::EmbeddingProvider>,
+            Arc::clone(&mock_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
+        ));
 
         // Create auth services with test configuration
         let auth_config = AuthConfig::default();
@@ -307,8 +290,6 @@ impl AppState {
             kv_storage: Arc::clone(&kv_storage) as Arc<dyn edgequake_storage::traits::KVStorage>,
             vector_storage: Arc::clone(&vector_storage)
                 as Arc<dyn edgequake_storage::traits::VectorStorage>,
-            sparse_chunk_storage: Arc::clone(&sparse_chunk_storage)
-                as Arc<dyn edgequake_storage::traits::SparseChunkStorage>,
             vector_registry,
             graph_storage: Arc::clone(&graph_storage)
                 as Arc<dyn edgequake_storage::traits::GraphStorage>,

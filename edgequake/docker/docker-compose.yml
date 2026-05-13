@@ -19,10 +19,9 @@ services:
             OPENAI_BASE_URL: "${OPENAI_BASE_URL:-http://host.docker.internal:11435/v1}"
             OPENAI_COMPATIBLE_BASE_URL: "${OPENAI_COMPATIBLE_BASE_URL:-https://ai.tail59ea6b.ts.net/v1}"
 
-            EDGEQUAKE_EMBEDDING_PROVIDER: "${EDGEQUAKE_EMBEDDING_PROVIDER:-ollama}"
-            OLLAMA_HOST: "${OLLAMA_HOST:-http://host.docker.internal:11434}"
-            OLLAMA_EMBEDDING_HOST: "${OLLAMA_EMBEDDING_HOST:-http://host.docker.internal:11434}"
-            OLLAMA_EMBEDDING_MODEL: "${OLLAMA_EMBEDDING_MODEL:-qwen3-embedding:0.6b}"
+            EDGEQUAKE_EMBEDDING_PROVIDER: "${EDGEQUAKE_EMBEDDING_PROVIDER:-lmstudio}"
+            LMSTUDIO_HOST: "${LMSTUDIO_HOST:-http://host.docker.internal:11439}"
+            EDGEQUAKE_EMBEDDING_MODEL: "${EDGEQUAKE_EMBEDDING_MODEL:-qwen3-embedding-0.6b}"
             EDGEQUAKE_EMBEDDING_DIMENSION: "${EDGEQUAKE_EMBEDDING_DIMENSION:-1024}"
 
             EDGEQUAKE_VISION_TIMEOUT_SECS: "${EDGEQUAKE_VISION_TIMEOUT_SECS:-3600}"

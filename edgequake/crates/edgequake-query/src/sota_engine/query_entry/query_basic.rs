@@ -112,7 +112,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -122,7 +121,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -138,32 +136,19 @@ impl SOTAQueryEngine {
         stats.retrieval_time_ms = retrieval_start.elapsed().as_millis() as u64;
         stats.context_tokens = context.token_count;
 
-        // Step 4.5: Rerank chunks for improved precision
         let mut context = context;
         // SPEC-005: Filter context by allowed document IDs
         crate::context_filter::filter_context_by_document_ids(
             &mut context,
             request.allowed_document_ids.as_deref(),
         );
-        let should_rerank = request.enable_rerank.unwrap_or(self.config.enable_rerank);
-        if should_rerank && self.reranker.is_some() {
-            let rerank_start = std::time::Instant::now();
-            let reranked_chunks = self
-                .rerank_chunks(
-                    &request.query,
-                    context.chunks,
-                    request.enable_rerank,
-                    request.rerank_top_k,
-                )
-                .await;
-            context.chunks = reranked_chunks;
-            let rerank_time = rerank_start.elapsed().as_millis() as u64;
-            tracing::debug!(rerank_time_ms = rerank_time, "Reranking completed");
-            // Include rerank time in retrieval
-            stats.retrieval_time_ms += rerank_time;
+
+        // Apply per-query chunk_min_score override (workspace-scoped).
+        if let Some(min) = request.chunk_min_score {
+            context.filter_chunks_by_score(min);
         }
 
-        // Step 4.6: Sort entities by degree for importance-based ranking
+        // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
 
         // Step 5: Apply truncation
@@ -313,7 +298,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -323,7 +307,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -339,30 +322,19 @@ impl SOTAQueryEngine {
         stats.retrieval_time_ms = retrieval_start.elapsed().as_millis() as u64;
         stats.context_tokens = context.token_count;
 
-        // Step 4.5: Rerank chunks
         let mut context = context;
         // SPEC-005: Filter context by allowed document IDs
         crate::context_filter::filter_context_by_document_ids(
             &mut context,
             request.allowed_document_ids.as_deref(),
         );
-        let should_rerank = request.enable_rerank.unwrap_or(self.config.enable_rerank);
-        if should_rerank && self.reranker.is_some() {
-            let rerank_start = std::time::Instant::now();
-            let reranked_chunks = self
-                .rerank_chunks(
-                    &request.query,
-                    context.chunks,
-                    request.enable_rerank,
-                    request.rerank_top_k,
-                )
-                .await;
-            context.chunks = reranked_chunks;
-            let rerank_time = rerank_start.elapsed().as_millis() as u64;
-            stats.retrieval_time_ms += rerank_time;
+
+        // Apply per-query chunk_min_score override (workspace-scoped).
+        if let Some(min) = request.chunk_min_score {
+            context.filter_chunks_by_score(min);
         }
 
-        // Step 4.6: Sort entities by degree
+        // Sort entities by degree
         self.sort_entities_by_degree(&mut context.entities);
 
         // Step 5: Apply truncation
@@ -503,7 +475,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -513,7 +484,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -529,34 +499,19 @@ impl SOTAQueryEngine {
         stats.retrieval_time_ms = retrieval_start.elapsed().as_millis() as u64;
         stats.context_tokens = context.token_count;
 
-        // Step 4.5: Rerank chunks for improved precision
         let mut context = context;
         // SPEC-005: Filter context by allowed document IDs
         crate::context_filter::filter_context_by_document_ids(
             &mut context,
             request.allowed_document_ids.as_deref(),
         );
-        let should_rerank = request.enable_rerank.unwrap_or(self.config.enable_rerank);
-        if should_rerank && self.reranker.is_some() {
-            let rerank_start = std::time::Instant::now();
-            let reranked_chunks = self
-                .rerank_chunks(
-                    &request.query,
-                    context.chunks,
-                    request.enable_rerank,
-                    request.rerank_top_k,
-                )
-                .await;
-            context.chunks = reranked_chunks;
-            let rerank_time = rerank_start.elapsed().as_millis() as u64;
-            tracing::debug!(
-                rerank_time_ms = rerank_time,
-                "Reranking completed (LLM override)"
-            );
-            stats.retrieval_time_ms += rerank_time;
+
+        // Apply per-query chunk_min_score override (workspace-scoped).
+        if let Some(min) = request.chunk_min_score {
+            context.filter_chunks_by_score(min);
         }
 
-        // Step 4.6: Sort entities by degree for importance-based ranking
+        // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
 
         // Step 5: Apply truncation
@@ -671,7 +626,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Hybrid => {
                 self.query_hybrid(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -681,7 +635,6 @@ impl SOTAQueryEngine {
             }
             QueryMode::Mix => {
                 self.query_mix(
-                    &request.query,
                     &keywords,
                     &embeddings,
                     request.tenant_id(),
@@ -695,27 +648,19 @@ impl SOTAQueryEngine {
             }
         };
 
-        // Step 4.5: Rerank chunks for improved precision
         let mut context = context;
         // SPEC-005: Filter context by allowed document IDs
         crate::context_filter::filter_context_by_document_ids(
             &mut context,
             request.allowed_document_ids.as_deref(),
         );
-        let should_rerank = request.enable_rerank.unwrap_or(self.config.enable_rerank);
-        if should_rerank && self.reranker.is_some() {
-            let reranked_chunks = self
-                .rerank_chunks(
-                    &request.query,
-                    context.chunks,
-                    request.enable_rerank,
-                    request.rerank_top_k,
-                )
-                .await;
-            context.chunks = reranked_chunks;
+
+        // Apply per-query chunk_min_score override (workspace-scoped).
+        if let Some(min) = request.chunk_min_score {
+            context.filter_chunks_by_score(min);
         }
 
-        // Step 4.6: Sort entities by degree for importance-based ranking
+        // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
 
         // Step 5: Apply truncation

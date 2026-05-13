@@ -470,7 +470,6 @@ pub async fn chat_completion(
             sources_retrieved: result.context.chunks.len()
                 + result.context.entities.len()
                 + result.context.relationships.len(),
-            rerank_time_ms: None,
             // SPEC-032 Item 18, 22: Token metrics and model lineage
             tokens_used: Some(result.stats.generated_tokens),
             tokens_per_second,
