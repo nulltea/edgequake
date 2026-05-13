@@ -26,3 +26,16 @@
 - `edgequake/crates/edgequake-api/src/processor/algorithm_extraction.rs` — calls `update_document_status()` which modifies document metadata during algo extraction
 
 ## Switch to context aware chunker
+
+## Add query-side instruction prefix for Qwen3-Embedding
+
+**Priority:** Medium
+**Context:** Qwen3-Embedding's model card recommends a per-task `Instruct:` prefix on queries (not on documents). Skipping it costs ~1–5% retrieval performance per the official tests. EdgeQuake currently sends raw queries to the embedder.
+
+### Required change
+
+- Prepend an instruction template on the embedding *query* path only (not document indexing). Suggested default for research-paper retrieval:
+  `Instruct: Given a research question, retrieve relevant paper chunks that answer it\nQuery: {user_query}`
+- Make the prefix configurable per workspace (different domains benefit from different phrasing).
+- Confirm the embedder strips it correctly via `--pooling last` (the last token should still be the query's, not the instruction's — but worth a quick cosine sanity check).
+
