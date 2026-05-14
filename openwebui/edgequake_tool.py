@@ -1,14 +1,15 @@
 """
 title: EdgeQuake RAG
 author: EdgeQuake
-version: 0.6.0
-description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships. v0.6.0 renders VLM-OCR-captured PDF figures as inline images.
+version: 0.7.1
+description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships. v0.7.1 instructs the chat model to compose natural-language queries (re-querying only on new terms) and to render retrieved figure images inline.
 """
 
 import json
 import os
-import requests
 from typing import Optional
+
+import requests
 from pydantic import BaseModel, Field
 
 
@@ -65,12 +66,29 @@ class Tools:
         __user__: dict = {},
     ) -> str:
         """
-        Search the EdgeQuake knowledge graph using RAG. Returns retrieved context (chunks, entities, relationships) from ingested documents.
-        The chat model should use this context to generate the answer.
-        Use this tool when the user asks a question that might be answered by the knowledge base.
+        Search the user's documents. Returns text chunks, figure images
+        with captions, entities, and relationships.
 
-        :param query: The natural language question to search for.
-        :param mode: Query mode — one of: naive, local, global, hybrid, mix. Leave empty for default.
+        Compose the query as a short natural-language sentence reflecting
+        what is being asked. Keep concrete terms (names, technical
+        terminology, numbers, figure references) from the user's phrasing;
+        strip conversational filler. Full phrasing retrieves better than a
+        list of disjoint keywords.
+
+        Re-query on a follow-up turn when the user introduces
+        substantially new terms or topics. Rephrasing the same question
+        rarely surfaces new content.
+
+        When the response contains a **Figures** section, each figure is a
+        markdown image `![caption](url)`. Copy those image lines verbatim
+        into your answer where the figure is discussed — do not strip,
+        paraphrase, or replace them with text. The image renders inline
+        for the user.
+
+        :param query: Natural-language question with concrete terms
+            preserved from the user's phrasing.
+        :param mode: One of: naive, local, global, hybrid, mix. Empty for
+            default.
         """
         body = {
             "query": query,
@@ -98,7 +116,9 @@ class Tools:
         # host.docker.internal which only resolves inside Docker. Fall back
         # to it only as a last resort — usually the user must set the valve
         # to the publicly-reachable URL.
-        public_base = (self.valves.public_base_url or self.valves.edgequake_base_url).rstrip("/")
+        public_base = (
+            self.valves.public_base_url or self.valves.edgequake_base_url
+        ).rstrip("/")
 
         for src in sources:
             stype = src.get("source_type", "")
@@ -112,7 +132,9 @@ class Tools:
                     fid = src.get("figure_id", "")
                     if doc_id and fid:
                         caption = src.get("caption") or src.get("snippet") or fid
-                        img_url = f"{public_base}/api/v1/documents/{doc_id}/figures/{fid}"
+                        img_url = (
+                            f"{public_base}/api/v1/documents/{doc_id}/figures/{fid}"
+                        )
                         figures.append(f"![{caption}]({img_url})\n\n*{caption}*")
                         if src.get("file_path"):
                             seen_docs.add(src["file_path"])
@@ -132,6 +154,21 @@ class Tools:
                 relationships.append(f"- {desc}")
 
         parts = []
+        if figures:
+            # WHY this banner comes first: many open-weight chat models
+            # (Qwen3.6, Gemma, Llama) drop image-markdown when summarising
+            # tool output. Front-loading an explicit rule, in imperative
+            # form, before any other content steers them to copy the
+            # `![alt](url)` snippets into the final answer verbatim.
+            parts.append(
+                "**RENDERING RULE — important:** the **Figures** section "
+                "below contains retrieved figure images as markdown "
+                "`![caption](url)`. Copy each such image-markdown line "
+                "verbatim into your answer where you discuss the figure. "
+                "OpenWebUI will inline-render the image to the user. Do "
+                "NOT strip, paraphrase, or replace these image lines with "
+                "text descriptions."
+            )
         if chunks:
             parts.append("**Text chunks:**\n" + "\n\n".join(chunks[:10]))
         if figures:
@@ -269,7 +306,6 @@ class Tools:
         """
         body = {
             "content": content,
-
             "async_processing": True,
         }
         if title:
@@ -305,7 +341,9 @@ class Tools:
                 data = {}
                 if title:
                     data["title"] = title
-                r = requests.post(url, files=files, data=data, headers=self._headers(), timeout=120)
+                r = requests.post(
+                    url, files=files, data=data, headers=self._headers(), timeout=120
+                )
                 r.raise_for_status()
                 resp = r.json()
         except requests.HTTPError as e:
@@ -398,7 +436,9 @@ class Tools:
             tgt = rel.get("tgt_id", "")
             rtype = rel.get("relation_type", rel.get("label", ""))
             desc = rel.get("description", "")[:100]
-            lines.append(f"- **{src}** —[{rtype}]→ **{tgt}**{f': {desc}' if desc else ''}")
+            lines.append(
+                f"- **{src}** —[{rtype}]→ **{tgt}**{f': {desc}' if desc else ''}"
+            )
         return "\n".join(lines)
 
 
