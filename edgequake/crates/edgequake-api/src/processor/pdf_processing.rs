@@ -920,6 +920,53 @@ impl DocumentTaskProcessor {
                     );
                 }
             }
+
+            // 6c. Vision entity extraction. Workspace-scoped hybrid query
+            //     retrieves chunks via entity.source_chunk_ids — figures
+            //     are unreachable unless an entity points at them. Run each
+            //     figure (caption + PNG) through the same entity-extraction
+            //     prompt the text body uses, but against a vision-capable
+            //     LLM. Resulting entities get source_chunk_ids containing
+            //     the figure's chunk id; when merged into AGE via upsert,
+            //     they enrich existing entities (e.g. a "GPT-2" entity
+            //     extracted from text now also has the figure chunk-id
+            //     in its source_chunk_ids array, so retrieval surfaces the
+            //     figure when querying GPT-2).
+            //     Best-effort: failures are logged and swallowed.
+            match self
+                .backfill_figure_entities(
+                    &early_doc_id,
+                    &data.tenant_id.to_string(),
+                    &data.workspace_id.to_string(),
+                    &extracted_figures,
+                )
+                .await
+            {
+                Ok(Some((entities, relationships))) => {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        entities,
+                        relationships,
+                        figure_count = extracted_figures.len(),
+                        "Figure-entity backfill: linked figure chunks to graph entities"
+                    );
+                }
+                Ok(None) => {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        figure_count = extracted_figures.len(),
+                        "Figure-entity backfill: workspace's extraction LLM isn't vision-capable (supports_vision=false) — figures retrievable but not graph-linked"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        pdf_id = %data.pdf_id,
+                        error = %e,
+                        figure_count = extracted_figures.len(),
+                        "Figure-entity backfill failed (non-fatal); figures retrievable but not graph-linked"
+                    );
+                }
+            }
         }
 
         // == Progress: extraction complete, linking PDF ==
@@ -1327,9 +1374,15 @@ impl DocumentTaskProcessor {
             };
 
             let chunk_id = format!("{document_id}-figure-{}", fig.id);
+            // `content` mirrors what text-chunk rows store: it's what the BM25
+            // reranker scores and what build_chunk_from_result reads into
+            // RetrievedChunk.content. Without it, figure chunks score ~0 in
+            // BM25 and get dropped below min_rerank_score. Caption is the only
+            // searchable text we have for a figure, so it doubles as content.
             let metadata = json!({
                 "type": "chunk",
                 "kind": "figure",
+                "content": fig.caption,
                 "document_id": document_id,
                 "figure_id": fig.id,
                 "page": fig.page,
@@ -1357,6 +1410,325 @@ impl DocumentTaskProcessor {
             stored += 1;
         }
         Ok(Some(stored))
+    }
+
+    /// Run each figure (caption + PNG bytes) through the workspace's
+    /// configured extraction LLM with the same entity-extraction prompt the
+    /// text body uses, then merge the resulting entities/relationships into
+    /// AGE.
+    ///
+    /// **Purpose:** the workspace-scoped hybrid retrieval
+    /// (`edgequake-query::sota_engine::vector_queries::query_hybrid_with_vector_storage`)
+    /// pulls chunks via `entity.source_chunk_ids`. Figures live in pgvector but
+    /// no entity references them, so they're unreachable through hybrid even
+    /// though they're indexed. This pass writes graph entries whose
+    /// `source_chunk_ids` contain `{document_id}-figure-{figure_id}`, plugging
+    /// the figures into the graph.
+    ///
+    /// **LLM resolution:** uses the workspace's `llm_provider` + `llm_model`
+    /// (same model the text-extraction path uses, kept in lockstep so chunks
+    /// and figures land in the same naming/typing convention). Gated on
+    /// `model_card.capabilities.supports_vision` — text-only models can't
+    /// see the figure, so the pass is skipped cleanly with `Ok(None)`.
+    ///
+    /// **Merge behaviour:** `graph_storage.upsert_nodes_batch` keys on entity
+    /// name. An entity like "GPT-2" already extracted from text gets its
+    /// `source_chunk_ids` enriched with the figure id — Postgres-AGE merges
+    /// the array under the hood (mirroring the same OODA-07 source_ids merge
+    /// the text path does at `text_insert.rs:756-806`). A brand-new entity
+    /// from a figure is added as a fresh node; it won't be ANN-discoverable
+    /// (we don't backfill its entity embedding here) but it'll surface via
+    /// relationship-graph traversal from connected entities.
+    ///
+    /// Best-effort per figure: a single extract failure logs+continues.
+    #[cfg(feature = "postgres")]
+    async fn backfill_figure_entities(
+        &self,
+        document_id: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+        figures: &[edgequake_pdf::ExtractedFigure],
+    ) -> Result<Option<(usize, usize)>, String> {
+        use crate::safety_limits::create_safe_llm_provider;
+        use edgequake_pipeline::extractor::VisionExtractionClient;
+
+        // 1. Resolve workspace → llm_provider + llm_model. Use the same
+        //    factory the text-extraction path uses — see
+        //    `workspace_resolver.rs:73` — so URL/api-key/timeout resolution
+        //    flows through ProviderFactory + models.toml exactly the same way
+        //    for both paths.
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("invalid workspace_id {workspace_id:?}: {e}"))?;
+        let ws = self
+            .workspace_service
+            .as_ref()
+            .ok_or_else(|| "no workspace_service".to_string())?
+            .get_workspace(workspace_uuid)
+            .await
+            .map_err(|e| format!("get_workspace: {e}"))?
+            .ok_or_else(|| format!("workspace {workspace_uuid} not found"))?;
+
+        // Gate on `supports_vision` from models.toml — text-only models
+        // can't see the figure, so skip cleanly with `Ok(None)`.
+        let cfg = self
+            .models_config
+            .as_ref()
+            .ok_or_else(|| "no models_config".to_string())?;
+        let model_card = cfg
+            .get_model(&ws.llm_provider, &ws.llm_model)
+            .ok_or_else(|| {
+                format!(
+                    "model {} not in provider {}",
+                    ws.llm_model, ws.llm_provider
+                )
+            })?;
+        if !model_card.capabilities.supports_vision {
+            return Ok(None);
+        }
+
+        let llm_provider = create_safe_llm_provider(&ws.llm_provider, &ws.llm_model)
+            .map_err(|e| format!("create_safe_llm_provider: {e}"))?;
+        let client = VisionExtractionClient::new(llm_provider);
+
+        let mut nodes_batch: Vec<(String, std::collections::HashMap<String, serde_json::Value>)> =
+            Vec::new();
+        let mut edges_batch: Vec<(
+            String,
+            String,
+            std::collections::HashMap<String, serde_json::Value>,
+        )> = Vec::new();
+        // (entity_id, figure_chunk_id) pairs, accurate per-figure (entities
+        // extracted from fig_3_0 don't get incorrectly linked to fig_4_0).
+        let mut entity_chunk_pairs: Vec<(String, String)> = Vec::new();
+
+        let mut entities_total = 0usize;
+        let mut rels_total = 0usize;
+
+        for fig in figures {
+            let chunk_id = format!("{document_id}-figure-{}", fig.id);
+            let mut result = match client
+                .extract(&fig.caption, &fig.png_bytes, &fig.mime, &chunk_id)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(
+                        figure_id = %fig.id,
+                        error = %e,
+                        "figure-entity: vision-extract call failed"
+                    );
+                    continue;
+                }
+            };
+
+            // Mirror `pipeline::helpers::link_extractions_to_chunks` — that
+            // helper is `pub(super)`, so we replicate the two-line linkage
+            // here. The parser already populates `result.source_chunk_id`;
+            // we propagate it onto each entity's source_chunk_ids array and
+            // each relationship's source_chunk_id slot.
+            for entity in &mut result.entities {
+                entity.add_source_chunk_id(&chunk_id);
+            }
+            for rel in &mut result.relationships {
+                if rel.source_chunk_id.is_none() {
+                    rel.source_chunk_id = Some(chunk_id.clone());
+                }
+            }
+
+            entities_total += result.entities.len();
+            rels_total += result.relationships.len();
+
+            for entity in &result.entities {
+                // Track this specific entity → figure chunk_id link for the
+                // vector-store merge step below. Same entity extracted from
+                // different figures yields multiple pairs — the SQL update
+                // is idempotent so duplicates are harmless.
+                entity_chunk_pairs.push((format!("entity:{}", entity.name), chunk_id.clone()));
+
+                let mut props = std::collections::HashMap::new();
+                props.insert(
+                    "entity_type".to_string(),
+                    serde_json::json!(entity.entity_type),
+                );
+                props.insert(
+                    "description".to_string(),
+                    serde_json::json!(entity.description),
+                );
+                props.insert("importance".to_string(), serde_json::json!(entity.importance));
+                // Note: source_ids merge with existing entity is handled by
+                // graph_storage.upsert_nodes_batch's MERGE semantics — we
+                // contribute the current document_id; the storage layer
+                // combines with whatever's already there.
+                props.insert(
+                    "source_ids".to_string(),
+                    serde_json::json!(vec![document_id.to_string()]),
+                );
+                props.insert(
+                    "source_chunk_ids".to_string(),
+                    serde_json::json!(&entity.source_chunk_ids),
+                );
+                props.insert("tenant_id".to_string(), serde_json::json!(tenant_id));
+                props.insert("workspace_id".to_string(), serde_json::json!(workspace_id));
+                nodes_batch.push((entity.name.clone(), props));
+            }
+
+            for rel in &result.relationships {
+                let mut props = std::collections::HashMap::new();
+                props.insert(
+                    "relation_type".to_string(),
+                    serde_json::json!(rel.relation_type),
+                );
+                props.insert("description".to_string(), serde_json::json!(rel.description));
+                props.insert("weight".to_string(), serde_json::json!(rel.weight));
+                props.insert("keywords".to_string(), serde_json::json!(rel.keywords));
+                props.insert(
+                    "source_ids".to_string(),
+                    serde_json::json!(vec![document_id.to_string()]),
+                );
+                if let Some(ref c) = rel.source_chunk_id {
+                    props.insert("source_chunk_ids".to_string(), serde_json::json!(vec![c]));
+                }
+                props.insert("tenant_id".to_string(), serde_json::json!(tenant_id));
+                props.insert("workspace_id".to_string(), serde_json::json!(workspace_id));
+                edges_batch.push((rel.source.clone(), rel.target.clone(), props));
+            }
+        }
+
+        if !nodes_batch.is_empty() {
+            if let Err(e) = self.graph_storage.upsert_nodes_batch(&nodes_batch).await {
+                return Err(format!("upsert_nodes_batch: {e}"));
+            }
+        }
+        if !edges_batch.is_empty() {
+            if let Err(e) = self.graph_storage.upsert_edges_batch(&edges_batch).await {
+                return Err(format!("upsert_edges_batch: {e}"));
+            }
+        }
+
+        // Merge figure chunk IDs into the workspace vector store's existing
+        // entity rows. Hybrid retrieval (vector_queries.rs::query_local_with_
+        // vector_storage) reads `metadata.source_chunk_ids` directly off the
+        // entity-vector row — graph mutation alone isn't enough. We don't
+        // re-embed: the entity's existing vector (from the text-extraction
+        // pass) stays as-is; we only append the figure chunk_ids to the
+        // metadata JSONB array.
+        //
+        // Figure-only entities (names that text never extracted) have no
+        // row in the vector store, so the UPDATE silently does nothing for
+        // them. They remain reachable via relationship-graph traversal from
+        // any text-derived entity that's been newly connected to them.
+        //
+        // Best-effort: a missing DATABASE_URL or table-lookup failure logs
+        // and continues; the graph edges are already written.
+        if !entity_chunk_pairs.is_empty() {
+            if let Err(e) = self
+                .merge_figure_chunk_ids_into_entity_vectors(workspace_id, &entity_chunk_pairs)
+                .await
+            {
+                warn!(
+                    document_id,
+                    error = %e,
+                    "figure-entity: workspace-vector source_chunk_ids merge failed (non-fatal); graph still updated"
+                );
+            }
+        }
+
+        Ok(Some((entities_total, rels_total)))
+    }
+
+    /// Append figure chunk IDs to `metadata.source_chunk_ids` on existing
+    /// entity-vector rows in the workspace vector store.
+    ///
+    /// Why this exists: `graph_storage.upsert_nodes_batch` updates AGE, but
+    /// the workspace-scoped hybrid retrieval path
+    /// (`vector_queries.rs::query_local_with_vector_storage`) reads
+    /// `metadata.source_chunk_ids` directly off the vector row, not from the
+    /// graph node. Without this merge, figures stay invisible to hybrid even
+    /// though the graph and figure vector store both know about them.
+    ///
+    /// **JSONB merge semantics:** uses `jsonb_set` + array concat, gated by
+    /// `NOT @>` so re-runs are idempotent (existing entries don't duplicate).
+    ///
+    /// Best-effort: each (entity_id, figure_chunk_id) pair runs in its own
+    /// statement so one bad row doesn't poison the rest.
+    #[cfg(feature = "postgres")]
+    async fn merge_figure_chunk_ids_into_entity_vectors(
+        &self,
+        workspace_id: &str,
+        pairs: &[(String, String)],
+    ) -> Result<(), String> {
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("invalid workspace_id {workspace_id:?}: {e}"))?;
+        let short_id = &workspace_uuid.to_string()[..8];
+        let database_url = std::env::var("DATABASE_URL")
+            .map_err(|_| "DATABASE_URL not set for figure-entity merge".to_string())?;
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .map_err(|e| format!("PgPool::connect: {e}"))?;
+
+        // Resolve the workspace's vector table by pattern. The exact name is
+        // `eq_{namespace}_ws_{short_id}_vectors` where namespace is set in
+        // PostgresConfig (`with_namespace(...)` in state/postgres.rs). We
+        // dynamically discover it instead of duplicating the namespace
+        // convention — keeps this code resilient to namespace renames.
+        let row: Option<(String,)> = sqlx::query_as(
+            r#"
+            SELECT tablename FROM pg_tables
+            WHERE schemaname = 'public'
+              AND tablename LIKE $1
+            LIMIT 1
+            "#,
+        )
+        .bind(format!("eq_%_ws_{short_id}_vectors"))
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| format!("table lookup: {e}"))?;
+        let table = row
+            .ok_or_else(|| format!("no workspace vector table found for {short_id}"))?
+            .0;
+
+        let mut updated = 0usize;
+        for (entity_id, chunk_id) in pairs {
+            // jsonb_set on source_chunk_ids: append chunk_id if absent. The
+            // `NOT (... @> ...)` clause keeps re-runs idempotent and prevents
+            // duplicate array entries.
+            let sql = format!(
+                r#"
+                UPDATE public.{table} SET metadata = jsonb_set(
+                    metadata,
+                    '{{source_chunk_ids}}',
+                    COALESCE(metadata->'source_chunk_ids', '[]'::jsonb) || to_jsonb($2::text)
+                )
+                WHERE id = $1
+                  AND metadata->>'type' = 'entity'
+                  AND NOT COALESCE(metadata->'source_chunk_ids', '[]'::jsonb) @> to_jsonb($2::text)
+                "#
+            );
+            match sqlx::query(&sql)
+                .bind(entity_id)
+                .bind(chunk_id)
+                .execute(&pool)
+                .await
+            {
+                Ok(r) => updated += r.rows_affected() as usize,
+                Err(e) => {
+                    warn!(
+                        entity_id,
+                        chunk_id,
+                        error = %e,
+                        "figure-entity: source_chunk_ids UPDATE failed (continuing)"
+                    );
+                }
+            }
+        }
+
+        info!(
+            workspace_id,
+            updated_rows = updated,
+            pairs_attempted = pairs.len(),
+            "Figure-entity backfill: merged figure chunk IDs into entity-vector source_chunk_ids"
+        );
+        Ok(())
     }
 }
 

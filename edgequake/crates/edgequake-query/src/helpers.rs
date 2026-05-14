@@ -153,12 +153,22 @@ pub fn extract_relationship_source_tracking(
 ///
 /// This function ensures all chunks are built consistently.
 pub fn build_chunk_from_result(result: &VectorSearchResult) -> RetrievedChunk {
-    let content = result
-        .metadata
-        .get("content")
-        .and_then(|v| v.as_str())
+    // VLM-OCR figure rows store the caption under `caption`, not `content`.
+    // Fall back to it so BM25 rerank sees something other than an empty
+    // string (which scores ~0 and drops the chunk under min_rerank_score).
+    let content_field = result.metadata.get("content").and_then(|v| v.as_str());
+    let used_caption_fallback = content_field.is_none();
+    let content = content_field
+        .or_else(|| result.metadata.get("caption").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
+    if used_caption_fallback {
+        tracing::debug!(
+            id = %result.id,
+            content_len = content.len(),
+            "build_chunk_from_result: using caption fallback"
+        );
+    }
 
     let mut chunk = RetrievedChunk::new(&result.id, content, result.score);
 
@@ -289,6 +299,68 @@ pub fn build_relationship_from_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_chunk_falls_back_to_caption_when_content_missing() {
+        // VLM-OCR figure rows are upserted without a `content` field in
+        // metadata — only `caption`. Without the fallback, RetrievedChunk
+        // .content is empty, BM25 rerank scores it ~0, and figures get
+        // dropped under min_rerank_score=0.1. The fallback fixes that.
+        let figure_metadata = serde_json::json!({
+            "type": "chunk",
+            "kind": "figure",
+            "caption": "Figure 2: Detailed architecture of the GPT-2 with M layers using ObfuscaTune.",
+            "figure_id": "fig_4_0",
+            "document_id": "4f7ce548-5021-4985-9602-51daa95cb31d",
+            "page": 4,
+            "order_index": 0,
+            // NOTE: no "content" field — that's the whole point.
+        });
+        let result = VectorSearchResult {
+            id: "4f7ce548-5021-4985-9602-51daa95cb31d-figure-fig_4_0".to_string(),
+            score: 0.81,
+            metadata: figure_metadata,
+        };
+
+        let chunk = build_chunk_from_result(&result);
+
+        assert!(
+            !chunk.content.is_empty(),
+            "figure-row content must fall back to caption — empty content drops the chunk in BM25 rerank"
+        );
+        assert!(
+            chunk.content.contains("GPT-2"),
+            "fallback content should be the literal caption text, got: {:?}",
+            chunk.content
+        );
+        assert_eq!(chunk.kind.as_deref(), Some("figure"));
+        assert_eq!(chunk.figure_id.as_deref(), Some("fig_4_0"));
+        assert_eq!(
+            chunk.document_id.as_deref(),
+            Some("4f7ce548-5021-4985-9602-51daa95cb31d")
+        );
+    }
+
+    #[test]
+    fn build_chunk_prefers_content_over_caption_when_both_present() {
+        // Defensive: when figure rows are eventually written with both
+        // `content` AND `caption` (post-fix), we still want the explicit
+        // `content` to win — the fallback is recall-only, not a replacement.
+        let metadata = serde_json::json!({
+            "type": "chunk",
+            "kind": "figure",
+            "content": "explicit-content-field",
+            "caption": "ignored-because-content-is-set",
+        });
+        let result = VectorSearchResult {
+            id: "doc-figure-fig_1_0".to_string(),
+            score: 0.5,
+            metadata,
+        };
+
+        let chunk = build_chunk_from_result(&result);
+        assert_eq!(chunk.content, "explicit-content-field");
+    }
 
     #[test]
     fn test_extract_document_id() {

@@ -354,11 +354,13 @@ mod gleaning;
 mod llm;
 mod simple;
 mod sota;
+mod vision;
 
 pub use gleaning::{GleaningConfig, GleaningExtractor};
 pub use llm::LLMExtractor;
 pub use simple::SimpleExtractor;
 pub use sota::SOTAExtractor;
+pub use vision::VisionExtractionClient;
 
 #[cfg(test)]
 mod tests {

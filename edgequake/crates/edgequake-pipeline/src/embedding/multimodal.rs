@@ -1,10 +1,11 @@
 //! Multimodal embedding HTTP client.
 //!
-//! Calls an OpenAI-compatible `/v1/embeddings` endpoint with content-parts
-//! arrays. Built for the Jina v5 omni small retrieval model served via
-//! llama-swap (see `~/infra/dashboard/llama-swap/config.yaml`), but is
-//! provider-agnostic in shape — any backend that speaks the same content-parts
-//! protocol works.
+//! Calls the Jina `feat-v5-omni` llama.cpp fork's `/v1/embeddings` endpoint
+//! with text in `input` and image data URIs in a top-level `images` array
+//! (the fork's actual accepted shape — OpenAI's chat-completions
+//! content-parts shape is rejected with a `"prompt" elements must be...`
+//! HTTP 500). Served via llama-swap (see
+//! `~/infra/dashboard/llama-swap/config.yaml`).
 //!
 //! ## Asymmetric retrieval
 //!
@@ -181,10 +182,13 @@ impl MultimodalEmbeddingClient {
                     "input": prefixed,
                 })
             }
-            // Figure → one content-parts array combining the caption (with
-            // the role prefix) and the image as a base64 data URI. The
-            // double-wrapping (`input: [[...]]`) tells the server this is a
-            // *single* multimodal input rather than two independent inputs.
+            // Figure → caption in `input` (as a single string with the role
+            // prefix) and the image as a base64 data URI in a top-level
+            // `images` array. This is the shape the Jina v5-omni llama.cpp
+            // fork's `/v1/embeddings` accepts; the OpenAI chat-completions
+            // content-parts shape (`input: [[{type,text,image_url}]]`) is
+            // rejected with `"prompt" elements must be a string, a list of
+            // tokens, ...` HTTP 500.
             EmbeddingInput::Figure {
                 caption,
                 bytes,
@@ -194,10 +198,8 @@ impl MultimodalEmbeddingClient {
                 let data_uri = format!("data:{};base64,{}", mime, B64.encode(bytes));
                 serde_json::json!({
                     "model": self.model,
-                    "input": [[
-                        { "type": "text", "text": prefixed },
-                        { "type": "image_url", "image_url": { "url": data_uri } }
-                    ]],
+                    "input": prefixed,
+                    "images": [data_uri],
                 })
             }
         }
@@ -267,7 +269,7 @@ mod tests {
     }
 
     #[test]
-    fn figure_input_serializes_as_fused_content_parts() {
+    fn figure_input_serializes_with_input_string_and_images_array() {
         let c = MultimodalEmbeddingClient::new("http://example", "m");
         let bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
         let body = c.build_request_body(
@@ -278,22 +280,17 @@ mod tests {
             },
             EmbeddingRole::Document,
         );
-        // Outer input must be an array of arrays — single multimodal input,
-        // not two independent inputs.
-        let input = body.get("input").unwrap().as_array().unwrap();
+        // `input` is the prefixed caption as a plain string — same shape the
+        // text-only path uses. The Jina v5-omni llama.cpp fork rejects the
+        // OpenAI content-parts array shape with HTTP 500.
         assert_eq!(
-            input.len(),
-            1,
-            "fused figure must be ONE input, not two parallel ones"
+            body["input"].as_str().unwrap(),
+            "Document: Figure 2: System diagram."
         );
-        let parts = input[0].as_array().unwrap();
-        assert_eq!(parts.len(), 2, "expected exactly text + image_url parts");
-        // First part: text with Document: prefix.
-        assert_eq!(parts[0]["type"], "text");
-        assert_eq!(parts[0]["text"], "Document: Figure 2: System diagram.");
-        // Second part: image_url with a data: URI carrying base64 PNG bytes.
-        assert_eq!(parts[1]["type"], "image_url");
-        let url = parts[1]["image_url"]["url"].as_str().unwrap();
+        // `images` is a top-level array of data URIs, one per image.
+        let images = body.get("images").unwrap().as_array().unwrap();
+        assert_eq!(images.len(), 1, "expected exactly one image");
+        let url = images[0].as_str().unwrap();
         assert!(url.starts_with("data:image/png;base64,"));
         // Round-trip the base64 chunk and verify byte-equality.
         let b64 = url.trim_start_matches("data:image/png;base64,");
