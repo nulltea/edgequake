@@ -116,6 +116,19 @@ pub async fn execute_query(
         engine_request = engine_request.with_chunk_min_score(score);
     }
 
+    // Workspace-scoped BM25 rerank toggle (None = engine default).
+    if let Some(enable) = workspace.as_ref().and_then(|ws| ws.enable_rerank) {
+        engine_request = engine_request.with_enable_rerank(enable);
+    }
+
+    // Workspace-scoped Qwen3-Embedding query instruction (None = engine default).
+    if let Some(instruction) = workspace
+        .as_ref()
+        .and_then(|ws| ws.embedding_query_instruction.clone())
+    {
+        engine_request = engine_request.with_query_instruction(instruction);
+    }
+
     if request.context_only {
         engine_request = engine_request.context_only();
     }

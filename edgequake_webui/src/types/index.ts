@@ -744,6 +744,20 @@ export interface Workspace {
    * workspace. Undefined → engine default. Range 0.0–1.0.
    */
   chunk_min_score?: number;
+  /**
+   * Toggle the in-memory BM25 rerank step on retrieved chunks.
+   * Undefined → engine default (true). Boosts chunks containing rare
+   * literal query tokens (proper nouns) that vector cosine smears together.
+   */
+  enable_rerank?: boolean;
+  /**
+   * Qwen3-Embedding query instruction task description. Queries are
+   * wrapped as `Instruct: {task}\nQuery: {q}` before embedding (the
+   * model's intended asymmetric pattern; documents stay raw).
+   * Undefined → engine default (research-paper task). Empty string
+   * disables the prefix.
+   */
+  embedding_query_instruction?: string;
   /** Creation timestamp. */
   created_at: string;
   /** Last update timestamp. */
@@ -819,6 +833,17 @@ export interface CreateWorkspaceRequest {
    * If omitted, the server uses the engine default.
    */
   chunk_min_score?: number;
+  /**
+   * Toggle BM25 reranking on retrieved chunks. If omitted, the engine
+   * default (true) is used.
+   */
+  enable_rerank?: boolean;
+  /**
+   * Qwen3-Embedding query instruction task description. Wraps the query
+   * as `Instruct: {task}\nQuery: {q}` before embedding. Omit to use the
+   * engine default; pass an empty string to disable the prefix.
+   */
+  embedding_query_instruction?: string;
 }
 
 /**

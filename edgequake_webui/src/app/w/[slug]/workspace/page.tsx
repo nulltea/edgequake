@@ -16,7 +16,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { EmbeddingModelSelector, type EmbeddingSelection } from '@/components/workspace/embedding-model-selector';
 import { LLMModelSelector, type LLMSelection } from '@/components/workspace/llm-model-selector';
 import { RebuildEmbeddingsButton } from '@/components/workspace/rebuild-embeddings-button';
@@ -78,6 +80,12 @@ export default function WorkspacePage() {
   const [selectedEmbedding, setSelectedEmbedding] = useState<EmbeddingSelection | undefined>(undefined);
   // Empty string = "use engine default" sentinel for the input element.
   const [chunkMinScoreInput, setChunkMinScoreInput] = useState<string>('');
+  // `undefined` = inherit engine default; explicit bool overrides it.
+  const [enableRerankInput, setEnableRerankInput] = useState<boolean | undefined>(undefined);
+  // `undefined` = no change on save; '' = disable prefix; any other string = override.
+  const [embeddingQueryInstructionInput, setEmbeddingQueryInstructionInput] = useState<
+    string | undefined
+  >(undefined);
 
   // Fetch workspace data
   const {
@@ -128,6 +136,8 @@ export default function WorkspacePage() {
       embedding_provider?: string;
       embedding_dimension?: number;
       chunk_min_score?: number;
+      enable_rerank?: boolean;
+      embedding_query_instruction?: string;
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
     }) =>
@@ -138,6 +148,8 @@ export default function WorkspacePage() {
         embedding_provider: data.embedding_provider,
         embedding_dimension: data.embedding_dimension,
         chunk_min_score: data.chunk_min_score,
+        enable_rerank: data.enable_rerank,
+        embedding_query_instruction: data.embedding_query_instruction,
       }),
     onSuccess: (_result, variables) => {
       toast.success(t('workspace.updateSuccess', 'Workspace updated successfully'));
@@ -221,6 +233,17 @@ export default function WorkspacePage() {
       }
     }
 
+    // Enable-rerank: undefined = no change; bool = explicit override.
+    if (enableRerankInput !== undefined) {
+      data.enable_rerank = enableRerankInput;
+    }
+
+    // Embedding query instruction: undefined = no change; '' = disable;
+    // any other string = override task description.
+    if (embeddingQueryInstructionInput !== undefined) {
+      data.embedding_query_instruction = embeddingQueryInstructionInput;
+    }
+
     // Track which models changed for post-save rebuild notification
     data._embeddingChanged = embeddingModelChanged ?? false;
     data._llmChanged = llmModelChanged ?? false;
@@ -237,6 +260,8 @@ export default function WorkspacePage() {
         ? String(workspace.chunk_min_score)
         : '',
     );
+    setEnableRerankInput(workspace?.enable_rerank);
+    setEmbeddingQueryInstructionInput(undefined);
   };
 
   const handleEditStart = () => {
@@ -247,6 +272,8 @@ export default function WorkspacePage() {
         ? String(workspace.chunk_min_score)
         : '',
     );
+    setEnableRerankInput(workspace?.enable_rerank);
+    setEmbeddingQueryInstructionInput(undefined);
     setIsEditing(true);
   };
 
@@ -615,6 +642,85 @@ export default function WorkspacePage() {
               </div>
             </div>
           )}
+
+          <Separator />
+
+          {/* BM25 reranker toggle */}
+          <div className="flex items-start justify-between gap-3 max-w-md">
+            <div className="flex-1">
+              <div className="font-medium">
+                {t('workspace.enableRerankLabel', 'BM25 reranking')}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                {t(
+                  'workspace.enableRerankDesc',
+                  'In-memory BM25 rescoring of retrieved chunks. Boosts exact-keyword matches (proper nouns, IDs) that pure vector cosine smears into semantic clusters. ~10–30 ms per query.',
+                )}
+              </div>
+              {!isEditing && workspace.enable_rerank === undefined && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  {t('workspace.enableRerankInherit', 'Inheriting engine default (enabled)')}
+                </div>
+              )}
+            </div>
+            {isEditing ? (
+              <Switch
+                checked={enableRerankInput ?? workspace.enable_rerank ?? true}
+                onCheckedChange={(checked) => setEnableRerankInput(checked)}
+                aria-label={t('workspace.enableRerankLabel', 'BM25 reranking')}
+              />
+            ) : (
+              <div className="text-sm font-medium font-mono shrink-0 px-2 py-1 rounded bg-muted">
+                {(workspace.enable_rerank ?? true) ? 'on' : 'off'}
+              </div>
+            )}
+          </div>
+
+          <Separator />
+
+          {/* Qwen3-Embedding query instruction prefix */}
+          <div className="space-y-2 max-w-2xl">
+            <div className="font-medium">
+              {t(
+                'workspace.embeddingQueryInstructionLabel',
+                'Embedding query instruction',
+              )}
+            </div>
+            <div className="text-sm text-muted-foreground">
+              {t(
+                'workspace.embeddingQueryInstructionDesc',
+                "Qwen3-Embedding task description. The query is prepended with 'Instruct: {task}\\nQuery: {q}' before embedding; documents are embedded raw (the model is trained asymmetric, ~1–5% retrieval uplift). Leave blank to keep the current value; submit an empty string explicitly to disable the prefix.",
+              )}
+            </div>
+            {isEditing ? (
+              <Textarea
+                rows={3}
+                placeholder={
+                  workspace.embedding_query_instruction ??
+                  t(
+                    'workspace.embeddingQueryInstructionPlaceholder',
+                    'Engine default: Given a research question, retrieve relevant passages from academic papers',
+                  )
+                }
+                value={embeddingQueryInstructionInput ?? ''}
+                onChange={(e) => setEmbeddingQueryInstructionInput(e.target.value)}
+                aria-label={t(
+                  'workspace.embeddingQueryInstructionLabel',
+                  'Embedding query instruction',
+                )}
+              />
+            ) : (
+              <div className="text-sm font-mono px-3 py-2 rounded bg-muted whitespace-pre-wrap break-words">
+                {workspace.embedding_query_instruction === ''
+                  ? t('workspace.embeddingQueryInstructionDisabled', '(disabled)')
+                  : workspace.embedding_query_instruction ??
+                    t(
+                      'workspace.embeddingQueryInstructionInherit',
+                      'Inheriting engine default',
+                    )}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 

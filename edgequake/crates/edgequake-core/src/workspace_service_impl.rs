@@ -494,6 +494,24 @@ impl WorkspaceService for WorkspaceServiceImpl {
             );
         }
 
+        // Workspace-scoped BM25 rerank toggle (None → engine default true).
+        if let Some(enable) = request.enable_rerank {
+            workspace.enable_rerank = Some(enable);
+            workspace.metadata.insert(
+                "enable_rerank".to_string(),
+                serde_json::json!(enable),
+            );
+        }
+
+        // Workspace-scoped Qwen3-Embedding query instruction (None → engine default).
+        if let Some(instruction) = request.embedding_query_instruction {
+            workspace.embedding_query_instruction = Some(instruction.clone());
+            workspace.metadata.insert(
+                "embedding_query_instruction".to_string(),
+                serde_json::Value::String(instruction),
+            );
+        }
+
         sqlx::query(
             r#"
             INSERT INTO workspaces (workspace_id, tenant_id, name, slug, description, is_active, metadata, settings, created_at, updated_at)
@@ -528,6 +546,20 @@ impl WorkspaceService for WorkspaceServiceImpl {
                 metadata.insert(
                     "chunk_min_score".to_string(),
                     serde_json::json!(score),
+                );
+            }
+            // Workspace-scoped BM25 rerank toggle (None → engine default).
+            if let Some(enable) = workspace.enable_rerank {
+                metadata.insert(
+                    "enable_rerank".to_string(),
+                    serde_json::json!(enable),
+                );
+            }
+            // Workspace-scoped Qwen3-Embedding query instruction.
+            if let Some(ref instruction) = workspace.embedding_query_instruction {
+                metadata.insert(
+                    "embedding_query_instruction".to_string(),
+                    serde_json::Value::String(instruction.clone()),
                 );
             }
             serde_json::json!(metadata)
@@ -795,6 +827,24 @@ impl WorkspaceService for WorkspaceServiceImpl {
             workspace.metadata.insert(
                 "chunk_min_score".to_string(),
                 serde_json::json!(score),
+            );
+        }
+
+        // Workspace-scoped BM25 rerank toggle.
+        if let Some(enable) = request.enable_rerank {
+            workspace.enable_rerank = Some(enable);
+            workspace.metadata.insert(
+                "enable_rerank".to_string(),
+                serde_json::json!(enable),
+            );
+        }
+
+        // Workspace-scoped Qwen3-Embedding query instruction.
+        if let Some(instruction) = request.embedding_query_instruction {
+            workspace.embedding_query_instruction = Some(instruction.clone());
+            workspace.metadata.insert(
+                "embedding_query_instruction".to_string(),
+                serde_json::Value::String(instruction),
             );
         }
 
@@ -1654,6 +1704,11 @@ impl WorkspaceRow {
             .get("chunk_min_score")
             .and_then(|v| v.as_f64())
             .map(|v| v as f32);
+        let enable_rerank = metadata.get("enable_rerank").and_then(|v| v.as_bool());
+        let embedding_query_instruction = metadata
+            .get("embedding_query_instruction")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         Workspace {
             workspace_id: self.workspace_id,
@@ -1680,6 +1735,8 @@ impl WorkspaceRow {
             algorithm_review_mode,
             accept_unofficial_implementations,
             chunk_min_score,
+            enable_rerank,
+            embedding_query_instruction,
         }
     }
 }

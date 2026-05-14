@@ -26,6 +26,7 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { Textarea } from '@/components/ui/textarea';
 import {
   PdfParserBackendField,
   type PdfParserBackendChoice,
@@ -122,6 +123,13 @@ export default function WorkspacePage() {
   // Workspace-scoped chunk cosine floor. Empty string keeps the existing value
   // (or, for a workspace that has none set, inherits the engine default).
   const [chunkMinScoreInput, setChunkMinScoreInput] = useState<string>('');
+  // BM25 rerank toggle. `undefined` = inherit engine default.
+  const [enableRerankInput, setEnableRerankInput] = useState<boolean | undefined>(undefined);
+  // Qwen3-Embedding query instruction. `undefined` = no change on save;
+  // '' = explicitly disable the prefix; any other string = override.
+  const [embeddingQueryInstructionInput, setEmbeddingQueryInstructionInput] = useState<
+    string | undefined
+  >(undefined);
 
   // Fetch workspace data
   const {
@@ -185,6 +193,8 @@ export default function WorkspacePage() {
       accept_unofficial_implementations?: boolean;
       entity_types?: string[];
       chunk_min_score?: number;
+      enable_rerank?: boolean;
+      embedding_query_instruction?: string;
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
       _visionChanged?: boolean;
@@ -206,6 +216,8 @@ export default function WorkspacePage() {
         accept_unofficial_implementations: data.accept_unofficial_implementations,
         entity_types: data.entity_types,
         chunk_min_score: data.chunk_min_score,
+        enable_rerank: data.enable_rerank,
+        embedding_query_instruction: data.embedding_query_instruction,
       }),
     onSuccess: (_result, variables) => {
       toast.success(t('workspace.updateSuccess', 'Workspace updated successfully'));
@@ -315,6 +327,17 @@ export default function WorkspacePage() {
       }
     }
 
+    // BM25 rerank toggle — undefined = no change; bool = explicit override.
+    if (enableRerankInput !== undefined) {
+      data.enable_rerank = enableRerankInput;
+    }
+
+    // Embedding query instruction — undefined = no change; '' = disable;
+    // any other string = override task description.
+    if (embeddingQueryInstructionInput !== undefined) {
+      data.embedding_query_instruction = embeddingQueryInstructionInput;
+    }
+
     // Track which models changed for post-save rebuild notification
     data._embeddingChanged = embeddingModelChanged ?? false;
     data._llmChanged = llmModelChanged ?? false;
@@ -337,6 +360,8 @@ export default function WorkspacePage() {
     setChunkMinScoreInput(
       workspace?.chunk_min_score !== undefined ? String(workspace.chunk_min_score) : '',
     );
+    setEnableRerankInput(workspace?.enable_rerank);
+    setEmbeddingQueryInstructionInput(undefined);
   };
 
   const handleEditStart = () => {
@@ -352,6 +377,8 @@ export default function WorkspacePage() {
     setChunkMinScoreInput(
       workspace?.chunk_min_score !== undefined ? String(workspace.chunk_min_score) : '',
     );
+    setEnableRerankInput(workspace?.enable_rerank);
+    setEmbeddingQueryInstructionInput(undefined);
     setIsEditing(true);
   };
 
@@ -727,38 +754,142 @@ export default function WorkspacePage() {
             )}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4">
           {isEditing ? (
-            <div className="flex items-center gap-3 max-w-md">
-              <Input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                placeholder={t('workspace.chunkMinScorePlaceholder', 'Engine default (0.4)')}
-                value={chunkMinScoreInput}
-                onChange={(e) => setChunkMinScoreInput(e.target.value)}
-                className="font-mono"
-                aria-label={t('workspace.chunkMinScoreLabel', 'Chunk minimum score')}
-              />
-              <span className="text-sm text-muted-foreground whitespace-nowrap">
-                {t('workspace.chunkMinScoreRange', 'cosine 0.0 – 1.0')}
-              </span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Chunk minimum score */}
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">
+                  {t('workspace.chunkMinScoreLabel', 'Chunk minimum score')}
+                </label>
+                <div className="flex items-center gap-3">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    placeholder={t('workspace.chunkMinScorePlaceholder', 'Engine default (0.4)')}
+                    value={chunkMinScoreInput}
+                    onChange={(e) => setChunkMinScoreInput(e.target.value)}
+                    className="font-mono"
+                  />
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {t('workspace.chunkMinScoreRange', 'cosine 0.0 – 1.0')}
+                  </span>
+                </div>
+              </div>
+
+              {/* BM25 reranker toggle */}
+              <div className="flex items-start justify-between gap-4 p-3 rounded-lg border bg-muted/30">
+                <div className="flex-1">
+                  <label className="text-sm font-medium">
+                    {t('workspace.enableRerankLabel', 'BM25 reranking')}
+                  </label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {t(
+                      'workspace.enableRerankDesc',
+                      'In-memory BM25 rescoring of retrieved chunks. Boosts exact-keyword matches (proper nouns, IDs) that pure vector cosine smears. ~10–30 ms per query.',
+                    )}
+                  </p>
+                </div>
+                <Switch
+                  checked={enableRerankInput ?? workspace?.enable_rerank ?? true}
+                  onCheckedChange={(checked) => setEnableRerankInput(checked)}
+                  aria-label={t('workspace.enableRerankLabel', 'BM25 reranking')}
+                />
+              </div>
+
+              {/* Qwen3-Embedding query instruction prefix */}
+              <div className="md:col-span-2">
+                <label className="text-sm font-medium mb-1.5 block">
+                  {t(
+                    'workspace.embeddingQueryInstructionLabel',
+                    'Embedding query instruction',
+                  )}
+                </label>
+                <Textarea
+                  rows={3}
+                  placeholder={
+                    workspace?.embedding_query_instruction ??
+                    t(
+                      'workspace.embeddingQueryInstructionPlaceholder',
+                      'Engine default: Given a research question, retrieve relevant passages from academic papers',
+                    )
+                  }
+                  value={embeddingQueryInstructionInput ?? ''}
+                  onChange={(e) => setEmbeddingQueryInstructionInput(e.target.value)}
+                  aria-label={t(
+                    'workspace.embeddingQueryInstructionLabel',
+                    'Embedding query instruction',
+                  )}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {t(
+                    'workspace.embeddingQueryInstructionDesc',
+                    "Qwen3-Embedding task description. Wraps the query as 'Instruct: {task}\\nQuery: {q}' before embedding; documents stay raw (~1–5% retrieval uplift). Leave blank to keep the current value; submit an empty string explicitly to disable the prefix.",
+                  )}
+                </p>
+              </div>
             </div>
           ) : (
-            <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg max-w-md">
-              <div className="flex-1">
-                <div className="font-medium font-mono">
-                  {workspace?.chunk_min_score !== undefined
-                    ? workspace.chunk_min_score.toFixed(2)
-                    : t('workspace.engineDefault', 'Engine default')}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Chunk minimum score (display) */}
+              <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                <div className="flex-1">
+                  <div className="text-xs text-muted-foreground">
+                    {t('workspace.chunkMinScoreLabel', 'Chunk minimum score')}
+                  </div>
+                  <div className="font-medium font-mono">
+                    {workspace?.chunk_min_score !== undefined
+                      ? workspace.chunk_min_score.toFixed(2)
+                      : t('workspace.engineDefault', 'Engine default')}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {workspace?.chunk_min_score !== undefined
+                      ? t('workspace.chunkMinScoreOverride', 'Workspace override active')
+                      : t(
+                          'workspace.chunkMinScoreInherit',
+                          'Inheriting the engine-wide chunk_min_score',
+                        )}
+                  </div>
                 </div>
-                <div className="text-sm text-muted-foreground">
-                  {workspace?.chunk_min_score !== undefined
-                    ? t('workspace.chunkMinScoreOverride', 'Workspace override active')
-                    : t(
-                        'workspace.chunkMinScoreInherit',
-                        'Inheriting the engine-wide chunk_min_score',
+              </div>
+
+              {/* BM25 reranking (display) */}
+              <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                <div className="flex-1">
+                  <div className="text-xs text-muted-foreground">
+                    {t('workspace.enableRerankLabel', 'BM25 reranking')}
+                  </div>
+                  <div className="font-medium">
+                    {(workspace?.enable_rerank ?? true) ? t('common.on', 'On') : t('common.off', 'Off')}
+                  </div>
+                  {workspace?.enable_rerank === undefined && (
+                    <div className="text-xs text-muted-foreground">
+                      {t('workspace.enableRerankInherit', 'Inheriting engine default (enabled)')}
+                    </div>
+                  )}
+                </div>
+                <Badge variant={(workspace?.enable_rerank ?? true) ? 'default' : 'secondary'}>
+                  {(workspace?.enable_rerank ?? true) ? 'on' : 'off'}
+                </Badge>
+              </div>
+
+              {/* Embedding query instruction (display) */}
+              <div className="md:col-span-2 p-3 bg-muted/50 rounded-lg">
+                <div className="text-xs text-muted-foreground mb-1">
+                  {t(
+                    'workspace.embeddingQueryInstructionLabel',
+                    'Embedding query instruction',
+                  )}
+                </div>
+                <div className="text-sm font-mono whitespace-pre-wrap break-words">
+                  {workspace?.embedding_query_instruction === ''
+                    ? t('workspace.embeddingQueryInstructionDisabled', '(disabled)')
+                    : workspace?.embedding_query_instruction ??
+                      t(
+                        'workspace.embeddingQueryInstructionInherit',
+                        'Inheriting engine default',
                       )}
                 </div>
               </div>

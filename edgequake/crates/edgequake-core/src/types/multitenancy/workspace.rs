@@ -167,6 +167,22 @@ pub struct Workspace {
     /// real matches. Different embedders may need a different floor.
     /// `None` keeps the engine default.
     pub chunk_min_score: Option<f32>,
+
+    /// Toggle the in-memory BM25 rerank step on retrieved chunks.
+    /// `None` keeps the engine default (`SOTAQueryConfig::enable_rerank`,
+    /// which is `true`). Set to `Some(false)` to skip reranking — useful
+    /// when proper-noun precision isn't needed and the ~10–30 ms latency
+    /// per query matters.
+    pub enable_rerank: Option<bool>,
+
+    /// Qwen3-Embedding-style query instruction task description.
+    /// Queries are wrapped as `Instruct: {task}\nQuery: {q}` before
+    /// embedding (documents stay raw — the model is trained asymmetric,
+    /// 1–5% retrieval uplift per the official technical report).
+    /// `None` keeps the engine default (research-paper task description).
+    /// `Some("")` disables the prefix entirely. Calibrate per domain —
+    /// the model card recommends tailored task descriptions.
+    pub embedding_query_instruction: Option<String>,
 }
 
 impl Workspace {
@@ -209,6 +225,8 @@ impl Workspace {
             algorithm_review_mode: None,
             accept_unofficial_implementations: None,
             chunk_min_score: None,
+            enable_rerank: None,
+            embedding_query_instruction: None,
         }
     }
 
@@ -437,6 +455,19 @@ impl Workspace {
     /// Override the engine-wide chunk-cosine floor for this workspace.
     pub fn with_chunk_min_score(mut self, score: f32) -> Self {
         self.chunk_min_score = Some(score);
+        self
+    }
+
+    /// Override the engine-wide BM25 rerank toggle for this workspace.
+    pub fn with_enable_rerank(mut self, enable: bool) -> Self {
+        self.enable_rerank = Some(enable);
+        self
+    }
+
+    /// Override the Qwen3-Embedding query instruction task description
+    /// for this workspace. Pass an empty string to disable the prefix.
+    pub fn with_embedding_query_instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.embedding_query_instruction = Some(instruction.into());
         self
     }
 

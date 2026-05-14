@@ -307,6 +307,19 @@ export interface UpdateWorkspaceRequest {
    * Overrides the server's default for this workspace's queries.
    */
   chunk_min_score?: number;
+  /**
+   * Toggle BM25 reranking on retrieved chunks. Defaults to the engine
+   * default (true). Boosts exact-keyword matches that vector cosine
+   * smears into semantic clusters.
+   */
+  enable_rerank?: boolean;
+  /**
+   * Qwen3-Embedding query instruction task description. The query is
+   * wrapped as `Instruct: {task}\nQuery: {q}` before embedding (the
+   * model's intended asymmetric pattern). Omit to use the engine default;
+   * pass an empty string to disable the prefix entirely.
+   */
+  embedding_query_instruction?: string;
 }
 
 /**

@@ -112,6 +112,8 @@ mod tests {
             accept_unofficial_implementations: None,
             entity_types: None,
             chunk_min_score: None,
+            enable_rerank: None,
+            embedding_query_instruction: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
@@ -178,6 +180,8 @@ mod tests {
             accept_unofficial_implementations: None,
             entity_types: None,
             chunk_min_score: None,
+            enable_rerank: None,
+            embedding_query_instruction: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         };

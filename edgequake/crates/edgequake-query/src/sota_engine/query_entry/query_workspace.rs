@@ -110,8 +110,13 @@ impl SOTAQueryEngine {
         // Step 3: Compute embeddings using WORKSPACE-SPECIFIC embedding provider
         let embed_start = std::time::Instant::now();
         let embeddings =
-            QueryEmbeddings::compute(&request.query, &keywords, embedding_provider.as_ref())
-                .await?;
+            QueryEmbeddings::compute(
+                &request.query,
+                &keywords,
+                embedding_provider.as_ref(),
+                self.resolved_query_instruction(&request),
+            )
+            .await?;
         stats.embedding_time_ms += embed_start.elapsed().as_millis() as u64;
 
         // Step 4: Mode-specific retrieval using WORKSPACE-SPECIFIC vector storage
@@ -180,6 +185,14 @@ impl SOTAQueryEngine {
         if let Some(min) = request.chunk_min_score {
             context.filter_chunks_by_score(min);
         }
+
+        // BM25 reranking — boost chunks containing rare literal query
+        // tokens (proper nouns, IDs) that vector cosine smears into the
+        // surrounding semantic cluster. Workspace can opt out via
+        // `enable_rerank: Some(false)`.
+        context.chunks = self
+            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
+            .await;
 
         // Sort entities by degree
         self.sort_entities_by_degree(&mut context.entities);
@@ -332,8 +345,13 @@ impl SOTAQueryEngine {
         // Step 3: Compute embeddings using WORKSPACE-SPECIFIC embedding provider
         let embed_start = std::time::Instant::now();
         let embeddings =
-            QueryEmbeddings::compute(&request.query, &keywords, embedding_provider.as_ref())
-                .await?;
+            QueryEmbeddings::compute(
+                &request.query,
+                &keywords,
+                embedding_provider.as_ref(),
+                self.resolved_query_instruction(&request),
+            )
+            .await?;
         stats.embedding_time_ms += embed_start.elapsed().as_millis() as u64;
 
         // Step 4: Mode-specific retrieval using WORKSPACE-SPECIFIC vector storage
@@ -396,6 +414,14 @@ impl SOTAQueryEngine {
         if let Some(min) = request.chunk_min_score {
             context.filter_chunks_by_score(min);
         }
+
+        // BM25 reranking — boost chunks containing rare literal query
+        // tokens (proper nouns, IDs) that vector cosine smears into the
+        // surrounding semantic cluster. Workspace can opt out via
+        // `enable_rerank: Some(false)`.
+        context.chunks = self
+            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
+            .await;
 
         // Sort entities by degree
         self.sort_entities_by_degree(&mut context.entities);

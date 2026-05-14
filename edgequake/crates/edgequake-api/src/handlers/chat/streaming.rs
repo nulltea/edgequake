@@ -237,6 +237,19 @@ pub async fn chat_completion_stream(
             engine_request = engine_request.with_chunk_min_score(score);
         }
 
+        // Workspace-scoped BM25 rerank toggle (None = engine default).
+        if let Some(enable) = workspace_clone.as_ref().and_then(|ws| ws.enable_rerank) {
+            engine_request = engine_request.with_enable_rerank(enable);
+        }
+
+        // Workspace-scoped Qwen3-Embedding query instruction (None = engine default).
+        if let Some(instruction) = workspace_clone
+            .as_ref()
+            .and_then(|ws| ws.embedding_query_instruction.clone())
+        {
+            engine_request = engine_request.with_query_instruction(instruction);
+        }
+
         // SPEC-005: Resolve document filter → allowed_document_ids for RAG context scoping
         if let Some(ref filter) = request_document_filter {
             let ws_id_str = workspace_id.as_ref().map(|id| id.to_string());

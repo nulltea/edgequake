@@ -62,6 +62,31 @@ pub struct QueryEngineConfig {
 
     /// Token-based truncation configuration.
     pub truncation: TruncationConfig,
+
+    /// Engine default task description for Qwen3-Embedding-style query
+    /// instruction prefix. Queries are wrapped as
+    /// `Instruct: {task}\nQuery: {q}` before embedding. Workspaces can
+    /// override via `QueryRequest::query_instruction`; an empty string
+    /// disables the wrapper entirely.
+    #[serde(default = "default_query_instruction")]
+    pub default_query_instruction: String,
+}
+
+/// Default task description for the Qwen3-Embedding query instruction
+/// prefix. Targets research-paper retrieval (the corpus this engine
+/// ships against by default).
+pub fn default_query_instruction() -> String {
+    "Given a research question, retrieve relevant passages from academic papers".to_string()
+}
+
+/// Wrap a query string with the Qwen3-Embedding instruction template.
+/// An empty `task` returns the input verbatim, disabling the prefix.
+pub fn wrap_query_instruction(query: &str, task: &str) -> String {
+    if task.is_empty() {
+        query.to_string()
+    } else {
+        format!("Instruct: {task}\nQuery: {query}")
+    }
 }
 
 impl Default for QueryEngineConfig {
@@ -77,6 +102,7 @@ impl Default for QueryEngineConfig {
             include_sources: true,
             use_keyword_extraction: false,
             truncation: TruncationConfig::default(),
+            default_query_instruction: default_query_instruction(),
         }
     }
 }
@@ -139,6 +165,23 @@ pub struct QueryRequest {
     /// API layer.
     #[serde(default)]
     pub chunk_min_score: Option<f32>,
+
+    /// Per-request override for the BM25 reranker step. `None` keeps the
+    /// engine default (`SOTAQueryConfig::enable_rerank`). Plumbed from
+    /// `workspace.enable_rerank` at the API layer so a workspace can opt
+    /// out of the (cheap, ~10–30 ms) in-memory BM25 rerank that boosts
+    /// exact-keyword matches.
+    #[serde(default)]
+    pub enable_rerank: Option<bool>,
+
+    /// Per-request override for the Qwen3-Embedding-style query
+    /// instruction prefix. `None` keeps the engine default
+    /// (`SOTAQueryConfig::default_query_instruction` /
+    /// `QueryEngineConfig::default_query_instruction`). `Some("")`
+    /// disables the prefix entirely (raw query is embedded). Plumbed
+    /// from `workspace.embedding_query_instruction` at the API layer.
+    #[serde(default)]
+    pub query_instruction: Option<String>,
 }
 
 /// A single message in conversation history.
@@ -167,12 +210,27 @@ impl QueryRequest {
             system_prompt: None,
             allowed_document_ids: None,
             chunk_min_score: None,
+            enable_rerank: None,
+            query_instruction: None,
         }
     }
 
     /// Set the chunk cosine-similarity floor for this request.
     pub fn with_chunk_min_score(mut self, score: f32) -> Self {
         self.chunk_min_score = Some(score);
+        self
+    }
+
+    /// Override the BM25 reranker on/off for this request.
+    pub fn with_enable_rerank(mut self, enable: bool) -> Self {
+        self.enable_rerank = Some(enable);
+        self
+    }
+
+    /// Override the Qwen3-Embedding query instruction task description
+    /// for this request. Pass an empty string to disable the prefix.
+    pub fn with_query_instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.query_instruction = Some(instruction.into());
         self
     }
 
@@ -368,7 +426,14 @@ impl QueryEngine {
 
         // Step 1: Generate query embedding
         let embed_start = std::time::Instant::now();
-        let query_embedding = self.embedding_provider.embed_one(&request.query).await?;
+        let to_embed = wrap_query_instruction(
+            &request.query,
+            request
+                .query_instruction
+                .as_deref()
+                .unwrap_or(&self.config.default_query_instruction),
+        );
+        let query_embedding = self.embedding_provider.embed_one(&to_embed).await?;
         stats.embedding_time_ms = embed_start.elapsed().as_millis() as u64;
 
         // Step 2: Retrieve context based on mode
@@ -420,7 +485,14 @@ impl QueryEngine {
         let mode = request.mode.unwrap_or(self.config.default_mode);
 
         // Step 1: Generate query embedding
-        let query_embedding = self.embedding_provider.embed_one(&request.query).await?;
+        let to_embed = wrap_query_instruction(
+            &request.query,
+            request
+                .query_instruction
+                .as_deref()
+                .unwrap_or(&self.config.default_query_instruction),
+        );
+        let query_embedding = self.embedding_provider.embed_one(&to_embed).await?;
 
         // Step 2: Retrieve context based on mode
         let context = self

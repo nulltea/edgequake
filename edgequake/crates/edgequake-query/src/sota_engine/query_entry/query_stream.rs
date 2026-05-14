@@ -54,8 +54,13 @@ impl SOTAQueryEngine {
 
         // Step 3: Compute embeddings
         let embeddings =
-            QueryEmbeddings::compute(&request.query, &keywords, self.embedding_provider.as_ref())
-                .await?;
+            QueryEmbeddings::compute(
+                &request.query,
+                &keywords,
+                self.embedding_provider.as_ref(),
+                self.resolved_query_instruction(&request),
+            )
+            .await?;
 
         // Step 4: Mode-specific retrieval
         let context = match mode {
@@ -110,6 +115,11 @@ impl SOTAQueryEngine {
         if let Some(min) = request.chunk_min_score {
             context.filter_chunks_by_score(min);
         }
+
+        // BM25 reranking — see rerank_chunks docs.
+        context.chunks = self
+            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
+            .await;
 
         // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
@@ -376,8 +386,13 @@ impl SOTAQueryEngine {
 
         // Step 3: Compute embeddings using WORKSPACE-SPECIFIC embedding provider
         let embeddings =
-            QueryEmbeddings::compute(&request.query, &keywords, embedding_provider.as_ref())
-                .await?;
+            QueryEmbeddings::compute(
+                &request.query,
+                &keywords,
+                embedding_provider.as_ref(),
+                self.resolved_query_instruction(&request),
+            )
+            .await?;
 
         // Step 4: Mode-specific retrieval using WORKSPACE-SPECIFIC vector storage
         let context = match mode {
@@ -436,6 +451,11 @@ impl SOTAQueryEngine {
         if let Some(min) = request.chunk_min_score {
             context.filter_chunks_by_score(min);
         }
+
+        // BM25 reranking — see rerank_chunks docs.
+        context.chunks = self
+            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
+            .await;
 
         // Sort entities by degree
         self.sort_entities_by_degree(&mut context.entities);

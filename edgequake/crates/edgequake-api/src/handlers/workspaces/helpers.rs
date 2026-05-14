@@ -99,6 +99,8 @@ pub(super) fn workspace_to_response(workspace: &Workspace) -> WorkspaceResponse 
             .get("entity_types")
             .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()),
         chunk_min_score: workspace.chunk_min_score,
+        enable_rerank: workspace.enable_rerank,
+        embedding_query_instruction: workspace.embedding_query_instruction.clone(),
         created_at: workspace.created_at.to_rfc3339(),
         updated_at: workspace.updated_at.to_rfc3339(),
     }

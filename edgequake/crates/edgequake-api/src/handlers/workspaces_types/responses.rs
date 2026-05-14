@@ -133,6 +133,16 @@ pub struct WorkspaceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_min_score: Option<f32>,
 
+    /// Workspace-scoped BM25 rerank toggle. None means the engine default
+    /// (`SOTAQueryConfig::enable_rerank`, `true`) is used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_rerank: Option<bool>,
+
+    /// Workspace-scoped Qwen3-Embedding query instruction task description.
+    /// None means the engine default is used. Empty string disables the prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_query_instruction: Option<String>,
+
     /// Creation timestamp.
     pub created_at: String,
     /// Last update timestamp.

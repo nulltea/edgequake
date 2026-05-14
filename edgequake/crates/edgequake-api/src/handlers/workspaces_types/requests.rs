@@ -186,6 +186,18 @@ pub struct CreateWorkspaceApiRequest {
     /// Range: 0.0–1.0. Omit to inherit the engine default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_min_score: Option<f32>,
+
+    /// Enable BM25 reranking on retrieved chunks. `None` keeps the engine
+    /// default (`SOTAQueryConfig::enable_rerank`, `true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_rerank: Option<bool>,
+
+    /// Qwen3-Embedding query instruction task description. The query is
+    /// wrapped as `Instruct: {task}\nQuery: {q}` before embedding (the
+    /// model's intended asymmetric pattern; documents stay raw). `None`
+    /// uses the engine default; empty string disables the prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_query_instruction: Option<String>,
 }
 
 /// Request to update a workspace.
@@ -279,4 +291,13 @@ pub struct UpdateWorkspaceApiRequest {
     /// Range: 0.0–1.0. Omit to keep the current value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_min_score: Option<f32>,
+
+    /// Update the workspace's BM25 rerank toggle. Omit to keep current value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_rerank: Option<bool>,
+
+    /// Update the Qwen3-Embedding query instruction task description.
+    /// Omit to keep the current value; pass an empty string to disable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_query_instruction: Option<String>,
 }

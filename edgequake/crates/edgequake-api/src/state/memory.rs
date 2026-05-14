@@ -169,13 +169,16 @@ impl AppState {
         ));
 
         // Create SOTA query engine with LightRAG-style enhancements
-        let sota_engine = Arc::new(SOTAQueryEngine::new(
-            SOTAQueryConfig::default(),
-            Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
-            Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
-            Arc::clone(&embedding_provider),
-            Arc::clone(&llm_provider),
-        ));
+        let sota_engine = Arc::new(
+            SOTAQueryEngine::new(
+                SOTAQueryConfig::default(),
+                Arc::clone(&vector_storage) as Arc<dyn edgequake_storage::traits::VectorStorage>,
+                Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
+                Arc::clone(&embedding_provider),
+                Arc::clone(&llm_provider),
+            )
+            .with_reranker(super::create_bm25_reranker()),
+        );
 
         // Create workspace vector registry for per-workspace dimensions
         let vector_registry: Arc<dyn edgequake_storage::traits::WorkspaceVectorRegistry> =

@@ -85,6 +85,7 @@ use crate::truncation::TruncationConfig;
 
 use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
+use edgequake_llm::Reranker;
 use edgequake_storage::traits::{
     AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, VectorStorage,
 };
@@ -136,6 +137,31 @@ pub struct SOTAQueryConfig {
     /// Keyword cache TTL in seconds.
     pub keyword_cache_ttl_secs: u64,
 
+    /// Enable the in-memory BM25 reranker on the retrieved chunk set.
+    /// BM25 rescores candidates against the query, boosting chunks that
+    /// contain rare query tokens (e.g. proper nouns) that pure vector
+    /// cosine smears into a semantic cluster. Workspaces can override via
+    /// `workspace.enable_rerank` → `QueryRequest::enable_rerank`.
+    pub enable_rerank: bool,
+
+    /// Number of top candidates returned after reranking (also the upper
+    /// bound on candidates considered).
+    pub rerank_top_k: usize,
+
+    /// Minimum BM25 rerank score required to keep a chunk. If every
+    /// candidate falls below this floor, the rerank step falls back to
+    /// the original (unsorted) top-K to preserve recall.
+    pub min_rerank_score: f32,
+
+    /// Engine default task description for the Qwen3-Embedding query
+    /// instruction prefix. Queries (and the LightRAG high-/low-level
+    /// keyword strings) are wrapped as `Instruct: {task}\nQuery: {q}`
+    /// before embedding. Workspaces can override via
+    /// `QueryRequest::query_instruction`; an empty string disables the
+    /// wrapper. Document embeddings are NOT prefixed (Qwen3-Embedding
+    /// is trained asymmetric).
+    #[serde(default = "crate::engine::default_query_instruction")]
+    pub default_query_instruction: String,
 }
 
 impl Default for SOTAQueryConfig {
@@ -174,6 +200,14 @@ impl Default for SOTAQueryConfig {
                 max_total_tokens: 30000,
             },
             keyword_cache_ttl_secs: 24 * 60 * 60, // 24 hours
+            enable_rerank: true,
+            rerank_top_k: 20,
+            // WHY 0.1: BM25 scores can be low for short documents or simple
+            // queries; 0.3 was too aggressive and filtered out valid chunks.
+            // 0.1 separates clear non-matches from anything with some keyword
+            // overlap. Combined with the rerank-empty fallback below.
+            min_rerank_score: 0.1,
+            default_query_instruction: crate::engine::default_query_instruction(),
         }
     }
 }
@@ -197,10 +231,16 @@ pub struct QueryEmbeddings {
 
 impl QueryEmbeddings {
     /// Compute all embeddings in a single batch.
+    ///
+    /// `task` is the Qwen3-Embedding instruction task description (see
+    /// `crate::engine::wrap_query_instruction`). All three query-side
+    /// texts get the prefix so they live in the model's query subspace;
+    /// document embeddings stay raw at indexing time.
     pub async fn compute(
         query: &str,
         keywords: &ExtractedKeywords,
         embedder: &dyn EmbeddingProvider,
+        task: &str,
     ) -> Result<Self> {
         let high_level_text = if keywords.high_level.is_empty() {
             query.to_string()
@@ -214,8 +254,14 @@ impl QueryEmbeddings {
             keywords.low_level.join(", ")
         };
 
-        // Batch embed all three texts
-        let texts = vec![query.to_string(), high_level_text, low_level_text];
+        // Batch embed all three texts with the instruction prefix applied
+        // uniformly (research recommendation: start unified across chunk,
+        // entity, and relationship retrieval paths).
+        let texts = vec![
+            crate::engine::wrap_query_instruction(query, task),
+            crate::engine::wrap_query_instruction(&high_level_text, task),
+            crate::engine::wrap_query_instruction(&low_level_text, task),
+        ];
 
         let embeddings = embedder.embed(&texts).await.map_err(QueryError::from)?;
 
@@ -263,6 +309,9 @@ pub struct SOTAQueryEngine {
     /// Approved-algorithm vector store used by the sibling enrichment pass.
     /// `None` disables the post-retrieval algorithm-enrichment step.
     algorithm_vector_storage: Option<Arc<dyn AlgorithmVectorStorage>>,
+    /// BM25 reranker that rescores retrieved chunks against the query.
+    /// `None` skips the rerank step. Wired via [`Self::with_reranker`].
+    reranker: Option<Arc<dyn Reranker>>,
 }
 
 impl SOTAQueryEngine {
@@ -297,6 +346,7 @@ impl SOTAQueryEngine {
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
+            reranker: None,
         }
     }
 
@@ -324,6 +374,7 @@ impl SOTAQueryEngine {
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
+            reranker: None,
         }
     }
 
@@ -373,6 +424,13 @@ impl SOTAQueryEngine {
     pub fn algorithm_vector_storage(&self) -> Option<&Arc<dyn AlgorithmVectorStorage>> {
         self.algorithm_vector_storage.as_ref()
     }
+
+    /// Wire in the BM25 reranker that rescores retrieved chunks against
+    /// the query keyword set. See [`Self::rerank_chunks`].
+    pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
+        self.reranker = Some(reranker);
+        self
+    }
 }
 
 impl SOTAQueryEngine {
@@ -380,12 +438,25 @@ impl SOTAQueryEngine {
     pub fn config(&self) -> &SOTAQueryConfig {
         &self.config
     }
+
+    /// Resolve the Qwen3-Embedding instruction task description for a
+    /// request: the per-request override if set, else the engine default.
+    pub(crate) fn resolved_query_instruction<'a>(
+        &'a self,
+        request: &'a crate::engine::QueryRequest,
+    ) -> &'a str {
+        request
+            .query_instruction
+            .as_deref()
+            .unwrap_or(&self.config.default_query_instruction)
+    }
 }
 
 mod keyword_validation;
 mod prompt;
 mod query_entry;
 mod query_modes;
+mod reranking;
 mod vector_queries;
 
 #[cfg(test)]

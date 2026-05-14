@@ -296,7 +296,8 @@ impl AppState {
             Arc::clone(&graph_storage) as Arc<dyn edgequake_storage::traits::GraphStorage>,
             Arc::clone(&embedding_provider),
             Arc::clone(&llm_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
-        );
+        )
+        .with_reranker(super::create_bm25_reranker());
 
         // Phase 1 Reference Code GraphRAG: wire the code-embedder + vector
         // store when the embedder URL is configured. Missing env → feature
