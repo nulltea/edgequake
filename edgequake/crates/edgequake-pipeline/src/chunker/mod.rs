@@ -50,7 +50,7 @@ use std::sync::Arc;
 use crate::error::Result;
 
 // Re-export types
-pub use types::{ChunkResult, ChunkerConfig, ChunkingStrategy, TextChunk};
+pub use types::{ChunkKind, ChunkResult, ChunkerConfig, ChunkingStrategy, TextChunk};
 
 // Re-export text utilities needed by external consumers
 pub use text_utils::calculate_line_numbers;
@@ -128,7 +128,13 @@ impl Chunker {
         Ok(results
             .into_iter()
             .map(|result| {
-                let id = format!("{}-chunk-{}", doc_id, result.chunk_order_index);
+                // Figure chunks get a deterministic id keyed by figure_id so
+                // the PDF processor can address them post-chunking without
+                // having to discover the chunker's index → figure mapping.
+                let id = match (result.kind, result.figure_id.as_deref()) {
+                    (ChunkKind::Figure, Some(fid)) => format!("{}-figure-{}", doc_id, fid),
+                    _ => format!("{}-chunk-{}", doc_id, result.chunk_order_index),
+                };
                 let start_offset = cumulative_offset;
                 let end_offset = cumulative_offset + result.content.len();
                 let (start_line, end_line) = calculate_line_numbers(text, start_offset, end_offset);
@@ -144,6 +150,10 @@ impl Chunker {
                     end_line,
                 );
                 chunk.set_heading_path(result.heading_path);
+                chunk.kind = result.kind;
+                chunk.media_bytes = result.media_bytes;
+                chunk.media_mime = result.media_mime;
+                chunk.figure_id = result.figure_id;
                 chunk
             })
             .collect())

@@ -198,6 +198,9 @@ pub(crate) fn build_sources(context: &edgequake_query::QueryContext) -> Vec<Sour
             start_line: chunk.start_line,
             end_line: chunk.end_line,
             chunk_index: chunk.chunk_index,
+            kind: chunk.kind.clone(),
+            figure_id: chunk.figure_id.clone(),
+            caption: chunk.caption.clone(),
             // SPEC-006: Entity-only fields
             entity_type: None,
             degree: None,
@@ -238,6 +241,7 @@ pub(crate) fn build_sources(context: &edgequake_query::QueryContext) -> Vec<Sour
             } else {
                 Some(entity.source_chunk_ids.clone())
             },
+            ..Default::default()
         });
         ref_counter += 1;
     }
@@ -269,6 +273,7 @@ pub(crate) fn build_sources(context: &edgequake_query::QueryContext) -> Vec<Sour
             entity_type: None,
             degree: None,
             source_chunk_ids: None,
+            ..Default::default()
         });
         ref_counter += 1;
     }

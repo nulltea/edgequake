@@ -3,7 +3,41 @@
 //! A Chunk represents a segment of a document, sized appropriately for
 //! LLM context windows.
 
-use serde::{Deserialize, Serialize};
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// Distinguishes plain text chunks from chunks carrying an inline media payload
+/// (currently: PDF figures captured by VLM-OCR).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChunkKind {
+    Text,
+    Figure,
+}
+
+impl Default for ChunkKind {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
+/// Base64-encode `Option<Vec<u8>>` when writing JSON, decode on the way in.
+/// Bytes-as-JSON-array is the serde default and inflates ~4×; base64 keeps the
+/// KV chunk payload at the standard +33% over the raw PNG.
+mod opt_bytes_b64 {
+    use super::*;
+    pub fn serialize<S: Serializer>(v: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(bytes) => s.serialize_str(&B64.encode(bytes)),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let opt: Option<String> = Option::deserialize(d)?;
+        opt.map(|s| B64.decode(s.as_bytes()).map_err(serde::de::Error::custom))
+            .transpose()
+    }
+}
 
 /// A segment of a document.
 ///
@@ -70,6 +104,26 @@ pub struct Chunk {
     /// Embedding vector dimension used for this chunk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_dimension: Option<usize>,
+
+    // === Media payload (figure chunks) ===
+    // Text chunks leave these unset; figure chunks (kind = Figure) carry the
+    // PNG bytes of the cropped figure plus the stable extractor-side id that
+    // links the chunk back to the markdown placeholder it replaced.
+    /// What this chunk holds. Defaults to Text for backward-compatible JSON.
+    #[serde(default)]
+    pub kind: ChunkKind,
+    /// Raw bytes of the media payload (e.g. PNG of a PDF figure crop).
+    /// Encoded as base64 in JSON to keep KV chunk payloads compact.
+    #[serde(default, with = "opt_bytes_b64", skip_serializing_if = "Option::is_none")]
+    pub media_bytes: Option<Vec<u8>>,
+    /// MIME type of `media_bytes` (e.g. `"image/png"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_mime: Option<String>,
+    /// Extractor-side stable id for the figure (`fig_{page}_{order_index}`).
+    /// Matches the `![figure:<id>](...)` placeholder emitted by the VLM-OCR
+    /// pipeline so the chunker can pair markdown sites with figure payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_id: Option<String>,
 }
 
 impl Chunk {
@@ -117,6 +171,47 @@ impl Chunk {
             llm_model: None,
             embedding_model: None,
             embedding_dimension: None,
+            kind: ChunkKind::Text,
+            media_bytes: None,
+            media_mime: None,
+            figure_id: None,
+        }
+    }
+
+    /// Construct a figure chunk: caption text + image bytes + stable figure id.
+    /// The id keys the chunk to the `![figure:<id>](...)` placeholder emitted
+    /// by VLM-OCR, so the chunker can pair markdown sites with PNG payloads.
+    pub fn new_figure(
+        caption: String,
+        tokens: u32,
+        chunk_order_index: u32,
+        full_doc_id: String,
+        file_path: Option<String>,
+        figure_id: String,
+        media_bytes: Vec<u8>,
+        media_mime: impl Into<String>,
+    ) -> Self {
+        // Hash the figure id into the chunk id so two figures with identical
+        // captions still get distinct chunk ids.
+        let id_seed = format!("figure:{figure_id}:{caption}");
+        Self {
+            id: Self::generate_id(&id_seed),
+            content: caption,
+            tokens,
+            chunk_order_index,
+            full_doc_id,
+            file_path,
+            start_line: None,
+            end_line: None,
+            start_offset: None,
+            end_offset: None,
+            llm_model: None,
+            embedding_model: None,
+            embedding_dimension: None,
+            kind: ChunkKind::Figure,
+            media_bytes: Some(media_bytes),
+            media_mime: Some(media_mime.into()),
+            figure_id: Some(figure_id),
         }
     }
 
@@ -303,5 +398,69 @@ mod tests {
         let deserialized: Chunk = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.llm_model, Some("ollama/gemma3".to_string()));
         assert_eq!(deserialized.embedding_dimension, Some(768));
+    }
+
+    #[test]
+    fn test_text_chunk_default_kind_and_no_media() {
+        let chunk = Chunk::new("Content".to_string(), 10, 0, "doc-1".to_string(), None);
+        assert_eq!(chunk.kind, ChunkKind::Text);
+        assert!(chunk.media_bytes.is_none());
+        assert!(chunk.media_mime.is_none());
+        assert!(chunk.figure_id.is_none());
+    }
+
+    #[test]
+    fn test_figure_chunk_constructor() {
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let chunk = Chunk::new_figure(
+            "Figure 2: System diagram.".to_string(),
+            8,
+            3,
+            "doc-1".to_string(),
+            None,
+            "fig_4_2".to_string(),
+            png.clone(),
+            "image/png",
+        );
+        assert_eq!(chunk.kind, ChunkKind::Figure);
+        assert_eq!(chunk.media_bytes.as_deref(), Some(png.as_slice()));
+        assert_eq!(chunk.media_mime.as_deref(), Some("image/png"));
+        assert_eq!(chunk.figure_id.as_deref(), Some("fig_4_2"));
+        assert_eq!(chunk.content, "Figure 2: System diagram.");
+    }
+
+    #[test]
+    fn test_figure_chunk_bytes_base64_roundtrip() {
+        // Non-ASCII bytes prove we're not silently lossy-string-converting.
+        let bytes: Vec<u8> = (0u8..=255).collect();
+        let chunk = Chunk::new_figure(
+            "caption".to_string(),
+            1,
+            0,
+            "d".to_string(),
+            None,
+            "fig_0_0".to_string(),
+            bytes.clone(),
+            "image/png",
+        );
+        let json = serde_json::to_string(&chunk).unwrap();
+        // Bytes must NOT appear as a JSON array of numbers.
+        assert!(!json.contains("[0,1,2,3"));
+        // Base64 of the all-bytes sequence starts with "AAECAw" (0,1,2,3 ...).
+        assert!(json.contains("AAECAw"));
+        let round: Chunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.media_bytes, Some(bytes));
+        assert_eq!(round.kind, ChunkKind::Figure);
+    }
+
+    #[test]
+    fn test_legacy_chunk_json_deserializes_with_text_kind() {
+        // WHY: existing KV blobs predate the kind/media fields. They must
+        // deserialize unchanged and default to Text.
+        let old = r#"{"id":"chunk-abc","content":"hi","tokens":1,"chunk_order_index":0,"full_doc_id":"d"}"#;
+        let chunk: Chunk = serde_json::from_str(old).unwrap();
+        assert_eq!(chunk.kind, ChunkKind::Text);
+        assert!(chunk.media_bytes.is_none());
+        assert!(chunk.figure_id.is_none());
     }
 }

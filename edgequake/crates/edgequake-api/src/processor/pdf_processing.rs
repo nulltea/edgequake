@@ -243,6 +243,38 @@ impl DocumentTaskProcessor {
                 }
             }
 
+            // Purge prior figure rows from the public `chunks` table for
+            // this document. Without this, a reprocess that yields a
+            // different page count or layout (figures at new bboxes →
+            // different `chunk_index`) leaves stale rows from the previous
+            // run that the media-fetch endpoint would still happily serve.
+            // Best-effort: failures are logged and the reprocess continues.
+            #[cfg(feature = "postgres")]
+            if let Ok(doc_uuid) = uuid::Uuid::parse_str(&early_doc_id) {
+                if let Ok(database_url) = std::env::var("DATABASE_URL") {
+                    if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
+                        match sqlx::query("DELETE FROM chunks WHERE document_id = $1 AND kind = 'figure'")
+                            .bind(doc_uuid)
+                            .execute(&pool)
+                            .await
+                        {
+                            Ok(r) => {
+                                info!(
+                                    document_id = %early_doc_id,
+                                    rows_deleted = r.rows_affected(),
+                                    "Reprocess: purged figure rows from chunks table"
+                                );
+                            }
+                            Err(e) => warn!(
+                                document_id = %early_doc_id,
+                                error = %e,
+                                "Reprocess: figure-row purge failed (continuing)"
+                            ),
+                        }
+                    }
+                }
+            }
+
             // Clean the AGE graph — entities/relationships whose only
             // source is this document get deleted outright; edges
             // referencing deleted nodes are dropped. Keeps the graph
@@ -436,6 +468,19 @@ impl DocumentTaskProcessor {
             None
         };
 
+        // VLM-OCR: sink to capture extracted figure crops (Image/Chart/Seal
+        // regions). When set, the converter rewrites the page markdown so
+        // each captured figure becomes a `![<id>](edgequake-figure)` placeholder
+        // and pushes the PNG bytes + caption into the sink, ready for the
+        // chunker to materialise as a figure chunk.
+        let figure_sink = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
+            Some(Arc::new(std::sync::Mutex::new(Vec::<
+                edgequake_pdf::ExtractedFigure,
+            >::new())))
+        } else {
+            None
+        };
+
         let conversion_config = edgequake_pdf::PdfConversionConfig {
             page_count_hint: pdf.page_count.map(|count| count as usize),
             table_method: None,
@@ -444,6 +489,7 @@ impl DocumentTaskProcessor {
             vlm_base_url,
             vlm_model,
             algorithm_block_sink: algo_block_sink.clone(),
+            figure_sink: figure_sink.clone(),
         };
 
         let markdown = match backend {
@@ -626,6 +672,37 @@ impl DocumentTaskProcessor {
             )
             .await;
 
+        // 6a. Figure extraction (VLM-OCR path only). Drain the sink the
+        //     converter populated for each Image/Chart/Seal layout region
+        //     it captioned. The page markdown was rewritten in-flight to
+        //     replace each `*Figure N: caption*` line with
+        //     `![<id>](edgequake-figure)` so the chunker can pair these
+        //     placeholders with the PNG payloads. Currently we just log
+        //     the totals — the chunker integration that materialises
+        //     figure chunks lives behind task #7 (see plan file).
+        let extracted_figures: Vec<edgequake_pdf::ExtractedFigure> =
+            if let Some(ref sink) = figure_sink {
+                let figs: Vec<edgequake_pdf::ExtractedFigure> = sink
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|e| e.into_inner().clone());
+                if !figs.is_empty() {
+                    let total_bytes: usize = figs.iter().map(|f| f.png_bytes.len()).sum();
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        figure_count = figs.len(),
+                        total_png_bytes = total_bytes,
+                        "VLM-OCR: captured figures (chunker integration pending)"
+                    );
+                }
+                figs
+            } else {
+                Vec::new()
+            };
+        // Suppress unused-variable warning until task #7 lands and the chunker
+        // consumes this list.
+        let _ = &extracted_figures;
+
         // 6. Algorithm extraction (VLM-OCR path only — pass 2+3 runs on
         //    blocks detected during conversion). Moved ahead of
         //    `process_text_insert` so entity extraction no longer
@@ -757,6 +834,93 @@ impl DocumentTaskProcessor {
         let result = self
             .process_text_insert(task, text_data, cancel_token)
             .await?;
+
+        // 6b. Figure backfill. process_text_insert created figure chunk markers
+        //     in the workspace vector store (kind=figure, figure_id set) but
+        //     left them WITHOUT embeddings — the pipeline's text-embedding
+        //     loop skips figure chunks because the placeholder text would yield
+        //     a meaningless vector. The PNG bytes have been sitting in
+        //     extracted_figures since the converter ran.
+        //
+        //     This step does two things:
+        //       (a) Write the PNG bytes into the `chunks` table (BYTEA columns
+        //           from migration 052) so the media-fetch endpoint can serve
+        //           them by (document_id, figure_id).
+        //       (b) Compute a fused multimodal embedding (caption + PNG bytes)
+        //           via MultimodalEmbeddingClient and upsert it to the
+        //           workspace vector store under id `{doc_id}-figure-{fid}` so
+        //           queries can retrieve figures in the same vector space as
+        //           text chunks.
+        //
+        //     Both are best-effort: failures are logged and swallowed so a
+        //     downstream-service hiccup doesn't kill the PDF ingest run.
+        #[cfg(feature = "postgres")]
+        if !extracted_figures.is_empty() {
+            if let Err(e) = backfill_figure_media(
+                &early_doc_id,
+                data.tenant_id,
+                data.workspace_id,
+                &extracted_figures,
+            )
+            .await
+            {
+                warn!(
+                    pdf_id = %data.pdf_id,
+                    error = %e,
+                    figure_count = extracted_figures.len(),
+                    "Figure-bytes backfill failed (non-fatal); figures captured but bytes not persisted"
+                );
+            } else {
+                info!(
+                    pdf_id = %data.pdf_id,
+                    figure_count = extracted_figures.len(),
+                    "Figure-bytes backfill: wrote PNG payloads to chunks table"
+                );
+            }
+
+            // (b) Multimodal embedding via the workspace's configured
+            //     embedding provider — but only if its model card declares
+            //     supports_vision = true. Otherwise the workspace is using a
+            //     text-only embedder (e.g. embeddinggemma 768 / OpenAI 1536)
+            //     and a 1024-dim figure vector would (a) be in a different
+            //     dim from the rest of the workspace, breaking unified
+            //     retrieval, and (b) fail the vector-table dimension check.
+            //     Bytes are still served via the media-fetch endpoint either
+            //     way; only searchability needs vision support.
+            match self
+                .backfill_figure_embeddings(
+                    &early_doc_id,
+                    &data.tenant_id.to_string(),
+                    &data.workspace_id.to_string(),
+                    &extracted_figures,
+                )
+                .await
+            {
+                Ok(Some(stored)) => {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        embedded = stored,
+                        total = extracted_figures.len(),
+                        "Figure-embedding backfill: wrote vectors to workspace vector store"
+                    );
+                }
+                Ok(None) => {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        figure_count = extracted_figures.len(),
+                        "Figure-embedding backfill: workspace's embedding model isn't multimodal (supports_vision=false) — figures retrievable by media only, not via vector search"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        pdf_id = %data.pdf_id,
+                        error = %e,
+                        figure_count = extracted_figures.len(),
+                        "Figure-embedding backfill failed (non-fatal); figures retrievable by media only"
+                    );
+                }
+            }
+        }
 
         // == Progress: extraction complete, linking PDF ==
         task.update_progress("linking".to_string(), 5, 95);
@@ -1024,6 +1188,188 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| format!("kv upsert: {e}"))
     }
+
+    /// Compute fused multimodal embeddings (caption + PNG bytes) for each
+    /// extracted figure and upsert them to the workspace vector store under
+    /// id `{document_id}-figure-{figure_id}` — same id the chunker uses for
+    /// its placeholder chunk, so the embedding lands on the same record.
+    ///
+    /// Driven entirely by **workspace settings**: looks up the workspace's
+    /// configured embedding provider + model, checks the model card's
+    /// `supports_vision` flag, and (when true) routes figure inputs to that
+    /// provider's `/v1/embeddings` endpoint via `MultimodalEmbeddingClient`.
+    /// No env-var overrides — `/workspace` settings are the single source of
+    /// truth for which model to use.
+    ///
+    /// Returns:
+    /// - `Ok(Some(n))` — embeddings stored for `n` of `figures.len()` figures
+    /// - `Ok(None)`    — workspace's embedding model isn't multimodal
+    ///                   (`supports_vision = false`); figures stay
+    ///                   retrievable via the media-fetch endpoint only
+    /// - `Err(_)`      — unexpected failure (workspace not found, provider
+    ///                   missing base_url, vector store unreachable)
+    ///
+    /// Best-effort per figure: a single embed/upsert failure is logged and
+    /// the rest of the batch proceeds.
+    #[cfg(feature = "postgres")]
+    async fn backfill_figure_embeddings(
+        &self,
+        document_id: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+        figures: &[edgequake_pdf::ExtractedFigure],
+    ) -> Result<Option<usize>, String> {
+        use edgequake_pipeline::embedding::{
+            EmbeddingInput, EmbeddingRole, MultimodalEmbeddingClient,
+        };
+        use serde_json::json;
+
+        // 1. Resolve workspace → find embedding provider + model.
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("invalid workspace_id {workspace_id:?}: {e}"))?;
+        let ws = self
+            .workspace_service
+            .as_ref()
+            .ok_or_else(|| "no workspace_service".to_string())?
+            .get_workspace(workspace_uuid)
+            .await
+            .map_err(|e| format!("get_workspace: {e}"))?
+            .ok_or_else(|| format!("workspace {workspace_uuid} not found"))?;
+
+        // 2. Look up the provider/model in the loaded ModelsConfig to (a)
+        //    check supports_vision and (b) get the base_url so we can talk
+        //    to the same /v1/embeddings the trait-based text path uses.
+        let cfg = self
+            .models_config
+            .as_ref()
+            .ok_or_else(|| "no models_config".to_string())?;
+        let provider_cfg = cfg
+            .get_provider(&ws.embedding_provider)
+            .ok_or_else(|| format!("provider {} not in models.toml", ws.embedding_provider))?;
+        let model_card = cfg
+            .get_model(&ws.embedding_provider, &ws.embedding_model)
+            .ok_or_else(|| {
+                format!(
+                    "model {} not in provider {}",
+                    ws.embedding_model, ws.embedding_provider
+                )
+            })?;
+
+        if !model_card.capabilities.supports_vision {
+            // Workspace's embedding model is text-only. Skip — bytes remain
+            // accessible via the media-fetch endpoint; only vector search
+            // over figures is unavailable until a multimodal model is
+            // selected in /workspace.
+            return Ok(None);
+        }
+
+        // Resolve the OpenAI-compat /v1 base URL for this provider. Prefer
+        // the explicit TOML `base_url`; fall back to the provider's per-type
+        // env-var convention (mirrors what the SDK does internally for the
+        // text path so users who never set `base_url` still work). The
+        // lmstudio path commonly only has `LMSTUDIO_HOST` set — it doesn't
+        // include `/v1` so we append it here.
+        let base_url = provider_cfg
+            .base_url
+            .clone()
+            .or_else(|| {
+                provider_cfg
+                    .base_url_env
+                    .as_ref()
+                    .and_then(|var| std::env::var(var).ok())
+                    .map(|u| ensure_v1_suffix(&u))
+            })
+            .or_else(|| match ws.embedding_provider.to_ascii_lowercase().as_str() {
+                "lmstudio" | "lm-studio" | "lm_studio" => std::env::var("LMSTUDIO_HOST")
+                    .ok()
+                    .map(|u| ensure_v1_suffix(&u)),
+                "ollama" => std::env::var("OLLAMA_HOST")
+                    .ok()
+                    .map(|u| ensure_v1_suffix(&u)),
+                "openai" => Some("https://api.openai.com/v1".to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                format!(
+                    "provider {} has no base_url and no env-var fallback resolved; \
+                     set `base_url` in models.toml or the provider's *_HOST env var",
+                    ws.embedding_provider
+                )
+            })?;
+
+        let client = MultimodalEmbeddingClient::new(&base_url, &ws.embedding_model);
+        let store = self
+            .get_workspace_vector_storage_strict(workspace_id)
+            .await?;
+
+        let mut stored = 0usize;
+        for fig in figures {
+            let embedding = match client
+                .embed(
+                    EmbeddingInput::Figure {
+                        caption: &fig.caption,
+                        bytes: &fig.png_bytes,
+                        mime: &fig.mime,
+                    },
+                    EmbeddingRole::Document,
+                )
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        figure_id = %fig.id,
+                        error = %e,
+                        "figure-embedding: multimodal embed call failed"
+                    );
+                    continue;
+                }
+            };
+
+            let chunk_id = format!("{document_id}-figure-{}", fig.id);
+            let metadata = json!({
+                "type": "chunk",
+                "kind": "figure",
+                "document_id": document_id,
+                "figure_id": fig.id,
+                "page": fig.page,
+                "order_index": fig.order_index,
+                "caption": fig.caption,
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+                "media_mime": fig.mime,
+                "embedding_provider": ws.embedding_provider,
+                "embedding_model": ws.embedding_model,
+            });
+
+            if let Err(e) = store
+                .upsert(&[(chunk_id.clone(), embedding, metadata)])
+                .await
+            {
+                warn!(
+                    figure_id = %fig.id,
+                    chunk_id = %chunk_id,
+                    error = %e,
+                    "figure-embedding: vector upsert failed"
+                );
+                continue;
+            }
+            stored += 1;
+        }
+        Ok(Some(stored))
+    }
+}
+
+/// Ensure a URL ends with `/v1` (the OpenAI-compat path prefix). LMSTUDIO_HOST
+/// and OLLAMA_HOST conventions omit the suffix; the multimodal client expects
+/// the full `/v1` base because it appends `/embeddings` to it.
+fn ensure_v1_suffix(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    }
 }
 
 /// Derive a 4-digit year from an arxiv id embedded in `source_url` (e.g.
@@ -1108,6 +1454,89 @@ fn sanitize_filename_segment(s: &str) -> String {
     // Collapse whitespace runs to single spaces.
     let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
     collapsed.trim_matches('.').to_string()
+}
+
+/// Write figure PNG bytes + caption + provenance into the `chunks` table for
+/// each captured figure. One row per figure, keyed by `(document_id, figure_id)`.
+/// Used by the media-fetch endpoint to stream the raw PNG back to clients.
+///
+/// Opens its own `PgPool` from `DATABASE_URL` (mirrors the algorithm-extraction
+/// path's pattern). Best-effort — caller logs and swallows errors so a backfill
+/// failure doesn't kill the PDF ingest run.
+///
+/// chunk_index is set to `1_000_000 + page * 1_000 + order_index` to stay clear
+/// of any future text-chunk rows the same document might pick up — text chunks
+/// today live in KV, not this table, but the unique `(document_id, chunk_index)`
+/// constraint means we want a stable, collision-free range.
+#[cfg(feature = "postgres")]
+async fn backfill_figure_media(
+    early_doc_id: &str,
+    tenant_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    figures: &[edgequake_pdf::ExtractedFigure],
+) -> Result<(), String> {
+    let document_id = uuid::Uuid::parse_str(early_doc_id)
+        .map_err(|e| format!("invalid early_doc_id {early_doc_id:?}: {e}"))?;
+
+    let database_url = std::env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL not set for figure-bytes backfill".to_string())?;
+    let pool = sqlx::PgPool::connect(&database_url)
+        .await
+        .map_err(|e| format!("connect failed: {e}"))?;
+
+    // `ON CONFLICT (document_id, chunk_index) DO UPDATE` makes the backfill
+    // idempotent across PDF reprocess runs — a re-extracted figure with the
+    // same (page, order_index) overwrites the previous row's bytes/caption.
+    for fig in figures {
+        let chunk_index: i32 = 1_000_000
+            + (fig.page as i32).saturating_mul(1_000)
+            + fig.order_index as i32;
+        let metadata = serde_json::json!({
+            "kind": "figure",
+            "figure_id": fig.id,
+            "page": fig.page,
+            "order_index": fig.order_index,
+        });
+        let res = sqlx::query(
+            r#"
+            INSERT INTO chunks (
+                document_id, tenant_id, workspace_id,
+                content, chunk_index,
+                kind, figure_id, media_bytes, media_mime,
+                metadata
+            ) VALUES ($1, $2, $3, $4, $5, 'figure', $6, $7, $8, $9)
+            ON CONFLICT (document_id, chunk_index) DO UPDATE SET
+                content      = EXCLUDED.content,
+                kind         = EXCLUDED.kind,
+                figure_id    = EXCLUDED.figure_id,
+                media_bytes  = EXCLUDED.media_bytes,
+                media_mime   = EXCLUDED.media_mime,
+                metadata     = EXCLUDED.metadata
+            "#,
+        )
+        .bind(document_id)
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(&fig.caption)
+        .bind(chunk_index)
+        .bind(&fig.id)
+        .bind(&fig.png_bytes)
+        .bind(&fig.mime)
+        .bind(&metadata)
+        .execute(&pool)
+        .await;
+        if let Err(e) = res {
+            // Single-row failure shouldn't abort the rest of the batch — log
+            // and continue. The caller treats the whole call as best-effort.
+            warn!(
+                figure_id = %fig.id,
+                document_id = %document_id,
+                error = %e,
+                "figure backfill: row insert failed"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "postgres"))]

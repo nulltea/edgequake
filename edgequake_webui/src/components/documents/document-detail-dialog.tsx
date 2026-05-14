@@ -257,6 +257,7 @@ export function DocumentDetailDialog({
                 pdfUrl={pdfUrl}
                 markdown={document.content ?? null}
                 height={450}
+                documentId={document.id}
               />
             </TabsContent>
           )}

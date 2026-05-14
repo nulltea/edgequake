@@ -875,6 +875,22 @@ export function getPdfDownloadUrl(pdfId: string): string {
   return `${baseUrl}/api/v1/documents/pdf/${pdfId}/download`;
 }
 
+/**
+ * URL to stream the PNG bytes of a captured PDF figure. Backed by
+ * `GET /api/v1/documents/{documentId}/figures/{figureId}` — the row in the
+ * `chunks` table populated by the VLM-OCR figure-bytes backfill.
+ *
+ * Used by the markdown renderer to resolve the `edgequake-figure` sentinel
+ * placeholder emitted by the figure extractor.
+ */
+export function getFigureMediaUrl(
+  documentId: string,
+  figureId: string,
+): string {
+  const baseUrl = SERVER_BASE_URL || "";
+  return `${baseUrl}/api/v1/documents/${documentId}/figures/${figureId}`;
+}
+
 export async function deleteDocument(documentId: string): Promise<void> {
   return api.delete<void>(`/documents/${documentId}`);
 }
@@ -2206,6 +2222,32 @@ export async function addRepoManual(
   );
 }
 
+export interface IndexRepoRequest {
+  /** "algorithm_focused" or "full". Omit to let the server auto-pick. */
+  mode?: "algorithm_focused" | "full";
+  force_reindex?: boolean;
+}
+
+export interface IndexRepoResponse {
+  repo_id: string;
+  document_id: string;
+  mode: "algorithm_focused" | "full";
+  track_id: string;
+  status: "queued";
+}
+
+/**
+ * Doc-centric trigger for reference-codebase indexing. Works even when the
+ * document has no algorithms / code anchors — the server auto-picks
+ * `mode: "full"` in that case. Mode is overridable.
+ */
+export async function indexRepo(
+  repoId: string,
+  body: IndexRepoRequest = {},
+): Promise<IndexRepoResponse> {
+  return api.post<IndexRepoResponse>(`/repos/${repoId}/index`, body);
+}
+
 // ============================================================================
 // Reference-code analysis (Phase 1)
 // ============================================================================
@@ -2456,6 +2498,10 @@ export const edgequakeApi = {
   reviewRepo,
   detectRepos,
   addRepoManual,
+  indexRepo,
+
+  // Figure media (PDF figures captured by VLM-OCR)
+  getFigureMediaUrl,
 
   // Reference-code analysis (Phase 1)
   getCodeReferences,

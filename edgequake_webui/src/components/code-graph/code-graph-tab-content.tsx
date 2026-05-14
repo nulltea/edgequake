@@ -19,6 +19,7 @@ import {
   getCodeReferences,
   getDocumentRepos,
   getReferenceCodebaseGraph,
+  indexRepo,
   listReferenceCodebaseIndexesForRepo,
 } from "@/lib/api/edgequake";
 import type { CodeArtifact } from "@/types/code-artifacts";
@@ -73,18 +74,30 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
     staleTime: 60 * 1000,
   });
 
-  // Distinct repo ids the approved artifacts point at.
-  const distinctRepoIds = useMemo(
-    () => Array.from(new Set(approvedArtifacts.map((a) => a.document_repo_id))),
-    [approvedArtifacts],
+  // Approved repos — used both when artifacts exist (look up url) and when
+  // they don't (offer a no-anchors "Index this repo" path).
+  const approvedRepos = useMemo(
+    () => (repos?.candidates ?? []).filter((r) => r.status === "approved"),
+    [repos],
   );
+
+  // Repo ids we need indexes for: union of (repos artifacts point at) and
+  // (approved repos overall). The second set is what makes the no-anchors
+  // flow possible — without it we couldn't show index status or wire an
+  // Index button for docs that have a repo but no algorithms.
+  const repoIdsToFetch = useMemo(() => {
+    const ids = new Set<string>();
+    for (const a of approvedArtifacts) ids.add(a.document_repo_id);
+    for (const r of approvedRepos) ids.add(r.id);
+    return Array.from(ids);
+  }, [approvedArtifacts, approvedRepos]);
 
   // Per-repo indexes. Poll while any index is in-flight.
   const { data: indexesByRepo, isLoading: loadingIndexes } = useQuery({
-    queryKey: ["reference-codebase-indexes", documentId, distinctRepoIds],
+    queryKey: ["reference-codebase-indexes", documentId, repoIdsToFetch],
     queryFn: async () => {
       const entries = await Promise.all(
-        distinctRepoIds.map(async (rid) => {
+        repoIdsToFetch.map(async (rid) => {
           try {
             const { indexes } = await listReferenceCodebaseIndexesForRepo(rid);
             return [rid, indexes] as const;
@@ -95,7 +108,7 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
       );
       return new Map(entries);
     },
-    enabled: distinctRepoIds.length > 0,
+    enabled: repoIdsToFetch.length > 0,
     staleTime: 60 * 1000,
     refetchInterval: (query) => {
       const m = query.state.data;
@@ -203,6 +216,28 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
     },
   });
 
+  // Doc-centric "Index this repo" trigger. Used in the no-anchors empty
+  // state (and could be used elsewhere later). Posts to /repos/{id}/index;
+  // the server auto-picks `full` mode when no approved code_artifacts
+  // exist, sidestepping the `algorithm_focused requires artifacts`
+  // rejection that blocks the auto-trigger path.
+  const indexRepoMutation = useMutation({
+    mutationFn: (repoId: string) => indexRepo(repoId, {}),
+    onSuccess: (r) => {
+      toast.success(`Indexing queued (${r.mode})`, {
+        description: `Track ID: ${r.track_id}`,
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["reference-codebase-indexes", documentId],
+      });
+    },
+    onError: (err) => {
+      toast.error("Failed to queue indexing", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    },
+  });
+
   // Auto-select the first anchor once data lands.
   if (!selectedArtifactId && approvedArtifacts.length > 0) {
     setSelectedArtifactId(approvedArtifacts[0]!.id);
@@ -218,10 +253,25 @@ export function CodeGraphTabContent({ documentId }: CodeGraphTabContentProps) {
   }
 
   if (approvedArtifacts.length === 0) {
+    // No anchors — but there may still be approved reference repos. In that
+    // case the user can index a repo without algorithms by hitting the
+    // doc-centric endpoint, which the server auto-picks `full` mode for.
+    // Closes the "doc has repo but no algorithms" gap where this tab used
+    // to be a dead end.
+    if (approvedRepos.length > 0) {
+      return (
+        <NoAnchorsButReposState
+          repos={approvedRepos}
+          indexesByRepo={indexesByRepo}
+          onIndex={(repoId) => indexRepoMutation.mutate(repoId)}
+          pending={indexRepoMutation.isPending}
+        />
+      );
+    }
     return (
       <EmptyState
         title="No approved code anchors"
-        body="Approve a code match in the Code Matches tab to seed the reference-codebase graph."
+        body="Approve a code match in the Code Matches tab to seed the reference-codebase graph, or approve a reference repo to enable whole-repo indexing."
       />
     );
   }
@@ -438,6 +488,113 @@ function EmptyState({ title, body }: { title: string; body: string }) {
       <p className="text-xs text-muted-foreground text-center max-w-sm mt-1">
         {body}
       </p>
+    </div>
+  );
+}
+
+/**
+ * Shown when a doc has approved reference repos but no approved code
+ * artifacts. Surfaces one row per repo with an "Index" button (auto-picks
+ * `full` mode on the server) plus the current status of any existing
+ * indexes for that repo. Polling for in-flight status is handled by the
+ * parent's `indexesByRepo` query.
+ */
+function NoAnchorsButReposState({
+  repos,
+  indexesByRepo,
+  onIndex,
+  pending,
+}: {
+  repos: Array<{ id: string; url: string; owner: string; repo: string }>;
+  indexesByRepo: Map<string, ReferenceCodebaseIndex[]> | undefined;
+  onIndex: (repoId: string) => void;
+  pending: boolean;
+}) {
+  return (
+    <div className="m-4 space-y-4">
+      <div className="rounded-lg border border-dashed p-6 text-center">
+        <div className="inline-flex rounded-full bg-muted p-3 mb-3">
+          <FileCode2 className="h-6 w-6 text-muted-foreground" />
+        </div>
+        <p className="text-sm font-medium">No approved code anchors</p>
+        <p className="text-xs text-muted-foreground max-w-md mx-auto mt-1">
+          This document has approved reference repos but no approved code
+          matches yet. Index a repo directly to build a whole-repo code graph,
+          or approve code matches in the Code Matches tab for anchor-focused
+          indexing.
+        </p>
+      </div>
+
+      <div className="rounded-lg border">
+        <div className="border-b px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Approved repos
+        </div>
+        <ul className="divide-y">
+          {repos.map((r) => {
+            const indexes = indexesByRepo?.get(r.id) ?? [];
+            const latest =
+              indexes.find((i) => i.status === "complete") ?? indexes[0];
+            const inFlight =
+              latest &&
+              ["queued", "scanning", "parsing", "chunking", "embedding"].includes(
+                latest.status,
+              );
+            return (
+              <li
+                key={r.id}
+                className="flex items-center gap-3 px-4 py-3 text-sm"
+              >
+                <GitBranch className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium truncate">
+                    {r.owner}/{r.repo}
+                  </div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {latest ? (
+                      <>
+                        Index{" "}
+                        <span className="font-mono">
+                          {latest.id.slice(0, 8)}
+                        </span>{" "}
+                        · {latest.status}
+                        {latest.symbol_count > 0 && (
+                          <>
+                            {" · "}
+                            {latest.symbol_count} symbols ·{" "}
+                            {latest.edge_count} edges
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      "No index yet"
+                    )}
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onIndex(r.id)}
+                  disabled={pending || inFlight}
+                  title={
+                    inFlight
+                      ? "Indexing already in progress for this repo"
+                      : latest
+                        ? "Build a new index (server auto-picks 'full' when no anchors exist)"
+                        : "Index this repo — server auto-picks 'full' mode when no anchors exist"
+                  }
+                >
+                  {pending || inFlight ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  )}
+                  {latest ? "Re-index" : "Index"}
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
 }

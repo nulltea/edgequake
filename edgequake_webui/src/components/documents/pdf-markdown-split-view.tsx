@@ -37,6 +37,12 @@ interface PDFMarkdownSplitViewProps {
   height?: number;
   /** Initial view mode (defaults to 'split') */
   initialMode?: ViewMode;
+  /**
+   * Document id — threaded into `MarkdownViewer` so VLM-OCR figure
+   * sentinels (`![<id>](edgequake-figure)`) get rewritten to media-fetch
+   * URLs. Without this, captured PDF figures render as broken images.
+   */
+  documentId?: string;
 }
 
 /**
@@ -57,6 +63,7 @@ export function PDFMarkdownSplitView({
   className,
   height = 500,
   initialMode = 'split',
+  documentId,
 }: PDFMarkdownSplitViewProps) {
   const { t } = useTranslation();
   const [viewMode, setViewMode] = useState<ViewMode>(initialMode);
@@ -158,6 +165,7 @@ export function PDFMarkdownSplitView({
               height={viewMode === 'split' ? height / 2 : height}
               title={t('documents.viewer.extractedMarkdown', 'Extracted Markdown')}
               className="flex-1"
+              documentId={documentId}
             />
           </div>
         )}

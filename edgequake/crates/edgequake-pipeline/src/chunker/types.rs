@@ -7,8 +7,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
+/// Distinguishes plain text chunks from figure chunks carrying an inline image
+/// payload. Mirrors `edgequake_core::types::ChunkKind` so the chunker can
+/// surface the same distinction at the strategy boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChunkKind {
+    Text,
+    Figure,
+}
+
+impl Default for ChunkKind {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
 /// Result of a custom chunking operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkResult {
     /// The chunk text content.
     pub content: String,
@@ -23,6 +39,21 @@ pub struct ChunkResult {
     /// matches.
     #[serde(default)]
     pub heading_path: Vec<String>,
+    /// Whether this is a plain text chunk or a figure chunk carrying media.
+    #[serde(default)]
+    pub kind: ChunkKind,
+    /// PNG (or other media) bytes for figure chunks. None for text chunks.
+    /// Stored uncompressed in memory; the persistence layer base64-encodes
+    /// when writing to the KV JSON path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_bytes: Option<Vec<u8>>,
+    /// MIME type of `media_bytes` (e.g. `"image/png"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_mime: Option<String>,
+    /// Extractor-side stable id (`fig_{page}_{order_index}`) linking this
+    /// chunk to the `![figure:<id>](...)` markdown placeholder it replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_id: Option<String>,
 }
 
 /// Trait for custom chunking strategies.
@@ -138,6 +169,26 @@ pub struct TextChunk {
 
     /// Chunk embedding.
     pub embedding: Option<Vec<f32>>,
+
+    /// Whether this is a plain text chunk or a figure chunk carrying media.
+    /// Figure chunks are emitted by `ContextAwareChunking` when it encounters
+    /// `![<id>](edgequake-figure)` placeholders left by the VLM-OCR figure
+    /// extractor in the markdown.
+    #[serde(default)]
+    pub kind: ChunkKind,
+    /// PNG (or other media) bytes for figure chunks. None at chunker output —
+    /// the bytes live in the PDF processor's sink and are attached to the
+    /// chunk record at persistence time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_bytes: Option<Vec<u8>>,
+    /// MIME type of `media_bytes` (e.g. `"image/png"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_mime: Option<String>,
+    /// Stable extractor-side figure id (`fig_{page}_{order_index}`). The PDF
+    /// processor uses this to pair the chunk row with the PNG payload sitting
+    /// in `extracted_figures`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_id: Option<String>,
 }
 
 impl TextChunk {
@@ -162,6 +213,10 @@ impl TextChunk {
             token_count,
             heading_path: Vec::new(),
             embedding: None,
+            kind: ChunkKind::Text,
+            media_bytes: None,
+            media_mime: None,
+            figure_id: None,
         }
     }
 
@@ -188,6 +243,10 @@ impl TextChunk {
             token_count,
             heading_path: Vec::new(),
             embedding: None,
+            kind: ChunkKind::Text,
+            media_bytes: None,
+            media_mime: None,
+            figure_id: None,
         }
     }
 

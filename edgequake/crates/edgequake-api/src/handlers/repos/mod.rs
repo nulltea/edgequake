@@ -23,6 +23,7 @@ pub fn repo_routes() -> Router<AppState> {
         .route("/by-document/{document_id}", get(list_repos))
         .route("/by-document/{document_id}/add", post(add_repo_manual))
         .route("/{repo_id}/review", post(review_repo))
+        .route("/{repo_id}/index", post(index_repo))
         .route("/detect/{document_id}", post(detect_repos))
 }
 
@@ -78,6 +79,47 @@ pub async fn review_repo(
         let _ = (state, tenant_ctx, repo_id, request);
         Err(ApiError::Internal(
             "Reference-repo review requires the postgres feature".to_string(),
+        ))
+    }
+}
+
+/// `POST /repos/{repo_id}/index` — kick off Phase-2 reference-codebase
+/// indexing (clone + tree-sitter + code embeddings + code graph) for an
+/// approved repo, **without** going through algorithm approval first.
+///
+/// Fills the gap when a document has a known reference repo but no algorithms:
+/// the existing auto-trigger fires only on `code_artifact` approval, and the
+/// explicit `POST /reference-codebase/indexes` defaults to
+/// `algorithm_focused` mode which the processor refuses without at least one
+/// approved artifact. This handler chooses the right mode automatically.
+///
+/// Modes (caller can override via the body):
+/// - `"algorithm_focused"` — pinned to approved code_artifact symbols. Useful
+///   when artifacts exist; required by the original auto-trigger flow.
+/// - `"full"` — index every tree-sitter symbol the analyzer surfaces.
+/// - Unset (default) — pick `algorithm_focused` if there's at least one
+///   approved code_artifact for this repo, otherwise `"full"`.
+pub async fn index_repo(
+    State(state): State<AppState>,
+    tenant_ctx: TenantContext,
+    Path(repo_id): Path<Uuid>,
+    body: Option<Json<IndexRepoRequest>>,
+) -> ApiResult<(StatusCode, Json<IndexRepoResponse>)> {
+    #[cfg(feature = "postgres")]
+    {
+        index_repo_impl(
+            state,
+            tenant_ctx,
+            repo_id,
+            body.map(|Json(r)| r).unwrap_or_default(),
+        )
+        .await
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (state, tenant_ctx, repo_id, body);
+        Err(ApiError::Internal(
+            "Reference-codebase indexing requires the postgres feature".to_string(),
         ))
     }
 }
@@ -298,6 +340,137 @@ async fn trigger_code_reference_analysis(
         "auto-triggered CodeReferenceAnalysis after repo approval"
     );
     Ok(())
+}
+
+#[cfg(feature = "postgres")]
+async fn index_repo_impl(
+    state: AppState,
+    tenant_ctx: TenantContext,
+    repo_id: Uuid,
+    request: IndexRepoRequest,
+) -> ApiResult<(StatusCode, Json<IndexRepoResponse>)> {
+    use edgequake_tasks::{ReferenceCodebaseIndexData, Task, TaskType};
+
+    let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
+    let pool = state.pg_pool.as_ref().ok_or_else(|| {
+        ApiError::Internal("Reference-codebase indexing requires PostgreSQL pool".to_string())
+    })?;
+
+    // Resolve the repo. Must exist, belong to caller's tenant+workspace, and
+    // be approved — the indexer rejects non-approved repos anyway, but we
+    // surface a 400 here so the UI gets a clean error instead of a queued-
+    // then-failed task.
+    let row: Option<(String, String)> = sqlx::query_as(
+        r#"
+        SELECT document_id, status
+        FROM document_repos
+        WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3
+        "#,
+    )
+    .bind(repo_id)
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ApiError::Internal(format!("look up document_repo: {e}")))?;
+
+    let Some((document_id, status)) = row else {
+        return Err(ApiError::NotFound(format!("repo {repo_id} not found")));
+    };
+    if status != "approved" {
+        return Err(ApiError::BadRequest(format!(
+            "repo {repo_id} is {status} — approve it first via POST /repos/{repo_id}/review"
+        )));
+    }
+
+    // Auto-pick mode when the caller didn't specify. `algorithm_focused`
+    // requires at least one approved code_artifact pointing at this repo; if
+    // none exist (no algorithms extracted, or none survived approval) the
+    // processor would refuse the task with a non-actionable error. Falling
+    // back to `full` indexes every tree-sitter symbol the analyzer returns —
+    // heavier, but the only correct option in this state.
+    let mode = match request.mode.as_deref() {
+        Some(m) if m == "algorithm_focused" || m == "full" => m.to_string(),
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "mode must be 'algorithm_focused' or 'full', got {other:?}"
+            )));
+        }
+        None => {
+            let artifact_count: i64 = sqlx::query_scalar(
+                r#"
+                SELECT COUNT(*)
+                FROM code_artifacts
+                WHERE tenant_id = $1
+                  AND workspace_id = $2
+                  AND document_repo_id = $3
+                  AND status = 'approved'
+                "#,
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(repo_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ApiError::Internal(format!("count code_artifacts: {e}")))?;
+            if artifact_count > 0 {
+                "algorithm_focused".to_string()
+            } else {
+                "full".to_string()
+            }
+        }
+    };
+
+    let mode_static: &'static str = if mode == "algorithm_focused" {
+        "algorithm_focused"
+    } else {
+        "full"
+    };
+
+    let task_data = ReferenceCodebaseIndexData {
+        document_id: document_id.clone(),
+        workspace_id: workspace_id.to_string(),
+        document_repo_id: repo_id,
+        mode,
+        force_reindex: request.force_reindex,
+    };
+    let task = Task::new(
+        tenant_id,
+        workspace_id,
+        TaskType::ReferenceCodebaseIndex,
+        serde_json::to_value(&task_data)
+            .map_err(|e| ApiError::Internal(format!("serialize task data: {e}")))?,
+    );
+    let track_id = task.track_id.clone();
+    state
+        .task_storage
+        .create_task(&task)
+        .await
+        .map_err(|e| ApiError::Internal(format!("create task: {e}")))?;
+    state
+        .task_queue
+        .send(task)
+        .await
+        .map_err(|e| ApiError::Internal(format!("queue task: {e}")))?;
+
+    info!(
+        %repo_id,
+        %document_id,
+        %mode_static,
+        force_reindex = request.force_reindex,
+        "queued reference-codebase index task via POST /repos/{repo_id}/index"
+    );
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(IndexRepoResponse {
+            repo_id,
+            document_id,
+            mode: mode_static,
+            track_id,
+            status: "queued",
+        }),
+    ))
 }
 
 #[cfg(feature = "postgres")]

@@ -268,17 +268,31 @@ impl Pipeline {
         let max_chars = embed_max_chars(provider.max_tokens());
 
         // ── Chunk embeddings ──
+        // Figure chunks are skipped here on purpose. Embedding the
+        // `[figure: <id>]` placeholder text via the text-only provider would
+        // produce a vector with no relationship to the actual figure content.
+        // The PDF processor backfills these via MultimodalEmbeddingClient
+        // (caption + PNG bytes fused) using the same workspace vector store.
         if self.config.enable_chunk_embeddings {
-            let texts: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
-            if !texts.is_empty() {
+            let text_indices: Vec<usize> = chunks
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.kind == crate::chunker::ChunkKind::Text)
+                .map(|(i, _)| i)
+                .collect();
+            if !text_indices.is_empty() {
+                let texts: Vec<String> = text_indices
+                    .iter()
+                    .map(|&i| chunks[i].content.clone())
+                    .collect();
                 let safe_texts = guard_for_embedding(&texts, max_chars);
                 let embeddings = provider
                     .embed(&safe_texts)
                     .await
                     .map_err(|e| crate::error::PipelineError::EmbeddingError(e.to_string()))?;
 
-                for (chunk, embedding) in chunks.iter_mut().zip(embeddings) {
-                    chunk.embedding = Some(embedding);
+                for (i, embedding) in text_indices.iter().zip(embeddings) {
+                    chunks[*i].embedding = Some(embedding);
                 }
             }
         }

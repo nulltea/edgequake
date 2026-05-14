@@ -301,6 +301,24 @@ pub struct RetrievedChunk {
 
     /// Chunk index in the document.
     pub chunk_index: Option<usize>,
+
+    /// Either `"text"` (default) or `"figure"` for chunks that carry a
+    /// VLM-OCR-captured PDF figure. Lifted from the vector-store metadata
+    /// so query consumers (e.g. the OpenWebUI tool) can render figures
+    /// as inline images via the media-fetch endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// Stable extractor-side figure id (`fig_{page}_{order}`) for figure
+    /// chunks. Pairs with `document_id` to construct the media-fetch URL
+    /// `GET /api/v1/documents/{document_id}/figures/{figure_id}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figure_id: Option<String>,
+
+    /// Caption text captured alongside the figure crop. Useful as alt text
+    /// or as a hint to chat models for what the figure depicts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 }
 
 impl RetrievedChunk {
@@ -317,6 +335,9 @@ impl RetrievedChunk {
             start_line: None,
             end_line: None,
             chunk_index: None,
+            kind: None,
+            figure_id: None,
+            caption: None,
         }
     }
 

@@ -59,7 +59,16 @@ pub struct RelationshipSourceTracking {
 /// This function extracts the UUID portion for document linking,
 /// enabling the UI to link citations back to source documents.
 pub fn extract_document_id(chunk_id: &str) -> Option<String> {
+    // Text chunks: `{doc_id}-chunk-N`
     if let Some(suffix_idx) = chunk_id.rfind("-chunk-") {
+        if suffix_idx > 0 {
+            return Some(chunk_id[..suffix_idx].to_string());
+        }
+    }
+    // Figure chunks: `{doc_id}-figure-{figure_id}` (chunker.rs:131 emits
+    // this form for kind=Figure chunks so the PDF processor can address
+    // them post-chunking).
+    if let Some(suffix_idx) = chunk_id.rfind("-figure-") {
         if suffix_idx > 0 {
             return Some(chunk_id[..suffix_idx].to_string());
         }
@@ -168,6 +177,25 @@ pub fn build_chunk_from_result(result: &VectorSearchResult) -> RetrievedChunk {
     if let Some(idx) = result.metadata.get("chunk_index").and_then(|v| v.as_u64()) {
         chunk = chunk.with_chunk_index(idx as usize);
     }
+
+    // VLM-OCR figure metadata. Surfaced from the workspace vector store's
+    // JSONB so query consumers can detect figure hits and render them as
+    // inline images via GET /documents/{document_id}/figures/{figure_id}.
+    chunk.kind = result
+        .metadata
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    chunk.figure_id = result
+        .metadata
+        .get("figure_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    chunk.caption = result
+        .metadata
+        .get("caption")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     chunk
 }

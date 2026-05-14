@@ -21,9 +21,10 @@ import {
     VirtualizedMarkdownContent,
 } from '@/components/query/markdown/VirtualizedMarkdownContent';
 import { Button } from '@/components/ui/button';
+import { resolveFigureSentinels } from '@/lib/markdown/resolve-figure-sentinels';
 import { cn } from '@/lib/utils';
 import { Check, Copy, FileText } from 'lucide-react';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
@@ -40,6 +41,12 @@ interface MarkdownViewerProps {
   showLineNumbers?: boolean;
   /** Title displayed in toolbar */
   title?: string;
+  /**
+   * Document id used to resolve VLM-OCR figure-sentinel placeholders
+   * (`![<id>](edgequake-figure)`) into real media-fetch URLs. When unset,
+   * sentinels stay as-is and render as broken images.
+   */
+  documentId?: string;
 }
 
 /**
@@ -55,9 +62,17 @@ export function MarkdownViewer({
   showToolbar = true,
   showLineNumbers = false,
   title = 'Extracted Markdown',
+  documentId,
 }: MarkdownViewerProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
+
+  // Swap `![<id>](edgequake-figure)` sentinels for real media-fetch URLs so
+  // figure crops actually load. No-op when documentId is unset.
+  const resolvedContent = useMemo(
+    () => resolveFigureSentinels(content ?? '', documentId),
+    [content, documentId],
+  );
 
   const handleCopy = useCallback(async () => {
     if (!content) return;
@@ -119,11 +134,11 @@ export function MarkdownViewer({
         )}
         style={{ height: height ? `${height}px` : 'auto' }}
       >
-        {content.length >= VIRTUALIZATION_CHAR_THRESHOLD ? (
+        {resolvedContent.length >= VIRTUALIZATION_CHAR_THRESHOLD ? (
           // WHY: Large markdown (e.g. 1 000-page PDF) freezes the browser if
           // tokenised all at once. VirtualizedMarkdownContent splits the raw
           // string into ~25 KB chunks — only visible chunks are tokenised.
-          <VirtualizedMarkdownContent content={content}>
+          <VirtualizedMarkdownContent content={resolvedContent}>
             {(pageContent) => (
               <div className={cn(
                 'p-4 md:p-6',
@@ -152,7 +167,7 @@ export function MarkdownViewer({
             showLineNumbers && 'markdown-with-line-numbers'
           )}>
             <StreamingMarkdownRenderer
-              content={content}
+              content={resolvedContent}
               isStreaming={false}
             />
           </div>

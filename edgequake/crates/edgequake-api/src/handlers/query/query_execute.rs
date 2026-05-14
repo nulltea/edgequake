@@ -347,9 +347,13 @@ pub async fn execute_query(
                 start_line: chunk.start_line,
                 end_line: chunk.end_line,
                 chunk_index: chunk.chunk_index,
+                kind: chunk.kind.clone(),
+                figure_id: chunk.figure_id.clone(),
+                caption: chunk.caption.clone(),
                 entity_type: None,
                 degree: None,
                 source_chunk_ids: None,
+                ..Default::default()
             }
         })
         .collect();
@@ -411,6 +415,7 @@ pub async fn execute_query(
             } else {
                 Some(entity.source_chunk_ids.clone())
             },
+            ..Default::default()
         });
     }
 
@@ -445,6 +450,7 @@ pub async fn execute_query(
             entity_type: None,
             degree: None,
             source_chunk_ids: None,
+            ..Default::default()
         });
     }
 

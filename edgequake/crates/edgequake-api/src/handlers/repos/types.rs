@@ -31,6 +31,31 @@ pub struct AddRepoRequest {
     pub url: String,
 }
 
+/// `POST /repos/{repo_id}/index` body. All fields optional.
+#[derive(Debug, Default, Deserialize)]
+pub struct IndexRepoRequest {
+    /// `"algorithm_focused"` (only useful with at least one approved
+    /// code_artifact) or `"full"`. Omitted = auto-pick: `algorithm_focused`
+    /// when at least one approved artifact exists, otherwise `"full"`.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Re-index even when a complete row already exists for the same
+    /// `(repo, commit, mode)`. Mirrors the `force_reindex` field on
+    /// `POST /reference-codebase/indexes`.
+    #[serde(default)]
+    pub force_reindex: bool,
+}
+
+/// `POST /repos/{repo_id}/index` response.
+#[derive(Debug, Serialize)]
+pub struct IndexRepoResponse {
+    pub repo_id: Uuid,
+    pub document_id: String,
+    pub mode: &'static str,
+    pub track_id: String,
+    pub status: &'static str,
+}
+
 // ── Responses ───────────────────────────────────────────────────────────────
 
 /// Stable, UI-friendly serialisation of a single candidate. We don't serialise

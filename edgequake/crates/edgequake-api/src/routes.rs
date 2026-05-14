@@ -293,6 +293,13 @@ fn api_v1_routes() -> Router<AppState> {
             "/documents/{document_id}/deletion-impact",
             get(handlers::analyze_deletion_impact),
         )
+        // Figure media — streams PNG bytes for figures captured during VLM-OCR.
+        // MUST come before /documents/{document_id} to avoid being shadowed by
+        // the catch-all detail route.
+        .route(
+            "/documents/{document_id}/figures/{figure_id}",
+            get(handlers::get_figure_media),
+        )
         // OODA-03: Chunk-level retry endpoints - MUST come before /documents/{document_id}
         .route(
             "/documents/{document_id}/retry-chunks",

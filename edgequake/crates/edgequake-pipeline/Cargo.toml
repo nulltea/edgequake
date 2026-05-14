@@ -11,6 +11,14 @@ description = "Document processing pipeline for EdgeQuake"
 edgequake-storage = { path = "../edgequake-storage" }
 edgequake-llm = { workspace = true }
 
+# Direct HTTP client for the multimodal embedding path
+# (MultimodalEmbeddingClient). Calls an OpenAI-compat /v1/embeddings endpoint
+# with content-parts arrays — the existing EmbeddingProvider trait in
+# edgequake-llm only carries plain strings, so figure chunks (caption + PNG
+# bytes) need this bypass.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+
 async-trait.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { workspace = true, features = ["full"] }

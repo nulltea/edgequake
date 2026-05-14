@@ -30,6 +30,7 @@ edgequake-pipeline = { workspace = true, optional = true }
 async-trait.workspace = true
 lru = "0.16"
 sqlx = { workspace = true, optional = true }
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }

@@ -2154,6 +2154,7 @@ name = "edgequake-core"
 version = "0.10.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "edgequake-llm",
  "edgequake-pdf",
@@ -2272,12 +2273,14 @@ name = "edgequake-pipeline"
 version = "0.10.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "edgequake-llm",
  "edgequake-storage",
  "futures",
  "pulldown-cmark",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

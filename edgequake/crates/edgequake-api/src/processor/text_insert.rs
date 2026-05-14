@@ -576,6 +576,20 @@ impl DocumentTaskProcessor {
                     "end_offset": chunk.end_offset,
                     "token_count": chunk.token_count,
                 });
+                // VLM-OCR figure chunks: mark them so the query layer can
+                // surface them as figures and the media-fetch endpoint can
+                // be reached by id from a hit.
+                match chunk.kind {
+                    edgequake_pipeline::chunker::ChunkKind::Figure => {
+                        metadata["kind"] = json!("figure");
+                        if let Some(ref fid) = chunk.figure_id {
+                            metadata["figure_id"] = json!(fid);
+                        }
+                    }
+                    edgequake_pipeline::chunker::ChunkKind::Text => {
+                        metadata["kind"] = json!("text");
+                    }
+                }
 
                 // Add tenant and workspace IDs if present
                 if let Some(ref tid) = tenant_id {

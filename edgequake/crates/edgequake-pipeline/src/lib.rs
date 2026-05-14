@@ -58,6 +58,7 @@
 
 pub mod cache;
 pub mod chunker;
+pub mod embedding;
 pub mod error;
 pub mod extractor;
 pub mod ingestion_types;

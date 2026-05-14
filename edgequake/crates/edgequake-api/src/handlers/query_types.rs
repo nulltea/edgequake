@@ -300,7 +300,7 @@ pub struct ReferenceCodeSnippetDto {
 }
 
 /// A source reference.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct SourceReference {
     /// Source type (chunk, entity, relationship).
     pub source_type: String,
@@ -337,6 +337,27 @@ pub struct SourceReference {
     /// Chunk index in the document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_index: Option<usize>,
+
+    // ========================================================================
+    // VLM-OCR figure surfacing
+    // ========================================================================
+    /// `"figure"` for chunks that carry a VLM-OCR-captured PDF figure;
+    /// absent (or `"text"`) for plain text chunks. Lets consumers branch on
+    /// the rendering path — text chunks display their snippet; figure chunks
+    /// can render as inline images via the media-fetch endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// Stable extractor-side figure id (`fig_{page}_{order}`). Pairs with
+    /// `document_id` to construct the media URL
+    /// `GET /api/v1/documents/{document_id}/figures/{figure_id}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub figure_id: Option<String>,
+
+    /// Caption captured next to the figure crop. Suitable as image alt text
+    /// or as a model hint for what the figure depicts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 
     // ========================================================================
     // SPEC-006: Entity metadata enrichment (FR-002)

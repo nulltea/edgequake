@@ -19,6 +19,7 @@ import {
     VirtualizedMarkdownContent,
 } from '@/components/query/markdown/VirtualizedMarkdownContent';
 import { Skeleton } from '@/components/ui/skeleton';
+import { resolveFigureSentinels } from '@/lib/markdown/resolve-figure-sentinels';
 import type { Document } from '@/types';
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { CodeRenderer } from './code-renderer';
@@ -106,10 +107,16 @@ function getRendererForDocument(doc: Document, highlightText?: string, startLine
         ? { startLine, endLine }
         : undefined;
 
+    // Swap VLM-OCR figure-sentinels for media-fetch URLs so captured PDF
+    // figures actually render. `![<id>](edgequake-figure)` is what the Rust
+    // figure extractor emits as a stable, render-neutral marker; the
+    // resolver rewrites it to GET /api/v1/documents/{id}/figures/{figureId}.
+    const renderedContent = resolveFigureSentinels(content, doc.id);
+
     // WHY: For very large markdown (e.g. 1000-page PDF), tokenising the
     // entire string freezes the browser. VirtualizedMarkdownContent splits the
     // raw string into ~25 KB chunks — only visible chunks are tokenised.
-    const isLargeDocument = content.length >= VIRTUALIZATION_CHAR_THRESHOLD;
+    const isLargeDocument = renderedContent.length >= VIRTUALIZATION_CHAR_THRESHOLD;
 
     const markdownArticle = (pageContent: string) => (
       <article className="
@@ -144,13 +151,13 @@ function getRendererForDocument(doc: Document, highlightText?: string, startLine
 
     if (isLargeDocument) {
       return (
-        <VirtualizedMarkdownContent content={content}>
+        <VirtualizedMarkdownContent content={renderedContent}>
           {markdownArticle}
         </VirtualizedMarkdownContent>
       );
     }
 
-    return markdownArticle(content);
+    return markdownArticle(renderedContent);
   }
 
   // ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
 """
 title: EdgeQuake RAG
 author: EdgeQuake
-version: 0.5.0
-description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships.
+version: 0.6.0
+description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships. v0.6.0 renders VLM-OCR-captured PDF figures as inline images.
 """
 
 import json
@@ -16,7 +16,18 @@ class Tools:
     class Valves(BaseModel):
         edgequake_base_url: str = Field(
             default="http://host.docker.internal:8080",
-            description="EdgeQuake API base URL",
+            description="EdgeQuake API base URL — used by the tool's server-side HTTP client",
+        )
+        public_base_url: str = Field(
+            default="",
+            description=(
+                "Public base URL used in markdown image links the chat model emits "
+                "(e.g. https://edgequake.tail59ea6b.ts.net). The URL must be reachable "
+                "from the END USER'S browser, not the OpenWebUI container — so this is "
+                "typically the Tailscale / public proxy URL, NOT host.docker.internal. "
+                "If empty, falls back to edgequake_base_url which usually only resolves "
+                "inside the Docker network."
+            ),
         )
         workspace_id: str = Field(
             default="00000000-0000-0000-0000-000000000003",
@@ -78,13 +89,34 @@ class Tools:
             return "No relevant context found in the knowledge base."
 
         chunks = []
+        figures = []
         entities = []
         relationships = []
         seen_docs = set()
+        # WHY public_base_url: image URLs go into the chat response and are
+        # loaded by the user's browser. edgequake_base_url is typically
+        # host.docker.internal which only resolves inside Docker. Fall back
+        # to it only as a last resort — usually the user must set the valve
+        # to the publicly-reachable URL.
+        public_base = (self.valves.public_base_url or self.valves.edgequake_base_url).rstrip("/")
 
         for src in sources:
             stype = src.get("source_type", "")
             if stype == "chunk":
+                # VLM-OCR figure chunk: render as inline markdown image so
+                # OpenWebUI displays the PNG in the chat thread. The
+                # /api/v1/documents/{doc}/figures/{figure_id} endpoint streams
+                # the bytes the figure-extractor captured during PDF ingest.
+                if src.get("kind") == "figure":
+                    doc_id = src.get("document_id", "")
+                    fid = src.get("figure_id", "")
+                    if doc_id and fid:
+                        caption = src.get("caption") or src.get("snippet") or fid
+                        img_url = f"{public_base}/api/v1/documents/{doc_id}/figures/{fid}"
+                        figures.append(f"![{caption}]({img_url})\n\n*{caption}*")
+                        if src.get("file_path"):
+                            seen_docs.add(src["file_path"])
+                        continue
                 snippet = src.get("snippet", "")
                 doc = src.get("file_path", "")
                 if snippet:
@@ -102,6 +134,10 @@ class Tools:
         parts = []
         if chunks:
             parts.append("**Text chunks:**\n" + "\n\n".join(chunks[:10]))
+        if figures:
+            # Cap at 6 — more would clutter the chat thread and bloat tokens
+            # going into the chat model. OpenWebUI renders ![alt](url) inline.
+            parts.append("**Figures:**\n\n" + "\n\n".join(figures[:6]))
         if entities:
             parts.append("**Entities:**\n" + "\n".join(entities[:15]))
         if relationships:

@@ -1,4 +1,5 @@
 mod edgeparse;
+mod figure_extract;
 mod vision;
 pub mod vlm_client;
 mod vlm_ocr;
@@ -13,6 +14,29 @@ use crate::error::PdfConversionError;
 pub use edgeparse::EdgeParsePdfConverter;
 pub use vision::VisionPdfConverter;
 pub use vlm_ocr::{detect_algorithm_blocks, AlgorithmBlock, VlmOcrConverter};
+
+/// A figure extracted from a PDF during VLM-OCR conversion: PNG bytes of the
+/// cropped layout region plus the VLM-recognized caption and the metadata
+/// needed to re-anchor it to the source markdown (page, reading order).
+///
+/// The pipeline writes a stable `![figure:<id>](caption: …)` placeholder into
+/// the markdown for each extracted figure; the chunker pairs that placeholder
+/// against this struct to emit a media-bearing chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedFigure {
+    /// Stable extractor-side id, `fig_{page}_{order_index}`.
+    pub id: String,
+    /// PNG-encoded crop of the figure region.
+    pub png_bytes: Vec<u8>,
+    /// MIME of `png_bytes` — currently always `"image/png"`.
+    pub mime: String,
+    /// VLM-generated caption / description for the figure.
+    pub caption: String,
+    /// 1-based page number the figure was cropped from.
+    pub page: u32,
+    /// Reading-order index within the page (preserves intra-page order).
+    pub order_index: u32,
+}
 
 /// Runtime-selectable PDF parser backend.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +123,13 @@ pub struct PdfConversionConfig {
     /// VLM-OCR: if set, algorithm blocks detected during conversion are collected here.
     /// The processor reads this after conversion to trigger automatic algorithm extraction.
     pub algorithm_block_sink: Option<Arc<std::sync::Mutex<Vec<AlgorithmBlock>>>>,
+    /// VLM-OCR: if set, image/chart/seal figures cropped during conversion are
+    /// pushed here as PNG-encoded payloads with their VLM caption. Each figure
+    /// also appears in the returned markdown as
+    /// `![figure:<id>](caption: <caption>)` so the chunker can pair the two.
+    /// Setting this opts the converter into figure extraction; leaving it
+    /// `None` preserves the legacy text-only behaviour.
+    pub figure_sink: Option<Arc<std::sync::Mutex<Vec<ExtractedFigure>>>>,
 }
 
 impl std::fmt::Debug for PdfConversionConfig {
@@ -112,6 +143,10 @@ impl std::fmt::Debug for PdfConversionConfig {
             .field(
                 "algorithm_block_sink",
                 &self.algorithm_block_sink.as_ref().map(|_| "<sink>"),
+            )
+            .field(
+                "figure_sink",
+                &self.figure_sink.as_ref().map(|_| "<sink>"),
             )
             .finish()
     }

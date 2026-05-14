@@ -57,6 +57,7 @@ impl PdfConverter for VlmOcrConverter {
             .as_ref()
             .and_then(|v| v.progress_callback.clone());
         let algo_sink = config.algorithm_block_sink.clone();
+        let figure_sink = config.figure_sink.clone();
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -140,6 +141,12 @@ impl PdfConverter for VlmOcrConverter {
                             cb.on_page_start(page_num, page_count);
                         }
 
+                        // Clone the page image only when figure extraction is
+                        // enabled — we need the pixels intact after `parse()`
+                        // consumes the original. Skip the allocation when no
+                        // sink is configured (legacy behaviour).
+                        let image_for_figures = figure_sink.as_ref().map(|_| image.clone());
+
                         let md = match parser.parse(&layout_predictor, image) {
                             Ok(result) => {
                                 // Capture algorithm blocks if sink is provided.
@@ -170,6 +177,28 @@ impl PdfConverter for VlmOcrConverter {
                                 // page markdown stored in pdf_documents.markdown_content
                                 // keeps OCR artefacts that the algorithm path avoids.
                                 let md = crate::latex_repair::repair_latex(&md);
+
+                                // Figure extraction. Walks layout elements, crops
+                                // captioned Image/Chart/Seal regions from the
+                                // cloned page image, PNG-encodes them, pushes
+                                // each into the sink, and rewrites the
+                                // `*Figure N: caption*` placeholders so the
+                                // chunker can pair markdown sites with figure
+                                // payloads downstream. No-op when figure_sink
+                                // is None.
+                                let md = match (figure_sink.as_ref(), image_for_figures.as_ref()) {
+                                    (Some(sink), Some(page_image)) => {
+                                        super::figure_extract::extract_and_patch(
+                                            page_image,
+                                            &result.layout_elements,
+                                            page_num as u32,
+                                            &md,
+                                            sink,
+                                        )
+                                    }
+                                    _ => md,
+                                };
+
                                 if md.trim().is_empty() {
                                     None
                                 } else {

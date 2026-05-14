@@ -8,12 +8,26 @@
 
 use async_trait::async_trait;
 
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use super::heading_path::HeadingPathIndex;
 use super::text_utils::{
     estimate_tokens, split_into_sentences, split_text_internal, take_overlap_sentences,
 };
-use super::types::{ChunkResult, ChunkerConfig, ChunkingStrategy};
+use super::types::{ChunkKind, ChunkResult, ChunkerConfig, ChunkingStrategy};
 use crate::error::{PipelineError, Result};
+
+/// Matches the `![<id>](edgequake-figure)` placeholders emitted by the
+/// VLM-OCR figure extractor. The id is captured in group 1.
+///
+/// The id pattern is the extractor's `fig_{page}_{order_index}`, conservatively
+/// matched as `[A-Za-z0-9_]+` so a future id-format tweak doesn't silently
+/// stop matching. The `edgequake-figure` sentinel URL is what distinguishes
+/// these from regular markdown images that callers might already have written.
+static FIGURE_PLACEHOLDER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[([A-Za-z0-9_]+)\]\(edgequake-figure\)").unwrap());
 
 /// Default token-based chunking strategy.
 ///
@@ -40,6 +54,7 @@ impl ChunkingStrategy for TokenBasedChunking {
                         tokens: estimate_tokens(s),
                         chunk_order_index: idx,
                         heading_path: Vec::new(),
+                        ..Default::default()
                     })
                     .collect());
             }
@@ -66,6 +81,7 @@ impl ChunkingStrategy for TokenBasedChunking {
                     tokens: estimate_tokens(&text),
                     chunk_order_index: idx,
                     heading_path: Vec::new(),
+                    ..Default::default()
                 },
             )
             .collect())
@@ -117,6 +133,7 @@ impl ChunkingStrategy for CharacterBasedChunking {
                 tokens: estimate_tokens(s),
                 chunk_order_index: idx,
                 heading_path: Vec::new(),
+                ..Default::default()
             })
             .collect())
     }
@@ -195,6 +212,7 @@ impl ChunkingStrategy for SentenceBoundaryChunking {
                     tokens: current_tokens,
                     chunk_order_index: chunk_index,
                     heading_path: Vec::new(),
+                    ..Default::default()
                 });
                 chunk_index += 1;
 
@@ -221,6 +239,7 @@ impl ChunkingStrategy for SentenceBoundaryChunking {
                 tokens: current_tokens,
                 chunk_order_index: chunk_index,
                 heading_path: Vec::new(),
+                ..Default::default()
             });
         }
 
@@ -324,6 +343,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                     tokens: current_tokens,
                     chunk_order_index: chunk_index,
                     heading_path: Vec::new(),
+                    ..Default::default()
                 });
                 chunk_index += 1;
                 current_chunk = String::new();
@@ -336,6 +356,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                 tokens: para_tokens,
                 chunk_order_index: chunk_index,
                 heading_path: Vec::new(),
+                ..Default::default()
             });
             chunk_index += 1;
             continue;
@@ -348,6 +369,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
                 tokens: current_tokens,
                 chunk_order_index: chunk_index,
                 heading_path: Vec::new(),
+                ..Default::default()
             });
             chunk_index += 1;
             current_chunk = String::new();
@@ -369,6 +391,7 @@ fn chunk_paragraphs(paragraphs: &[&str], config: &ChunkerConfig) -> Result<Vec<C
             tokens: current_tokens,
             chunk_order_index: chunk_index,
             heading_path: Vec::new(),
+            ..Default::default()
         });
     }
 
@@ -403,12 +426,94 @@ pub struct ContextAwareChunking;
 #[async_trait]
 impl ChunkingStrategy for ContextAwareChunking {
     async fn chunk(&self, content: &str, config: &ChunkerConfig) -> Result<Vec<ChunkResult>> {
-        use text_splitter::{ChunkConfig, MarkdownSplitter};
-
         if content.trim().is_empty() {
             return Ok(Vec::new());
         }
 
+        // Pre-scan for figure placeholders. When the VLM-OCR figure extractor
+        // captured a figure on this document, the markdown contains one
+        // `![<id>](edgequake-figure)` per figure, in reading order. We split
+        // the markdown around them, text-chunk each surrounding segment
+        // normally, and inject a figure ChunkResult at each placeholder so
+        // the persistence layer can attach the image bytes by `figure_id`.
+        let placeholders: Vec<(usize, usize, String)> = FIGURE_PLACEHOLDER_RE
+            .captures_iter(content)
+            .map(|cap| {
+                let m = cap.get(0).unwrap();
+                let id = cap.get(1).unwrap().as_str().to_string();
+                (m.start(), m.end(), id)
+            })
+            .collect();
+
+        if placeholders.is_empty() {
+            return chunk_text_only(content, config).await;
+        }
+
+        let mut out: Vec<ChunkResult> = Vec::new();
+        let mut cursor = 0usize;
+        let mut next_index = 0usize;
+        for (start, end, id) in placeholders {
+            // Text segment before this placeholder.
+            if start > cursor {
+                let segment = &content[cursor..start];
+                if !segment.trim().is_empty() {
+                    let mut segs = chunk_text_only(segment, config).await?;
+                    for s in segs.iter_mut() {
+                        s.chunk_order_index = next_index;
+                        next_index += 1;
+                    }
+                    out.extend(segs);
+                }
+            }
+            // The figure chunk itself. Caption + image bytes are NOT in the
+            // markdown — they live in the `extracted_figures` Vec the PDF
+            // processor holds. The persistence layer pairs by figure_id.
+            let content_placeholder = format!("[figure: {id}]");
+            let tokens = estimate_tokens(&content_placeholder);
+            out.push(ChunkResult {
+                content: content_placeholder,
+                tokens,
+                chunk_order_index: next_index,
+                heading_path: Vec::new(),
+                kind: ChunkKind::Figure,
+                figure_id: Some(id),
+                ..Default::default()
+            });
+            next_index += 1;
+            cursor = end;
+        }
+        // Tail segment after the last placeholder.
+        if cursor < content.len() {
+            let segment = &content[cursor..];
+            if !segment.trim().is_empty() {
+                let mut segs = chunk_text_only(segment, config).await?;
+                for s in segs.iter_mut() {
+                    s.chunk_order_index = next_index;
+                    next_index += 1;
+                }
+                out.extend(segs);
+            }
+        }
+        Ok(out)
+    }
+
+    fn name(&self) -> &str {
+        "context_aware"
+    }
+}
+
+/// The original text-only ContextAwareChunking body. Kept as a free function so
+/// `ContextAwareChunking::chunk` can recurse into it for the segments
+/// surrounding figure placeholders. Behaviour and chunk-boundary semantics
+/// are unchanged from before the placeholder split was added.
+async fn chunk_text_only(content: &str, config: &ChunkerConfig) -> Result<Vec<ChunkResult>> {
+    use text_splitter::{ChunkConfig, MarkdownSplitter};
+
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    {
         // Real BPE tokenizer for accurate sizing. cl100k_base is reasonable
         // for any modern BPE tokenizer (Qwen, Llama, DeepSeek, …) — within
         // ~15-20% of exact; char/4 is ~50% wrong on dense technical content.
@@ -520,11 +625,94 @@ impl ChunkingStrategy for ContextAwareChunking {
                 tokens: p.tokens,
                 chunk_order_index: idx,
                 heading_path: p.heading_path,
+                ..Default::default()
             })
             .collect())
     }
+}
 
-    fn name(&self) -> &str {
-        "context_aware"
+#[cfg(test)]
+mod figure_placeholder_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn no_placeholders_means_no_figure_chunks() {
+        let md = "# Heading\n\nParagraph one. Paragraph two has more content.";
+        let chunks = ContextAwareChunking
+            .chunk(md, &ChunkerConfig::default())
+            .await
+            .unwrap();
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().all(|c| c.kind == ChunkKind::Text));
+        assert!(chunks.iter().all(|c| c.figure_id.is_none()));
+    }
+
+    #[tokio::test]
+    async fn single_placeholder_emits_one_figure_chunk() {
+        let md = "Intro paragraph.\n\n![fig_2_5](edgequake-figure)\n\nFollow-up paragraph.";
+        let chunks = ContextAwareChunking
+            .chunk(md, &ChunkerConfig::default())
+            .await
+            .unwrap();
+        let figs: Vec<&ChunkResult> = chunks.iter().filter(|c| c.kind == ChunkKind::Figure).collect();
+        assert_eq!(figs.len(), 1);
+        assert_eq!(figs[0].figure_id.as_deref(), Some("fig_2_5"));
+        // The figure chunk must sit between the surrounding text chunks in order.
+        let positions: Vec<usize> = chunks
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.kind == ChunkKind::Figure)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(positions.len(), 1);
+        // Should not be first or last in a typical multi-segment doc.
+        assert!(positions[0] > 0);
+        assert!(positions[0] < chunks.len() - 1);
+        // Continuous order indices.
+        for (i, c) in chunks.iter().enumerate() {
+            assert_eq!(c.chunk_order_index, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_placeholders_keep_reading_order() {
+        let md = "A\n\n![fig_1_3](edgequake-figure)\n\nB\n\n![fig_2_7](edgequake-figure)\n\nC";
+        let chunks = ContextAwareChunking
+            .chunk(md, &ChunkerConfig::default())
+            .await
+            .unwrap();
+        let figs: Vec<&ChunkResult> = chunks.iter().filter(|c| c.kind == ChunkKind::Figure).collect();
+        assert_eq!(figs.len(), 2);
+        assert_eq!(figs[0].figure_id.as_deref(), Some("fig_1_3"));
+        assert_eq!(figs[1].figure_id.as_deref(), Some("fig_2_7"));
+        // Continuous order indices across the whole sequence.
+        for (i, c) in chunks.iter().enumerate() {
+            assert_eq!(c.chunk_order_index, i);
+        }
+    }
+
+    #[tokio::test]
+    async fn placeholder_at_end_with_no_trailing_text() {
+        let md = "Some intro text here.\n\n![fig_0_0](edgequake-figure)";
+        let chunks = ContextAwareChunking
+            .chunk(md, &ChunkerConfig::default())
+            .await
+            .unwrap();
+        assert!(chunks.last().unwrap().kind == ChunkKind::Figure);
+        assert_eq!(
+            chunks.last().unwrap().figure_id.as_deref(),
+            Some("fig_0_0")
+        );
+    }
+
+    #[tokio::test]
+    async fn regular_markdown_images_are_not_misclassified() {
+        // Non-sentinel URL: this is a real image link, not a figure placeholder.
+        let md = "Intro.\n\n![alt text](https://example.com/img.png)\n\nMore.";
+        let chunks = ContextAwareChunking
+            .chunk(md, &ChunkerConfig::default())
+            .await
+            .unwrap();
+        assert!(chunks.iter().all(|c| c.kind == ChunkKind::Text));
     }
 }
