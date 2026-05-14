@@ -27,3 +27,36 @@
 
 ## Switch to context aware chunker
 
+
+## Entity-name canonicalization between text and vision extraction
+
+**Priority:** Medium
+**Date:** 2026-05-14
+**Context:** The figure-entity backfill (`backfill_figure_entities` in `pdf_processing.rs`) extracts entities from figures via the same prompt the text body uses, then merges figure chunk IDs into existing entity-vector rows by exact entity-name match. Most figure-extracted names don't match their text-pass counterparts because the LLM produces different canonical forms across passes.
+
+### Observed mismatches on doc `4f7ce548-…` (ObfuscaTune)
+
+| Text-pass produced | Vision-pass produced | Merge result |
+|---|---|---|
+| `entity:ObfuscaTune` + `entity:OBFUSCATUNE` | `OBFUSCATUNE` | Only the all-caps variant got figure linkage |
+| `entity:GPT-2` + `entity:GPT2` | `GPT-2` | Only the hyphenated variant got figure linkage |
+| `entity:Figure 2` | (vision pass didn't emit "Figure 2") | No figure linkage on what would have been a perfect query anchor |
+| `entity:GPT2-Large`, `entity:GPT2-Medium` | — | No vision counterpart |
+
+Net effect: query "Detailed architecture of the GPT-2 with M layers using ObfuscaTune" ranks `entity:Figure 2` #1 and `entity:GPT2` #5 by ANN, neither of which has the figure in `source_chunk_ids`. The figure-linked entities (`MLP`, `TEE`, `GPT-2`, `SOFTMAX`) rank #13 and below — outside the entity-driven retrieval's top-K.
+
+### Required fixes
+
+- [ ] Run the text-extraction normalizer (`normalize_entity_name` in `crates/edgequake-pipeline/src/prompts/`) on vision-pass outputs BEFORE the upsert, so both passes converge on the same canonical key
+- [ ] When the upsert collapses a duplicate (e.g. both `ObfuscaTune` and `OBFUSCATUNE` exist), merge their `source_chunk_ids` instead of leaving two rows pointing at different chunks
+- [ ] In `backfill_figure_entities`'s `merge_figure_chunk_ids_into_entity_vectors`, also try fuzzy candidates: case-insensitive match on `metadata->>'entity_name'`, with-and-without-hyphen variants — so figure passes can patch onto text-extracted entities even when names diverge by punctuation
+- [ ] As a heuristic-only fallback: when the figure caption text contains `Figure N` / `Fig. N` / `Table N`, look up any `entity:Figure N` already in the vector store and append the figure chunk_id to its `source_chunk_ids`. Caption-anchor entities are commonly query anchors
+
+### Files involved
+
+- `crates/edgequake-pipeline/src/prompts/` — entity name normalization
+- `crates/edgequake-api/src/processor/pdf_processing.rs::backfill_figure_entities` — merge step
+- `crates/edgequake-api/src/processor/text_insert.rs:756-806` — text-pass upsert (for the deduplication step)
+
+> NOTE: This issue affects hybrid retrieval recall for figure chunks specifically. The architectural fix (add direct chunk-ANN as a third arm in `query_hybrid_with_vector_storage`) addresses the symptom for all chunks at once and is a more robust answer — see hybrid-retrieval section below.
+

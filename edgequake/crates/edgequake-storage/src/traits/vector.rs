@@ -84,6 +84,25 @@ impl MetadataFilter {
             vector_type: None,
         })
     }
+
+    /// Build a filter from tenant + workspace + an explicit `vector_type` to
+    /// push into the SQL WHERE clause. Used by the naive-chunk retrieval arm
+    /// in the workspace-scoped hybrid path so HNSW's top-K candidate pool is
+    /// drawn only from chunk rows — otherwise large graphs (60k+ entities)
+    /// dominate the candidate pool and zero chunks survive in-memory
+    /// filtering (the original OODA-230 failure mode).
+    pub fn from_tenant_workspace_type(
+        tenant_id: Option<String>,
+        workspace_id: Option<String>,
+        vector_type: impl Into<String>,
+    ) -> Option<Self> {
+        Some(Self {
+            document_ids: None,
+            tenant_id,
+            workspace_id,
+            vector_type: Some(vector_type.into()),
+        })
+    }
 }
 
 /// Vector storage interface for similarity search.
