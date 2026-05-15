@@ -36,6 +36,31 @@ fails with "the package does not contain this feature".
 
 The CI / packaging path uses this flag; local checks should too.
 
+## Reranker selection (env vars)
+
+`AppState` builds two rerankers at startup. BM25 is always present and is
+the default for every workspace. The cross-encoder HTTP reranker is
+optional — it's only instantiated when `RERANKER_URL` is set, and is
+selected per workspace via `Workspace::reranker_strategy = "semantic"`.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `BM25_ENHANCED` | `true` | `false` switches to minimal BM25 |
+| `RERANKER_URL` | — | presence enables the semantic (HTTP) reranker (e.g. `http://127.0.0.1:8080/v1/rerank`) |
+| `RERANKER_MODEL` | `jina-reranker-v3` | `model` field in the HTTP rerank payload |
+| `RERANKER_API_KEY` | — | optional bearer token (omit for local llama-swap) |
+| `RERANKER_TIMEOUT_SECS` | `30` | HTTP request timeout |
+
+Per-workspace overrides on the `Workspace` struct (`reranker_strategy`,
+`reranker_model`) flow through to the engine via the API layer
+(`query_execute.rs`) and select between the BM25 and semantic rerankers
+in `sota_engine::reranking::rerank_chunks_with_strategy`.
+
+Failure mode: rerank errors propagate as `QueryError::LlmError` (hard fail).
+The previous warn-and-fall-back behaviour was removed when the cross-encoder
+path was added — a silent rerank failure on a network blip would have
+returned unranked results.
+
 ## Known pre-existing test-fixture breakage
 
 `cargo test -p edgequake-core --features postgres` currently fails to build

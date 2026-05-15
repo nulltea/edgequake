@@ -289,6 +289,26 @@ impl QueryEmbeddings {
     }
 }
 
+/// Configuration for the optional semantic (HTTP cross-encoder) reranker.
+///
+/// One `SemanticRerankerConfig` is built at startup from `RERANKER_URL` /
+/// `RERANKER_MODEL` / etc. At query time, `SOTAQueryEngine` consults a
+/// per-model lazy cache of `HttpReranker` instances so workspaces can pick
+/// a different `model` name (e.g. `"bge-reranker-v2-m3"` vs the env default
+/// `"jina-reranker-v3"`) without paying a reqwest-client setup cost on
+/// every request.
+#[derive(Debug, Clone)]
+pub struct SemanticRerankerConfig {
+    /// Default model name when the per-request override is `None`.
+    pub default_model: String,
+    /// Full `/v1/rerank` endpoint URL (e.g. llama-swap front).
+    pub base_url: String,
+    /// Optional bearer token for the rerank API.
+    pub api_key: Option<String>,
+    /// Per-request HTTP timeout.
+    pub timeout: std::time::Duration,
+}
+
 pub struct SOTAQueryEngine {
     config: SOTAQueryConfig,
     vector_storage: Arc<dyn VectorStorage>,
@@ -309,9 +329,18 @@ pub struct SOTAQueryEngine {
     /// Approved-algorithm vector store used by the sibling enrichment pass.
     /// `None` disables the post-retrieval algorithm-enrichment step.
     algorithm_vector_storage: Option<Arc<dyn AlgorithmVectorStorage>>,
-    /// BM25 reranker that rescores retrieved chunks against the query.
-    /// `None` skips the rerank step. Wired via [`Self::with_reranker`].
+    /// Default reranker (BM25 in production). `None` skips the rerank step.
+    /// Wired via [`Self::with_reranker`].
     reranker: Option<Arc<dyn Reranker>>,
+
+    /// Optional cross-encoder HTTP reranker config, selected when the
+    /// per-request `reranker_strategy == "semantic"`. `None` falls back to
+    /// `reranker`. Wired via [`Self::with_semantic_config`].
+    semantic_config: Option<SemanticRerankerConfig>,
+    /// Per-model cache of `HttpReranker` instances keyed by model name.
+    /// Lazily populated on first request for each model; entries share the
+    /// engine's `semantic_config` for URL / api_key / timeout.
+    semantic_cache: tokio::sync::RwLock<std::collections::HashMap<String, Arc<dyn Reranker>>>,
 }
 
 impl SOTAQueryEngine {
@@ -347,6 +376,8 @@ impl SOTAQueryEngine {
             code_embedder: None,
             algorithm_vector_storage: None,
             reranker: None,
+            semantic_config: None,
+            semantic_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -375,6 +406,8 @@ impl SOTAQueryEngine {
             code_embedder: None,
             algorithm_vector_storage: None,
             reranker: None,
+            semantic_config: None,
+            semantic_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -426,10 +459,78 @@ impl SOTAQueryEngine {
     }
 
     /// Wire in the BM25 reranker that rescores retrieved chunks against
-    /// the query keyword set. See [`Self::rerank_chunks`].
+    /// the query keyword set. See [`Self::rerank_chunks_with_strategy`].
     pub fn with_reranker(mut self, reranker: Arc<dyn Reranker>) -> Self {
         self.reranker = Some(reranker);
         self
+    }
+
+    /// Wire in the cross-encoder HTTP reranker config that is selected when
+    /// a query's `reranker_strategy == "semantic"`. Coexists with the
+    /// default (BM25) reranker — workspace config picks per-query, and the
+    /// engine lazily caches one `HttpReranker` instance per `model` name so
+    /// workspaces can override `reranker_model`.
+    pub fn with_semantic_config(mut self, config: SemanticRerankerConfig) -> Self {
+        self.semantic_config = Some(config);
+        self
+    }
+
+    /// Resolve (and lazily create + cache) the `HttpReranker` for a given
+    /// model name. Returns `None` when no semantic config is wired.
+    ///
+    /// `pub` so integration tests in `tests/` can exercise the registry
+    /// directly — production callers should go through `rerank_chunks_with_strategy`.
+    #[doc(hidden)]
+    pub async fn semantic_reranker_for_model(
+        &self,
+        model: Option<&str>,
+    ) -> Option<Arc<dyn Reranker>> {
+        let cfg = self.semantic_config.as_ref()?;
+        let model = model.unwrap_or(&cfg.default_model).to_string();
+
+        // Fast path: read lock, hit
+        {
+            let cache = self.semantic_cache.read().await;
+            if let Some(r) = cache.get(&model) {
+                return Some(Arc::clone(r));
+            }
+        }
+
+        // Slow path: write lock, re-check (someone may have inserted), then create
+        let mut cache = self.semantic_cache.write().await;
+        if let Some(r) = cache.get(&model) {
+            return Some(Arc::clone(r));
+        }
+
+        // Cloud rerankers (Jina, Cohere, Aliyun) already return [0,1]
+        // relevance scores. Anything else (llama.cpp / llama-swap fronts,
+        // self-hosted endpoints) is a cross-encoder emitting raw classifier
+        // logits — apply sigmoid so the engine's `min_rerank_score` floor
+        // (tuned for [0,1]) stays meaningful regardless of which reranker
+        // the workspace selects.
+        //
+        // Detection is on `base_url`, not model name: e.g. `jina-reranker-v3`
+        // exists both as a cloud API (api.jina.ai → normalized) and as a
+        // local llama.cpp build (llama-swap → raw logits). Same model name,
+        // different score scale.
+        let host = cfg.base_url.to_ascii_lowercase();
+        let cloud_normalized = host.contains("api.jina.ai")
+            || host.contains("api.cohere.com")
+            || host.contains("dashscope.aliyuncs.com");
+        let rerank_config = edgequake_llm::reranker::RerankConfig {
+            model: model.clone(),
+            base_url: cfg.base_url.clone(),
+            api_key: cfg.api_key.clone(),
+            top_n: None,
+            timeout: cfg.timeout,
+            enable_chunking: false,
+            max_tokens_per_doc: 480,
+            sigmoid_normalize: !cloud_normalized,
+        };
+        let new: Arc<dyn Reranker> =
+            Arc::new(edgequake_llm::reranker::HttpReranker::new(rerank_config));
+        cache.insert(model, Arc::clone(&new));
+        Some(new)
     }
 }
 

@@ -178,6 +178,45 @@ export async function fetchEmbeddingModels(): Promise<EmbeddingModelsResponse> {
 }
 
 /**
+ * One reranker model item with provider context. Mirrors
+ * `EmbeddingModelItem` / `LlmModelItem`.
+ */
+export interface RerankerModelItem {
+  provider: string;
+  provider_display_name: string;
+  name: string;
+  display_name: string;
+  model_type: string;
+  description: string;
+  deprecated: boolean;
+  replacement?: string;
+  capabilities: ModelCapabilities;
+  cost?: ModelCost;
+  tags: string[];
+}
+
+/**
+ * Response from `GET /api/models/rerankers`. Mirrors
+ * `EmbeddingModelsResponse` / `LlmModelsResponse`.
+ */
+export interface RerankerModelsResponse {
+  models: RerankerModelItem[];
+  /** Runtime-active model from `RERANKER_MODEL` env var, if any. */
+  default_model?: string;
+  /** Whether `RERANKER_URL` was set at boot (i.e. Semantic strategy
+   *  actually hits an HTTP endpoint vs. silently falling back to BM25). */
+  semantic_enabled: boolean;
+}
+
+/**
+ * Fetch reranker models — `model_type = "reranker"` entries across all
+ * enabled providers in models.toml.
+ */
+export async function fetchRerankerModels(): Promise<RerankerModelsResponse> {
+  return apiClient<RerankerModelsResponse>("/models/rerankers");
+}
+
+/**
  * Fetch a specific provider by name.
  *
  * @param providerName - Provider identifier (e.g., "openai", "ollama")

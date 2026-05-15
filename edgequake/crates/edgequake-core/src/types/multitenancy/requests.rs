@@ -93,9 +93,13 @@ pub struct CreateWorkspaceRequest {
     /// `None` keeps the engine default (`SOTAQueryConfig::chunk_min_score`).
     pub chunk_min_score: Option<f32>,
 
-    /// Toggle the in-memory BM25 rerank step on retrieved chunks.
-    /// `None` keeps the engine default (`SOTAQueryConfig::enable_rerank`).
-    pub enable_rerank: Option<bool>,
+    /// Reranker strategy: `"off"`, `"bm25"`, or `"semantic"`. `None` inherits
+    /// the server default.
+    pub reranker_strategy: Option<String>,
+
+    /// HTTP reranker model name override. Only used when
+    /// `reranker_strategy == Some("semantic")`.
+    pub reranker_model: Option<String>,
 
     /// Qwen3-Embedding query instruction task description. `None` keeps
     /// the engine default; `Some("")` disables the prefix entirely.
@@ -313,8 +317,11 @@ pub struct UpdateWorkspaceRequest {
     /// Minimum chunk cosine-similarity floor for query retrieval.
     /// If None, keep the current workspace setting.
     pub chunk_min_score: Option<f32>,
-    /// Toggle the BM25 rerank step. If None, keep the current workspace setting.
-    pub enable_rerank: Option<bool>,
+    /// Reranker strategy update (`"off"` | `"bm25"` | `"semantic"`). None
+    /// keeps current.
+    pub reranker_strategy: Option<String>,
+    /// Reranker model update. None keeps current.
+    pub reranker_model: Option<String>,
     /// Qwen3-Embedding query instruction task description. None keeps the
     /// current workspace setting. Empty string disables the prefix.
     pub embedding_query_instruction: Option<String>,

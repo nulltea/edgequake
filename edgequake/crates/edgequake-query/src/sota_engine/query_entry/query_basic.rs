@@ -157,8 +157,13 @@ impl SOTAQueryEngine {
         // smears into the surrounding semantic cluster. Workspace can opt
         // out via `enable_rerank: Some(false)`.
         context.chunks = self
-            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
-            .await;
+            .rerank_chunks_with_strategy(
+                &request.query,
+                context.chunks.clone(),
+                request.reranker_strategy.as_deref(),
+                request.reranker_model.as_deref(),
+            )
+            .await?;
 
         // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
@@ -537,8 +542,13 @@ impl SOTAQueryEngine {
         // smears into the surrounding semantic cluster. Workspace can opt
         // out via `enable_rerank: Some(false)`.
         context.chunks = self
-            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
-            .await;
+            .rerank_chunks_with_strategy(
+                &request.query,
+                context.chunks.clone(),
+                request.reranker_strategy.as_deref(),
+                request.reranker_model.as_deref(),
+            )
+            .await?;
 
         // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);
@@ -698,8 +708,13 @@ impl SOTAQueryEngine {
         // smears into the surrounding semantic cluster. Workspace can opt
         // out via `enable_rerank: Some(false)`.
         context.chunks = self
-            .rerank_chunks(&request.query, context.chunks.clone(), request.enable_rerank)
-            .await;
+            .rerank_chunks_with_strategy(
+                &request.query,
+                context.chunks.clone(),
+                request.reranker_strategy.as_deref(),
+                request.reranker_model.as_deref(),
+            )
+            .await?;
 
         // Sort entities by degree for importance-based ranking
         self.sort_entities_by_degree(&mut context.entities);

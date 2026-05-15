@@ -133,10 +133,16 @@ pub struct WorkspaceResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_min_score: Option<f32>,
 
-    /// Workspace-scoped BM25 rerank toggle. None means the engine default
-    /// (`SOTAQueryConfig::enable_rerank`, `true`) is used.
+    /// Workspace-scoped reranker strategy: `"off"`, `"bm25"`, or `"semantic"`.
+    /// None inherits the server default (BM25 unless `RERANKER_URL` is set).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub enable_rerank: Option<bool>,
+    pub reranker_strategy: Option<String>,
+
+    /// Workspace-scoped HTTP reranker model override. Only meaningful
+    /// when `reranker_strategy == Some("semantic")`. None uses the
+    /// `RERANKER_MODEL` env default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reranker_model: Option<String>,
 
     /// Workspace-scoped Qwen3-Embedding query instruction task description.
     /// None means the engine default is used. Empty string disables the prefix.

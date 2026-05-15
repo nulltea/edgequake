@@ -12,6 +12,7 @@ import { SERVER_BASE_URL } from "@/lib/api/client";
 import type {
   EmbeddingModelsResponse,
   LlmModelsResponse,
+  RerankerModelsResponse,
 } from "@/lib/api/models";
 import type {
   AvailableProvidersResponse,
@@ -70,6 +71,17 @@ async function fetchEmbeddingModels(): Promise<EmbeddingModelsResponse> {
 }
 
 /**
+ * Fetch reranker (cross-encoder) models from all providers.
+ */
+async function fetchRerankerModels(): Promise<RerankerModelsResponse> {
+  const response = await fetch(`${getApiUrl()}/api/v1/models/rerankers`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+/**
  * Hook to get current provider status with auto-refresh.
  */
 export function useProviderStatus(refreshInterval = 30000) {
@@ -113,6 +125,19 @@ export function useEmbeddingModels() {
     queryKey: ["embedding-models"],
     queryFn: fetchEmbeddingModels,
     staleTime: 60000, // Cache for 1 minute
+  });
+}
+
+/**
+ * Hook to get all reranker (cross-encoder) models across all providers.
+ * Same pattern as `useEmbeddingModels`/`useLlmModels` — backed by
+ * `[[providers.models]]` entries with `model_type = "reranker"`.
+ */
+export function useRerankerModels() {
+  return useQuery({
+    queryKey: ["reranker-models"],
+    queryFn: fetchRerankerModels,
+    staleTime: 60000,
   });
 }
 

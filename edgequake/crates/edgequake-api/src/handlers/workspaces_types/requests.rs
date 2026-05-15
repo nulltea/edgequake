@@ -187,10 +187,16 @@ pub struct CreateWorkspaceApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_min_score: Option<f32>,
 
-    /// Enable BM25 reranking on retrieved chunks. `None` keeps the engine
-    /// default (`SOTAQueryConfig::enable_rerank`, `true`).
+    /// Reranker strategy: `"off"`, `"bm25"`, or `"semantic"`. `None`
+    /// inherits the server default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub enable_rerank: Option<bool>,
+    pub reranker_strategy: Option<String>,
+
+    /// HTTP reranker model name (e.g. `"jina-reranker-v3"`). Only used
+    /// when `reranker_strategy == Some("semantic")`. `None` uses the
+    /// `RERANKER_MODEL` env default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reranker_model: Option<String>,
 
     /// Qwen3-Embedding query instruction task description. The query is
     /// wrapped as `Instruct: {task}\nQuery: {q}` before embedding (the
@@ -292,9 +298,14 @@ pub struct UpdateWorkspaceApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_min_score: Option<f32>,
 
-    /// Update the workspace's BM25 rerank toggle. Omit to keep current value.
+    /// Update the workspace's reranker strategy
+    /// (`"off"` | `"bm25"` | `"semantic"`). Omit to keep current.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub enable_rerank: Option<bool>,
+    pub reranker_strategy: Option<String>,
+
+    /// Update the workspace's HTTP reranker model. Omit to keep current.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reranker_model: Option<String>,
 
     /// Update the Qwen3-Embedding query instruction task description.
     /// Omit to keep the current value; pass an empty string to disable.

@@ -93,11 +93,9 @@ use sqlx::PgPool;
 
 // ── Shared Utility ────────────────────────────────────────────────────────
 
-/// Create the configured BM25 reranker.
-///
-/// Enhanced mode (default) adds Porter2 stemming, NFKD Unicode
-/// normalization, and stop-word filtering. Set `BM25_ENHANCED=false`
-/// to use the minimal variant.
+/// Build the BM25 reranker (always present; default for every workspace
+/// that doesn't override). Honours the existing `BM25_ENHANCED=false`
+/// switch to fall back to the minimal variant.
 pub(crate) fn create_bm25_reranker() -> Arc<dyn edgequake_llm::Reranker> {
     if std::env::var("BM25_ENHANCED").unwrap_or_default() == "false" {
         tracing::info!("Using minimal BM25 reranker (BM25_ENHANCED=false)");
@@ -106,6 +104,47 @@ pub(crate) fn create_bm25_reranker() -> Arc<dyn edgequake_llm::Reranker> {
         tracing::info!("Using enhanced BM25 reranker with stemming and Unicode normalization");
         Arc::new(edgequake_llm::reranker::BM25Reranker::new_enhanced())
     }
+}
+
+/// Build the optional cross-encoder HTTP reranker config (selected by
+/// workspaces with `reranker_strategy = "semantic"`). Returns `None`
+/// when `RERANKER_URL` is unset — in that case workspaces requesting
+/// `"semantic"` fall back to BM25.
+///
+/// The engine lazily caches one `HttpReranker` instance per `model` name,
+/// keyed off the same `base_url`/`api_key`/`timeout`. That lets a
+/// workspace override `reranker_model` without paying a reqwest-client
+/// setup cost per request.
+///
+/// Env vars:
+/// - `RERANKER_URL` (presence enables the semantic reranker), e.g.
+///   `http://127.0.0.1:8060/v1/rerank`.
+/// - `RERANKER_MODEL` (default `jina-reranker-v3`).
+/// - `RERANKER_API_KEY` (optional bearer token; omit for local servers).
+/// - `RERANKER_TIMEOUT_SECS` (default 30).
+pub(crate) fn create_semantic_config()
+-> Option<edgequake_query::sota_engine::SemanticRerankerConfig> {
+    let base_url = std::env::var("RERANKER_URL").ok()?;
+    if base_url.is_empty() {
+        return None;
+    }
+    let default_model = std::env::var("RERANKER_MODEL")
+        .unwrap_or_else(|_| "jina-reranker-v3".to_string());
+    let timeout_secs: u64 = std::env::var("RERANKER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    tracing::info!(
+        model = %default_model,
+        url = %base_url,
+        "Semantic (HTTP) reranker enabled"
+    );
+    Some(edgequake_query::sota_engine::SemanticRerankerConfig {
+        default_model,
+        base_url,
+        api_key: std::env::var("RERANKER_API_KEY").ok(),
+        timeout: std::time::Duration::from_secs(timeout_secs),
+    })
 }
 
 // ── AppState ──────────────────────────────────────────────────────────────
@@ -188,6 +227,8 @@ pub struct AppState {
     pub storage_mode: StorageMode,
 
     /// Models configuration (providers, model cards, capabilities).
+    /// Rerankers live here too — `model_type = "reranker"` is a regular
+    /// `[[providers.models]]` variant since edgequake-llm v0.5.2-edgequake.
     pub models_config: Arc<ModelsConfig>,
 
     /// PostgreSQL pool (only available when using postgres feature).

@@ -405,9 +405,12 @@ impl WorkspaceService for InMemoryWorkspaceService {
             workspace.chunk_min_score = Some(score);
         }
 
-        // Workspace-scoped BM25 rerank toggle.
-        if let Some(enable) = request.enable_rerank {
-            workspace.enable_rerank = Some(enable);
+        // Workspace-scoped reranker strategy + model.
+        if let Some(strategy) = request.reranker_strategy {
+            workspace.reranker_strategy = Some(strategy);
+        }
+        if let Some(model) = request.reranker_model {
+            workspace.reranker_model = Some(model);
         }
 
         // Workspace-scoped Qwen3-Embedding query instruction.
@@ -532,8 +535,11 @@ impl WorkspaceService for InMemoryWorkspaceService {
         if let Some(score) = request.chunk_min_score {
             workspace.chunk_min_score = Some(score);
         }
-        if let Some(enable) = request.enable_rerank {
-            workspace.enable_rerank = Some(enable);
+        if let Some(strategy) = request.reranker_strategy {
+            workspace.reranker_strategy = Some(strategy);
+        }
+        if let Some(model) = request.reranker_model {
+            workspace.reranker_model = Some(model);
         }
         if let Some(instruction) = request.embedding_query_instruction {
             workspace.embedding_query_instruction = Some(instruction);

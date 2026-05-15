@@ -73,6 +73,16 @@ services:
             # repo. Explicit POST /indexes calls aren't capped by this.
             EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES: "${EDGEQUAKE_REFERENCE_CODEBASE_AUTO_MAX_FILES:-5000}"
             EDGEQUAKE_BM25_INDEX_DIR: "${EDGEQUAKE_BM25_INDEX_DIR:-/tmp/edgequake-bm25}"
+
+            # Semantic (cross-encoder) reranker. Presence of RERANKER_URL
+            # enables the option — workspaces opt in via the Reranking
+            # Configuration UI card (reranker_strategy = "semantic").
+            # Default points at llama-swap's local jina-reranker-v3 sidecar.
+            RERANKER_URL: "${RERANKER_URL:-http://host.docker.internal:8060/v1/rerank}"
+            RERANKER_MODEL: "${RERANKER_MODEL:-jina-reranker-v3}"
+            # Long enough to cover cold-spawn (model load ~5-15s) + prefill
+            # of a long joint rerank prompt on Strix Halo iGPU.
+            RERANKER_TIMEOUT_SECS: "${RERANKER_TIMEOUT_SECS:-300}"
         extra_hosts:
             - "host.docker.internal:host-gateway"
         depends_on:

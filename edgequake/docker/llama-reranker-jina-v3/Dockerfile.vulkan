@@ -1,0 +1,83 @@
+# jina-reranker-v3 — Vulkan variant (llama-cpp-python + FastAPI sidecar).
+#
+# Parallel to ./Dockerfile (the ROCm variant). Reason for splitting:
+# benchmarking showed that on Strix Halo gfx1151 (RDNA3.5) the rocBLAS /
+# MFMA / rocWMMA paths llama.cpp tries to use either don't apply to this
+# arch (MFMA is CDNA-only) or are silently #ifdef'd out. The user's
+# llama-swap dashboard already runs every other small model (jina-code-
+# embeddings 0.5B, qwen3-embedding-0.6b, gemma-4-E4B) on Vulkan via the
+# `${vulkan_run}` anchor — strong empirical signal that Mesa RADV beats
+# rocBLAS for sub-7B models on this hardware. This image puts the
+# reranker on the same backend.
+#
+# Image tag: edgequake/jina-reranker-v3:vulkan
+# (the :rocm tag is preserved for A/B comparison and quick revert.)
+
+FROM ubuntu:24.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Vulkan build deps + runtime ICD. Ubuntu 24.04 ships Mesa 24.x which has
+# gfx1151 (RDNA3.5) support in its RADV driver. ROCm is NOT installed —
+# Vulkan-only build doesn't need HIP, hipcc, hipBLAS, or rocBLAS.
+#   libvulkan-dev          headers + loader for linking
+#   mesa-vulkan-drivers    RADV ICD — provides the actual gfx1151 backend
+#   glslc                  shader compiler GLSL/HLSL → SPIR-V (REQUIRED by
+#                          llama.cpp's CMake — glslang-tools' glslangValidator
+#                          is NOT a substitute)
+#   vulkan-tools           vulkaninfo for diagnosis
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev python3-venv \
+        git build-essential cmake ninja-build pkg-config ca-certificates \
+        libcurl4-openssl-dev \
+        libvulkan-dev mesa-vulkan-drivers vulkan-tools glslc \
+    && rm -rf /var/lib/apt/lists/*
+
+# SPIRV-Headers — Ubuntu doesn't package it but llama.cpp's ggml-vulkan.cpp
+# references the spv:: namespace (OpCapability, ExecutionMode, etc.) for
+# runtime SPIR-V manipulation. Pull from upstream and do a proper cmake
+# install so find_package(SPIRV-Headers) also works.
+RUN git clone --depth 1 --branch vulkan-sdk-1.3.275.0 \
+        https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/spirv-headers \
+    && cmake -S /tmp/spirv-headers -B /tmp/spirv-headers/build \
+        -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release \
+    && cmake --install /tmp/spirv-headers/build \
+    && rm -rf /tmp/spirv-headers
+
+# Add video/render groups matching the host's GIDs so `--group-add video
+# --group-add render` on docker run resolves (the ROCm base shipped these;
+# plain ubuntu:24.04 does not). 44/992 match this host's getent values.
+RUN groupadd -r -g 44 video 2>/dev/null || groupmod -g 44 video \
+    && groupadd -r -g 992 render 2>/dev/null || groupmod -g 992 render
+
+ENV CMAKE_ARGS="-DGGML_VULKAN=on"
+ENV FORCE_CMAKE=1
+
+# Ubuntu 24.04 marks system Python as PEP-668 externally-managed; install
+# into a venv to avoid --break-system-packages noise and to keep the
+# Python environment self-contained.
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv "$VIRTUAL_ENV"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --no-binary llama-cpp-python \
+        "llama-cpp-python==0.3.23"
+
+RUN pip install --no-cache-dir \
+        "fastapi>=0.111" "uvicorn[standard]>=0.30" \
+        "pydantic>=2.6" "safetensors>=0.4"
+
+WORKDIR /app
+COPY sidecar.py /app/sidecar.py
+RUN chmod +x /app/sidecar.py
+
+# Defaults consumed only when invoked WITHOUT CLI flags (legacy path).
+# The llama-swap entry passes -m / --mmproj / -c / -ngl / --port directly.
+ENV PORT=11443
+ENV NGL=99
+ENV CTX_SIZE=65536
+
+EXPOSE 11443
+
+ENTRYPOINT ["python3", "/app/sidecar.py"]

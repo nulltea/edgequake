@@ -5,6 +5,7 @@ members = [
     "crates/edgequake-audit",
     "crates/edgequake-auth",
     "crates/edgequake-core",
+    "crates/edgequake-llm",
     "crates/edgequake-pdf",
     "crates/edgequake-pipeline",
     "crates/edgequake-query",
@@ -150,7 +151,7 @@ edgequake-core = { path = "crates/edgequake-core" }
 edgequake-pdf = { path = "crates/edgequake-pdf" }
 # v0.5.1: adds Azure OpenAI, Mistral AI, Vertex AI; streaming usage fixes; image generation API.
 # Diamond dep resolved: edgequake-pdf2md =0.8.0 also declares llm 0.5.1 (PR #22 squash-merged).
-edgequake-llm = "0.5.1"
+edgequake-llm = { path = "crates/edgequake-llm" }
 edgequake-pipeline = { path = "crates/edgequake-pipeline" }
 edgequake-query = { path = "crates/edgequake-query" }
 edgequake-storage = { path = "crates/edgequake-storage" }
@@ -179,3 +180,11 @@ debug = true
 
 [profile.dev.package.sqlx-macros]
 opt-level = 3
+
+# Force any transitive dep on edgequake-llm 0.5.x (e.g. edgequake-pdf2md
+# pulling it from crates.io) to use our vendored fork at crates/edgequake-llm.
+# Without this, the workspace ends up with two parallel copies of
+# `LLMProvider` and trait-object coercion at the edgequake-pdf boundary
+# fails to compile.
+[patch.crates-io]
+edgequake-llm = { path = "crates/edgequake-llm" }

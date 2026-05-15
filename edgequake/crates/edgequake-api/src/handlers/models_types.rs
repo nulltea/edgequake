@@ -216,6 +216,40 @@ pub struct EmbeddingModelItem {
     pub model: ModelResponse,
 }
 
+// ============================================================================
+// Reranker model item (parallel to EmbeddingModelItem / LlmModelItem).
+// ============================================================================
+
+/// One reranker model card with its provider context. Same flatten pattern
+/// as `EmbeddingModelItem`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RerankerModelItem {
+    /// Provider name (e.g. "lmstudio").
+    pub provider: String,
+    /// Provider display name.
+    pub provider_display_name: String,
+    /// Model details (name, capabilities, cost, tags, …).
+    #[serde(flatten)]
+    pub model: ModelResponse,
+}
+
+/// List response for `GET /api/models/rerankers`. Mirrors
+/// `EmbeddingModelsResponse` / `LlmModelsResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RerankerModelsResponse {
+    /// All `model_type = "reranker"` entries from `[[providers.models]]`
+    /// across enabled providers in models.toml.
+    pub models: Vec<RerankerModelItem>,
+    /// Runtime-active default from `RERANKER_MODEL` env, if any. The
+    /// engine reaches for this when a workspace doesn't pin a model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    /// `true` when `RERANKER_URL` is set — i.e. selecting the Semantic
+    /// strategy actually hits an HTTP endpoint instead of silently
+    /// falling back to BM25.
+    pub semantic_enabled: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,26 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+# Note: Cargo.lock is intentionally committed for reproducible CI builds and
+# security audits. This is acceptable for libraries that want deterministic CI.
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.edgequake/
+.agent/
+
+# Environment
+.env
+.env.local
+
+specs/

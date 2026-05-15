@@ -494,12 +494,19 @@ impl WorkspaceService for WorkspaceServiceImpl {
             );
         }
 
-        // Workspace-scoped BM25 rerank toggle (None → engine default true).
-        if let Some(enable) = request.enable_rerank {
-            workspace.enable_rerank = Some(enable);
+        // Workspace-scoped reranker strategy (None → engine default).
+        if let Some(strategy) = request.reranker_strategy {
+            workspace.reranker_strategy = Some(strategy.clone());
             workspace.metadata.insert(
-                "enable_rerank".to_string(),
-                serde_json::json!(enable),
+                "reranker_strategy".to_string(),
+                serde_json::Value::String(strategy),
+            );
+        }
+        if let Some(model) = request.reranker_model {
+            workspace.reranker_model = Some(model.clone());
+            workspace.metadata.insert(
+                "reranker_model".to_string(),
+                serde_json::Value::String(model),
             );
         }
 
@@ -548,11 +555,17 @@ impl WorkspaceService for WorkspaceServiceImpl {
                     serde_json::json!(score),
                 );
             }
-            // Workspace-scoped BM25 rerank toggle (None → engine default).
-            if let Some(enable) = workspace.enable_rerank {
+            // Workspace-scoped reranker strategy + model overrides.
+            if let Some(ref strategy) = workspace.reranker_strategy {
                 metadata.insert(
-                    "enable_rerank".to_string(),
-                    serde_json::json!(enable),
+                    "reranker_strategy".to_string(),
+                    serde_json::Value::String(strategy.clone()),
+                );
+            }
+            if let Some(ref model) = workspace.reranker_model {
+                metadata.insert(
+                    "reranker_model".to_string(),
+                    serde_json::Value::String(model.clone()),
                 );
             }
             // Workspace-scoped Qwen3-Embedding query instruction.
@@ -830,12 +843,19 @@ impl WorkspaceService for WorkspaceServiceImpl {
             );
         }
 
-        // Workspace-scoped BM25 rerank toggle.
-        if let Some(enable) = request.enable_rerank {
-            workspace.enable_rerank = Some(enable);
+        // Workspace-scoped reranker strategy + model.
+        if let Some(strategy) = request.reranker_strategy {
+            workspace.reranker_strategy = Some(strategy.clone());
             workspace.metadata.insert(
-                "enable_rerank".to_string(),
-                serde_json::json!(enable),
+                "reranker_strategy".to_string(),
+                serde_json::Value::String(strategy),
+            );
+        }
+        if let Some(model) = request.reranker_model {
+            workspace.reranker_model = Some(model.clone());
+            workspace.metadata.insert(
+                "reranker_model".to_string(),
+                serde_json::Value::String(model),
             );
         }
 
@@ -1704,7 +1724,23 @@ impl WorkspaceRow {
             .get("chunk_min_score")
             .and_then(|v| v.as_f64())
             .map(|v| v as f32);
-        let enable_rerank = metadata.get("enable_rerank").and_then(|v| v.as_bool());
+        // Lazy migration: legacy workspaces stored `enable_rerank: false`
+        // before the reranker_strategy enum existed. Translate on read so
+        // existing data keeps working without an explicit DB migration.
+        let legacy_enable_rerank = metadata.get("enable_rerank").and_then(|v| v.as_bool());
+        let stored_strategy = metadata
+            .get("reranker_strategy")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let reranker_strategy = match (stored_strategy, legacy_enable_rerank) {
+            (Some(s), _) => Some(s),
+            (None, Some(false)) => Some("off".to_string()),
+            (None, _) => None,
+        };
+        let reranker_model = metadata
+            .get("reranker_model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let embedding_query_instruction = metadata
             .get("embedding_query_instruction")
             .and_then(|v| v.as_str())
@@ -1735,7 +1771,8 @@ impl WorkspaceRow {
             algorithm_review_mode,
             accept_unofficial_implementations,
             chunk_min_score,
-            enable_rerank,
+            reranker_strategy,
+            reranker_model,
             embedding_query_instruction,
         }
     }

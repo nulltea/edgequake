@@ -1,8 +1,8 @@
 """
 title: EdgeQuake RAG
 author: EdgeQuake
-version: 0.7.1
-description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships. v0.7.1 instructs the chat model to compose natural-language queries (re-querying only on new terms) and to render retrieved figure images inline.
+version: 0.7.2
+description: Query the EdgeQuake knowledge graph, upload documents, and explore entities and relationships. v0.7.2 splits the single 120s timeout into two configurable valves: request_timeout_secs (default 30) for quick metadata/search ops and query_timeout_secs (default 300) for /query and PDF upload — accommodating worst-case rerank + answer-LLM end-to-end on long contexts.
 """
 
 import json
@@ -42,6 +42,26 @@ class Tools:
             default="hybrid",
             description="Default RAG query mode: naive, local, global, hybrid, mix",
         )
+        request_timeout_secs: int = Field(
+            default=30,
+            description=(
+                "HTTP timeout for quick metadata/search ops (list documents, "
+                "graph entity/relationship search, etc.). These normally return "
+                "in under a second; this is a safety ceiling."
+            ),
+        )
+        query_timeout_secs: int = Field(
+            default=300,
+            description=(
+                "HTTP timeout for RAG /query calls. Must accommodate "
+                "keyword-extraction LLM + retrieval + reranker prefill + answer "
+                "LLM generation end-to-end. Long contexts with semantic rerank "
+                "(50+ docs, 40K+ tokens) can take 2-3 minutes — especially when "
+                "another large model is concurrently warm on the GPU. Match the "
+                "server's RERANKER_TIMEOUT_SECS so client and server abandon "
+                "together rather than one stranding the other mid-flight."
+            ),
+        )
 
     def __init__(self):
         self.valves = self.Valves()
@@ -55,7 +75,8 @@ class Tools:
     def _api(self, method: str, path: str, **kwargs) -> dict:
         url = f"{self.valves.edgequake_base_url}/api/v1{path}"
         headers = {**self._headers(), **kwargs.pop("headers", {})}
-        r = requests.request(method, url, headers=headers, timeout=120, **kwargs)
+        timeout = kwargs.pop("timeout", self.valves.request_timeout_secs)
+        r = requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
         r.raise_for_status()
         return r.json()
 
@@ -96,7 +117,10 @@ class Tools:
             "context_only": True,
         }
         try:
-            data = self._api("POST", "/query", json=body)
+            data = self._api(
+                "POST", "/query", json=body,
+                timeout=self.valves.query_timeout_secs,
+            )
         except requests.HTTPError as e:
             return f"EdgeQuake query failed: {e}"
 
@@ -342,7 +366,8 @@ class Tools:
                 if title:
                     data["title"] = title
                 r = requests.post(
-                    url, files=files, data=data, headers=self._headers(), timeout=120
+                    url, files=files, data=data, headers=self._headers(),
+                    timeout=self.valves.query_timeout_secs,
                 )
                 r.raise_for_status()
                 resp = r.json()

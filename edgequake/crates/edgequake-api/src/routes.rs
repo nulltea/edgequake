@@ -481,6 +481,7 @@ fn api_v1_routes() -> Router<AppState> {
         .route("/models", get(handlers::list_models))
         .route("/models/llm", get(handlers::list_llm_models))
         .route("/models/embedding", get(handlers::list_embedding_models))
+        .route("/models/rerankers", get(handlers::list_rerankers))
         .route("/models/health", get(handlers::check_providers_health))
         .route("/models/{provider}", get(handlers::get_provider))
         .route("/models/{provider}/{model}", get(handlers::get_model))

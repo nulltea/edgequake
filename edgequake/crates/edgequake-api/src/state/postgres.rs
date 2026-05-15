@@ -298,6 +298,9 @@ impl AppState {
             Arc::clone(&llm_provider) as Arc<dyn edgequake_llm::traits::LLMProvider>,
         )
         .with_reranker(super::create_bm25_reranker());
+        if let Some(cfg) = super::create_semantic_config() {
+            sota_builder = sota_builder.with_semantic_config(cfg);
+        }
 
         // Phase 1 Reference Code GraphRAG: wire the code-embedder + vector
         // store when the embedder URL is configured. Missing env → feature

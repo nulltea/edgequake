@@ -1,0 +1,275 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Deny rustdoc warnings so broken links / missing docs are caught early
+  RUSTDOCFLAGS: "-D warnings"
+
+jobs:
+  # ─── 1. Formatting ──────────────────────────────────────────────────────────
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain (with rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ─── 2. Linting ─────────────────────────────────────────────────────────────
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    needs: fmt        # don't spend clippy minutes on formatting violations
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain (with clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-clippy-
+
+      - name: Clippy (all targets, deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ─── 3. Documentation ───────────────────────────────────────────────────────
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    needs: fmt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-docs-
+
+      - name: Build documentation (deny warnings)
+        run: cargo doc --no-deps --all-features
+
+  # ─── 4. MSRV check ──────────────────────────────────────────────────────────
+  msrv:
+    name: MSRV (rust-version in Cargo.toml)
+    runs-on: ubuntu-latest
+    needs: fmt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          msrv=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+
+      - name: Install MSRV toolchain (${{ steps.msrv.outputs.version }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-msrv-
+
+      - name: Build on MSRV
+        run: cargo build --locked
+
+  # ─── 5. Tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.rust }})
+    needs: [fmt, clippy]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ matrix.rust }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-${{ matrix.rust }}-
+
+      - name: Build (locked)
+        run: cargo build --locked --verbose
+
+      - name: Build examples (locked)
+        run: cargo build --examples --locked
+
+      - name: Run unit + integration tests (locked)
+        run: cargo test --locked --verbose
+
+  # ─── 6. Azure OpenAI E2E tests (optional, requires secrets) ────────────────
+  test-azure:
+    name: Azure E2E tests
+    needs: [fmt, clippy]
+    runs-on: ubuntu-latest
+    # Only run when AZURE_E2E_ENABLED repository variable is set to 'true'.
+    # Set it in: Settings → Secrets and variables → Variables → New repository variable.
+    if: vars.AZURE_E2E_ENABLED == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-azure-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-azure-
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Run Azure E2E tests
+        env:
+          AZURE_OPENAI_CONTENTGEN_API_ENDPOINT: ${{ secrets.AZURE_OPENAI_CONTENTGEN_API_ENDPOINT }}
+          AZURE_OPENAI_CONTENTGEN_API_KEY: ${{ secrets.AZURE_OPENAI_CONTENTGEN_API_KEY }}
+          AZURE_OPENAI_CONTENTGEN_MODEL_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_CONTENTGEN_MODEL_DEPLOYMENT }}
+          AZURE_OPENAI_CONTENTGEN_API_VERSION: ${{ secrets.AZURE_OPENAI_CONTENTGEN_API_VERSION }}
+        run: cargo test --locked --test e2e_azure -- --nocapture
+
+  # ─── 7. Gemini E2E tests (optional, requires GEMINI_API_KEY secret) ─────────
+  test-gemini:
+    name: Gemini E2E tests
+    needs: [fmt, clippy]
+    runs-on: ubuntu-latest
+    # Enable via Settings → Secrets and variables → Variables → GEMINI_E2E_ENABLED = true
+    if: vars.GEMINI_E2E_ENABLED == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-gemini-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-gemini-
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Run Gemini E2E tests
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: cargo test --locked --test e2e_gemini -- --nocapture
+
+  # ─── 8. Vertex AI E2E tests (optional, requires GCP service-account secret) ─
+  test-vertexai:
+    name: Vertex AI E2E tests
+    needs: [fmt, clippy]
+    runs-on: ubuntu-latest
+    # Enable via Settings → Secrets and variables → Variables → VERTEXAI_E2E_ENABLED = true
+    if: vars.VERTEXAI_E2E_ENABLED == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-vertexai-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-vertexai-
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_JSON }}
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Run Vertex AI E2E tests
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+          GOOGLE_CLOUD_REGION: ${{ secrets.GOOGLE_CLOUD_REGION || 'us-central1' }}
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: cargo test --locked --test e2e_gemini -- --nocapture --ignored
+
+  # ─── 9. Security audit ──────────────────────────────────────────────────────
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    # Allow audit to run in parallel; it doesn't need fmt to succeed first
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-bin
+
+      - name: Install cargo-audit
+        run: which cargo-audit || cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
+

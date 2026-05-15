@@ -15,12 +15,19 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
-import { Switch } from '@/components/ui/switch';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { EmbeddingModelSelector, type EmbeddingSelection } from '@/components/workspace/embedding-model-selector';
 import { LLMModelSelector, type LLMSelection } from '@/components/workspace/llm-model-selector';
+import { RerankerModelSelector, type RerankerSelection } from '@/components/workspace/reranker-model-selector';
 import { RebuildEmbeddingsButton } from '@/components/workspace/rebuild-embeddings-button';
 import { RebuildKnowledgeGraphButton } from '@/components/workspace/rebuild-knowledge-graph-button';
 import { getWorkspace, getWorkspaceStats, updateWorkspace } from '@/lib/api/edgequake';
@@ -42,6 +49,7 @@ import {
     FolderKanban,
     GitBranch,
     Layers,
+    ListFilter,
     RefreshCw,
     Save,
     Server,
@@ -80,8 +88,13 @@ export default function WorkspacePage() {
   const [selectedEmbedding, setSelectedEmbedding] = useState<EmbeddingSelection | undefined>(undefined);
   // Empty string = "use engine default" sentinel for the input element.
   const [chunkMinScoreInput, setChunkMinScoreInput] = useState<string>('');
-  // `undefined` = inherit engine default; explicit bool overrides it.
-  const [enableRerankInput, setEnableRerankInput] = useState<boolean | undefined>(undefined);
+  // Reranking Configuration. `undefined` = no change on save (inherit
+  // server default or keep workspace's existing value). Model only matters
+  // when strategy is "semantic" — UI hides the field otherwise.
+  const [rerankerStrategyInput, setRerankerStrategyInput] = useState<
+    'off' | 'bm25' | 'semantic' | undefined
+  >(undefined);
+  const [rerankerModelInput, setRerankerModelInput] = useState<string | undefined>(undefined);
   // `undefined` = no change on save; '' = disable prefix; any other string = override.
   const [embeddingQueryInstructionInput, setEmbeddingQueryInstructionInput] = useState<
     string | undefined
@@ -136,7 +149,8 @@ export default function WorkspacePage() {
       embedding_provider?: string;
       embedding_dimension?: number;
       chunk_min_score?: number;
-      enable_rerank?: boolean;
+      reranker_strategy?: 'off' | 'bm25' | 'semantic';
+      reranker_model?: string;
       embedding_query_instruction?: string;
       _embeddingChanged?: boolean;
       _llmChanged?: boolean;
@@ -148,7 +162,8 @@ export default function WorkspacePage() {
         embedding_provider: data.embedding_provider,
         embedding_dimension: data.embedding_dimension,
         chunk_min_score: data.chunk_min_score,
-        enable_rerank: data.enable_rerank,
+        reranker_strategy: data.reranker_strategy,
+        reranker_model: data.reranker_model,
         embedding_query_instruction: data.embedding_query_instruction,
       }),
     onSuccess: (_result, variables) => {
@@ -233,9 +248,12 @@ export default function WorkspacePage() {
       }
     }
 
-    // Enable-rerank: undefined = no change; bool = explicit override.
-    if (enableRerankInput !== undefined) {
-      data.enable_rerank = enableRerankInput;
+    // Reranker strategy + model: undefined = no change.
+    if (rerankerStrategyInput !== undefined) {
+      data.reranker_strategy = rerankerStrategyInput;
+    }
+    if (rerankerModelInput !== undefined) {
+      data.reranker_model = rerankerModelInput;
     }
 
     // Embedding query instruction: undefined = no change; '' = disable;
@@ -260,7 +278,8 @@ export default function WorkspacePage() {
         ? String(workspace.chunk_min_score)
         : '',
     );
-    setEnableRerankInput(workspace?.enable_rerank);
+    setRerankerStrategyInput(workspace?.reranker_strategy);
+    setRerankerModelInput(workspace?.reranker_model);
     setEmbeddingQueryInstructionInput(undefined);
   };
 
@@ -272,7 +291,8 @@ export default function WorkspacePage() {
         ? String(workspace.chunk_min_score)
         : '',
     );
-    setEnableRerankInput(workspace?.enable_rerank);
+    setRerankerStrategyInput(workspace?.reranker_strategy);
+    setRerankerModelInput(workspace?.reranker_model);
     setEmbeddingQueryInstructionInput(undefined);
     setIsEditing(true);
   };
@@ -591,7 +611,9 @@ export default function WorkspacePage() {
         </Card>
       </div>
 
-      {/* Retrieval Tuning */}
+      {/* Retrieval Tuning + Reranking Configuration — side by side on wide
+          screens; stacked on narrow. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -645,39 +667,6 @@ export default function WorkspacePage() {
 
           <Separator />
 
-          {/* BM25 reranker toggle */}
-          <div className="flex items-start justify-between gap-3 max-w-md">
-            <div className="flex-1">
-              <div className="font-medium">
-                {t('workspace.enableRerankLabel', 'BM25 reranking')}
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {t(
-                  'workspace.enableRerankDesc',
-                  'In-memory BM25 rescoring of retrieved chunks. Boosts exact-keyword matches (proper nouns, IDs) that pure vector cosine smears into semantic clusters. ~10–30 ms per query.',
-                )}
-              </div>
-              {!isEditing && workspace.enable_rerank === undefined && (
-                <div className="text-xs text-muted-foreground mt-1">
-                  {t('workspace.enableRerankInherit', 'Inheriting engine default (enabled)')}
-                </div>
-              )}
-            </div>
-            {isEditing ? (
-              <Switch
-                checked={enableRerankInput ?? workspace.enable_rerank ?? true}
-                onCheckedChange={(checked) => setEnableRerankInput(checked)}
-                aria-label={t('workspace.enableRerankLabel', 'BM25 reranking')}
-              />
-            ) : (
-              <div className="text-sm font-medium font-mono shrink-0 px-2 py-1 rounded bg-muted">
-                {(workspace.enable_rerank ?? true) ? 'on' : 'off'}
-              </div>
-            )}
-          </div>
-
-          <Separator />
-
           {/* Qwen3-Embedding query instruction prefix */}
           <div className="space-y-2 max-w-2xl">
             <div className="font-medium">
@@ -723,6 +712,136 @@ export default function WorkspacePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Reranking Configuration. Single source of truth: reranker_strategy
+          ∈ { undefined (inherit) | "off" | "bm25" | "semantic" }. The Model
+          input is only meaningful when strategy is "semantic". */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ListFilter className="h-5 w-5 text-indigo-600" />
+            {t('workspace.rerankingConfig', 'Reranking Configuration')}
+          </CardTitle>
+          <CardDescription>
+            {t(
+              'workspace.rerankingConfigDesc',
+              'How retrieved chunks are rescored before truncation. Off skips the step. BM25 is in-process and fast (~10–30 ms). Semantic uses an HTTP cross-encoder (e.g. jina-reranker-v3 via llama-swap) for higher-quality ranking at ~100–300 ms per query.',
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {(() => {
+            const savedStrategy: 'off' | 'bm25' | 'semantic' | undefined =
+              workspace.reranker_strategy;
+            const pendingStrategy: 'off' | 'bm25' | 'semantic' =
+              rerankerStrategyInput ?? savedStrategy ?? 'bm25';
+            const inheritsDefault = savedStrategy === undefined;
+
+            const strategyDisplay = (s: 'off' | 'bm25' | 'semantic' | undefined) =>
+              s === 'off'
+                ? t('workspace.rerankerStrategyOffShort', 'Off')
+                : s === 'semantic'
+                  ? t('workspace.rerankerStrategySemanticShort', 'Semantic (cross-encoder)')
+                  : t('workspace.rerankerStrategyBm25Short', 'BM25 (lexical)');
+
+            return (
+              <>
+                {/* Strategy select */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium block">
+                    {t('workspace.rerankerStrategyLabel', 'Strategy')}
+                  </label>
+                  {isEditing ? (
+                    <Select
+                      value={pendingStrategy}
+                      onValueChange={(v) =>
+                        setRerankerStrategyInput(v as 'off' | 'bm25' | 'semantic')
+                      }
+                    >
+                      <SelectTrigger
+                        aria-label={t('workspace.rerankerStrategyLabel', 'Strategy')}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="off">
+                          {t('workspace.rerankerStrategyOff', 'Off — skip rerank entirely')}
+                        </SelectItem>
+                        <SelectItem value="bm25">
+                          {t('workspace.rerankerStrategyBm25', 'BM25 (lexical, in-process)')}
+                        </SelectItem>
+                        <SelectItem value="semantic">
+                          {t(
+                            'workspace.rerankerStrategySemantic',
+                            'Semantic (cross-encoder via HTTP)',
+                          )}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                      <div className="flex-1">
+                        <div className="font-medium font-mono">
+                          {strategyDisplay(savedStrategy)}
+                        </div>
+                        {inheritsDefault && (
+                          <div className="text-xs text-muted-foreground mt-1">
+                            {t(
+                              'workspace.rerankerStrategyInherit',
+                              'Inheriting server default (BM25 unless RERANKER_URL is set)',
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Model — only meaningful for "semantic" */}
+                {(pendingStrategy === 'semantic' ||
+                  (!isEditing && savedStrategy === 'semantic')) && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium block">
+                      {t('workspace.rerankerModelLabel', 'Model')}
+                    </label>
+                    {isEditing ? (
+                      <>
+                        <RerankerModelSelector
+                          value={
+                            (rerankerModelInput ?? workspace.reranker_model)
+                              ? { model: rerankerModelInput ?? workspace.reranker_model!, provider: 'lmstudio' }
+                              : undefined
+                          }
+                          onChange={(sel: RerankerSelection | undefined) =>
+                            setRerankerModelInput(sel?.model)
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          {t(
+                            'workspace.rerankerModelDesc',
+                            "Sent as the `model` field of the rerank request. Workspace inherits the server's RERANKER_MODEL when set to default.",
+                          )}
+                        </p>
+                      </>
+                    ) : (
+                      <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg">
+                        <div className="font-mono text-sm">
+                          {workspace.reranker_model ??
+                            t(
+                              'workspace.rerankerModelInherit',
+                              'Inheriting RERANKER_MODEL env default',
+                            )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </CardContent>
+      </Card>
+      </div>
 
       {/* Provider Health Status - SPEC-032: OODA 201-210 */}
       <Card>

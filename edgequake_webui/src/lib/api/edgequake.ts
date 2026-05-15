@@ -308,11 +308,14 @@ export interface UpdateWorkspaceRequest {
    */
   chunk_min_score?: number;
   /**
-   * Toggle BM25 reranking on retrieved chunks. Defaults to the engine
-   * default (true). Boosts exact-keyword matches that vector cosine
-   * smears into semantic clusters.
+   * Reranker strategy: "off" | "bm25" | "semantic". Omit to keep current.
    */
-  enable_rerank?: boolean;
+  reranker_strategy?: 'off' | 'bm25' | 'semantic';
+  /**
+   * HTTP reranker model name (e.g. "jina-reranker-v3"). Used only when
+   * reranker_strategy is "semantic". Omit to keep current value.
+   */
+  reranker_model?: string;
   /**
    * Qwen3-Embedding query instruction task description. The query is
    * wrapped as `Instruct: {task}\nQuery: {q}` before embedding (the

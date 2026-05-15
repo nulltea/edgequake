@@ -1,0 +1,211 @@
+[package]
+# Keep the published version (0.5.1) so [patch.crates-io] in the parent
+# workspace can override `edgequake-pdf2md`'s transitive 0.5.1 dep cleanly.
+# A pre-release like 0.5.2-... wouldn't satisfy `^0.5.1` constraints and
+# we'd end up with two copies of `LLMProvider` in the dep tree.
+name = "edgequake-llm"
+version = "0.5.1"
+edition = "2021"
+authors = ["EdgeQuake Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/raphaelmansuy/edgequake-llm"
+homepage = "https://github.com/raphaelmansuy/edgequake-llm"
+documentation = "https://docs.rs/edgequake-llm"
+description = "Multi-provider LLM abstraction library with caching, rate limiting, and cost tracking"
+keywords = ["llm", "openai", "anthropic", "gemini", "ai"]
+categories = ["api-bindings", "asynchronous", "web-programming"]
+readme = "README.md"
+rust-version = "1.83.0"
+
+[dependencies]
+# Core async
+async-trait = "0.1"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+secrecy = { version = "0.10", features = ["serde"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "stream",
+] }
+reqwest-eventsource = "0.6"
+
+# LLM clients
+async-openai = { version = "0.34", features = ["chat-completion", "embedding"] }
+
+# Utilities
+tiktoken-rs = "0.6"
+backoff = { version = "0.4", features = ["tokio"] }
+uuid = { version = "1.0", features = ["v4"] }
+base64 = "0.22"
+
+# BM25 tokenization
+rust-stemmers = "1.2"
+unicode-normalization = "0.1"
+
+# Configuration
+toml = "0.8"
+dirs = "5.0"
+
+# Load `.env` files during local development/tests
+dotenvy = "0.15"
+tokio-stream = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+
+# OpenTelemetry (optional)
+opentelemetry = { version = "0.27", optional = true }
+tracing-opentelemetry = { version = "0.28", optional = true }
+
+# AWS Bedrock (optional) — pinned to exact minor for reproducible builds.
+# Last-verified: 2026-04-04 — latest as of that date.
+# NOTE: These crates require Rust ≥ 1.91.1 when the `bedrock` feature is enabled.
+aws-sdk-bedrockruntime = { version = "1.129.0", optional = true }
+aws-config = { version = "1.8.15", features = ["behavior-version-latest"], optional = true }
+aws-smithy-types = { version = "1.4.7", optional = true }
+# aws-smithy-runtime-api: exposes Response type needed for typed From<SdkError<E, Response>>
+aws-smithy-runtime-api = { version = "1.11.6", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
+serial_test = "3.2"
+
+[features]
+default = ["otel"]
+otel = ["opentelemetry", "tracing-opentelemetry"]
+bedrock = ["dep:aws-sdk-bedrockruntime", "dep:aws-config", "dep:aws-smithy-types", "dep:aws-smithy-runtime-api"]
+
+# ===========================================================================
+# Examples — grouped by provider
+# ===========================================================================
+
+# --- OpenAI ----------------------------------------------------------------
+[[example]]
+name = "openai_demo"
+path = "examples/openai/demo.rs"
+
+[[example]]
+name = "openai_basic_completion"
+path = "examples/openai/basic_completion.rs"
+
+[[example]]
+name = "openai_chatbot"
+path = "examples/openai/chatbot.rs"
+
+[[example]]
+name = "openai_embeddings"
+path = "examples/openai/embeddings.rs"
+
+[[example]]
+name = "openai_streaming"
+path = "examples/openai/streaming.rs"
+
+[[example]]
+name = "openai_tool_calling"
+path = "examples/openai/tool_calling.rs"
+
+[[example]]
+name = "openai_vision"
+path = "examples/openai/vision.rs"
+
+# --- Azure OpenAI ----------------------------------------------------------
+[[example]]
+name = "azure_env_check"
+path = "examples/azure/env_check.rs"
+
+[[example]]
+name = "azure_full_demo"
+path = "examples/azure/full_demo.rs"
+
+# --- Gemini (Google AI) ----------------------------------------------------
+[[example]]
+name = "gemini_demo"
+path = "examples/gemini/demo.rs"
+
+[[example]]
+name = "gemini_chat"
+path = "examples/gemini/chat.rs"
+
+[[example]]
+name = "gemini_streaming"
+path = "examples/gemini/streaming.rs"
+
+[[example]]
+name = "gemini_vision"
+path = "examples/gemini/vision.rs"
+
+[[example]]
+name = "gemini_embeddings"
+path = "examples/gemini/embeddings.rs"
+
+[[example]]
+name = "gemini_tool_calling"
+path = "examples/gemini/tool_calling.rs"
+
+# --- Vertex AI -------------------------------------------------------------
+[[example]]
+name = "vertexai_demo"
+path = "examples/vertexai/demo.rs"
+
+[[example]]
+name = "vertexai_chat"
+path = "examples/vertexai/chat.rs"
+
+[[example]]
+name = "vertexai_streaming"
+path = "examples/vertexai/streaming.rs"
+
+[[example]]
+name = "vertexai_vision"
+path = "examples/vertexai/vision.rs"
+
+[[example]]
+name = "vertexai_embeddings"
+path = "examples/vertexai/embeddings.rs"
+
+[[example]]
+name = "vertexai_tool_calling"
+path = "examples/vertexai/tool_calling.rs"
+
+# --- Mistral ---------------------------------------------------------------
+[[example]]
+name = "mistral_chat"
+path = "examples/mistral/chat.rs"
+
+# --- Local (Ollama / LM Studio) --------------------------------------------
+[[example]]
+name = "local_llm"
+path = "examples/local/local_llm.rs"
+
+# --- Advanced / Cross-provider ---------------------------------------------
+[[example]]
+name = "cost_tracking"
+path = "examples/advanced/cost_tracking.rs"
+
+[[example]]
+name = "middleware"
+path = "examples/advanced/middleware.rs"
+
+[[example]]
+name = "multi_provider"
+path = "examples/advanced/multi_provider.rs"
+
+[[example]]
+name = "reranking"
+path = "examples/advanced/reranking.rs"
+
+[[example]]
+name = "retry_handling"
+path = "examples/advanced/retry_handling.rs"

@@ -745,11 +745,18 @@ export interface Workspace {
    */
   chunk_min_score?: number;
   /**
-   * Toggle the in-memory BM25 rerank step on retrieved chunks.
-   * Undefined → engine default (true). Boosts chunks containing rare
-   * literal query tokens (proper nouns) that vector cosine smears together.
+   * Reranker strategy:
+   *   - "off"      — skip the rerank step entirely
+   *   - "bm25"     — in-process lexical rerank
+   *   - "semantic" — HTTP cross-encoder (requires RERANKER_URL on the API)
+   * Undefined → server default.
    */
-  enable_rerank?: boolean;
+  reranker_strategy?: "off" | "bm25" | "semantic";
+  /**
+   * HTTP reranker model override, used only when reranker_strategy is
+   * "semantic". Undefined → RERANKER_MODEL env default.
+   */
+  reranker_model?: string;
   /**
    * Qwen3-Embedding query instruction task description. Queries are
    * wrapped as `Instruct: {task}\nQuery: {q}` before embedding (the

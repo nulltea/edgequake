@@ -168,12 +168,24 @@ pub struct Workspace {
     /// `None` keeps the engine default.
     pub chunk_min_score: Option<f32>,
 
-    /// Toggle the in-memory BM25 rerank step on retrieved chunks.
-    /// `None` keeps the engine default (`SOTAQueryConfig::enable_rerank`,
-    /// which is `true`). Set to `Some(false)` to skip reranking — useful
-    /// when proper-noun precision isn't needed and the ~10–30 ms latency
-    /// per query matters.
-    pub enable_rerank: Option<bool>,
+    /// Reranker strategy:
+    /// - `"off"` — skip the rerank step entirely
+    /// - `"bm25"` — in-process BM25 (default when unset and no server-side
+    ///   semantic config is present)
+    /// - `"semantic"` — HTTP cross-encoder (requires `RERANKER_URL` env)
+    /// - `None` — inherit the server default.
+    ///
+    /// Legacy workspaces stored `enable_rerank: false` instead of
+    /// `reranker_strategy: "off"`; that field has been removed but a
+    /// lazy migration in `workspace_service_impl::into_workspace` converts
+    /// stale JSONB on read.
+    pub reranker_strategy: Option<String>,
+
+    /// Model name passed in the `model` field of the HTTP rerank request
+    /// (e.g. `"jina-reranker-v3"`). Only meaningful when
+    /// `reranker_strategy == Some("semantic")`. `None` uses the
+    /// `RERANKER_MODEL` env default.
+    pub reranker_model: Option<String>,
 
     /// Qwen3-Embedding-style query instruction task description.
     /// Queries are wrapped as `Instruct: {task}\nQuery: {q}` before
@@ -225,7 +237,8 @@ impl Workspace {
             algorithm_review_mode: None,
             accept_unofficial_implementations: None,
             chunk_min_score: None,
-            enable_rerank: None,
+            reranker_strategy: None,
+            reranker_model: None,
             embedding_query_instruction: None,
         }
     }
@@ -455,12 +468,6 @@ impl Workspace {
     /// Override the engine-wide chunk-cosine floor for this workspace.
     pub fn with_chunk_min_score(mut self, score: f32) -> Self {
         self.chunk_min_score = Some(score);
-        self
-    }
-
-    /// Override the engine-wide BM25 rerank toggle for this workspace.
-    pub fn with_enable_rerank(mut self, enable: bool) -> Self {
-        self.enable_rerank = Some(enable);
         self
     }
 

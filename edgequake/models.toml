@@ -1947,6 +1947,73 @@ embedding_per_1k = 0.0
 image_per_unit = 0.0
 
 # =============================================================================
+# LLAMA-SWAP PROVIDER (local rerankers)
+# =============================================================================
+# Self-hosted llama-swap front (see ~/infra/dashboard/llama-swap/config.yaml)
+# fronting llama.cpp / llama-cpp-python models on a single OpenAI-compatible
+# endpoint. Only reranker models surface here today — the runtime semantic
+# reranker URL is wired separately via RERANKER_URL / RERANKER_MODEL (the
+# entries below are for discovery by `GET /api/models/rerankers` and the UI).
+
+[[providers]]
+name = "llamaswap"
+display_name = "llama-swap (local)"
+type = "openaicompatible"
+api_base = "http://localhost:8060/v1"
+api_key_env = ""
+enabled = true
+priority = 22
+description = "Self-hosted llama-swap fronting local llama.cpp rerankers/embedders/LLMs on a single OpenAI-compatible endpoint"
+
+[[providers.models]]
+name = "bge-reranker-v2-m3"
+display_name = "BGE Reranker v2 m3"
+model_type = "reranker"
+description = "XLM-RoBERTa cross-encoder (568M, multilingual). Pairwise — llama.cpp loops per (query,doc) pair with rank pooling. Faster than jina-reranker-v3 (no Qwen3-0.6B + projector). Trained at max-length 1024."
+deprecated = false
+tags = ["recommended", "local", "free", "multilingual", "fast"]
+
+[providers.models.capabilities]
+context_length = 8192
+max_output_tokens = 0
+supports_vision = false
+supports_function_calling = false
+supports_json_mode = false
+supports_streaming = false
+supports_system_message = false
+embedding_dimension = 0
+
+[providers.models.cost]
+input_per_1k = 0.0
+output_per_1k = 0.0
+embedding_per_1k = 0.0
+image_per_unit = 0.0
+
+[[providers.models]]
+name = "jina-reranker-v3"
+display_name = "Jina Reranker v3"
+model_type = "reranker"
+description = "Qwen3-0.6B late-interaction reranker + MLP projector (~1 GiB Q8_0). Listwise scoring via a llama-cpp-python sidecar. Higher quality on long contexts but slower per-pair than bge-reranker-v2-m3."
+deprecated = false
+tags = ["local", "free", "high-quality"]
+
+[providers.models.capabilities]
+context_length = 131072
+max_output_tokens = 0
+supports_vision = false
+supports_function_calling = false
+supports_json_mode = false
+supports_streaming = false
+supports_system_message = false
+embedding_dimension = 0
+
+[providers.models.cost]
+input_per_1k = 0.0
+output_per_1k = 0.0
+embedding_per_1k = 0.0
+image_per_unit = 0.0
+
+# =============================================================================
 # CUSTOM OPENAI-COMPATIBLE PROVIDERS
 # =============================================================================
 # Example template for adding custom OpenAI-compatible providers

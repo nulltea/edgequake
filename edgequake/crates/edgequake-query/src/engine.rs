@@ -166,13 +166,17 @@ pub struct QueryRequest {
     #[serde(default)]
     pub chunk_min_score: Option<f32>,
 
-    /// Per-request override for the BM25 reranker step. `None` keeps the
-    /// engine default (`SOTAQueryConfig::enable_rerank`). Plumbed from
-    /// `workspace.enable_rerank` at the API layer so a workspace can opt
-    /// out of the (cheap, ~10–30 ms) in-memory BM25 rerank that boosts
-    /// exact-keyword matches.
+    /// Per-request reranker strategy: `"off"`, `"bm25"`, or `"semantic"`.
+    /// `None` keeps the server default (the engine's startup-configured
+    /// reranker). Plumbed from `workspace.reranker_strategy`.
     #[serde(default)]
-    pub enable_rerank: Option<bool>,
+    pub reranker_strategy: Option<String>,
+
+    /// Per-request reranker model override. Used only when
+    /// `reranker_strategy == Some("semantic")`. `None` keeps the
+    /// `RERANKER_MODEL` env default. Plumbed from `workspace.reranker_model`.
+    #[serde(default)]
+    pub reranker_model: Option<String>,
 
     /// Per-request override for the Qwen3-Embedding-style query
     /// instruction prefix. `None` keeps the engine default
@@ -210,7 +214,8 @@ impl QueryRequest {
             system_prompt: None,
             allowed_document_ids: None,
             chunk_min_score: None,
-            enable_rerank: None,
+            reranker_strategy: None,
+            reranker_model: None,
             query_instruction: None,
         }
     }
@@ -221,13 +226,7 @@ impl QueryRequest {
         self
     }
 
-    /// Override the BM25 reranker on/off for this request.
-    pub fn with_enable_rerank(mut self, enable: bool) -> Self {
-        self.enable_rerank = Some(enable);
-        self
-    }
-
-    /// Override the Qwen3-Embedding query instruction task description
+/// Override the Qwen3-Embedding query instruction task description
     /// for this request. Pass an empty string to disable the prefix.
     pub fn with_query_instruction(mut self, instruction: impl Into<String>) -> Self {
         self.query_instruction = Some(instruction.into());

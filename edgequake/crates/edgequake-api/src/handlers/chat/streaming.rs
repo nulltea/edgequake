@@ -237,9 +237,18 @@ pub async fn chat_completion_stream(
             engine_request = engine_request.with_chunk_min_score(score);
         }
 
-        // Workspace-scoped BM25 rerank toggle (None = engine default).
-        if let Some(enable) = workspace_clone.as_ref().and_then(|ws| ws.enable_rerank) {
-            engine_request = engine_request.with_enable_rerank(enable);
+        // Workspace-scoped reranker strategy + model (None = engine default).
+        if let Some(strategy) = workspace_clone
+            .as_ref()
+            .and_then(|ws| ws.reranker_strategy.clone())
+        {
+            engine_request.reranker_strategy = Some(strategy);
+        }
+        if let Some(model) = workspace_clone
+            .as_ref()
+            .and_then(|ws| ws.reranker_model.clone())
+        {
+            engine_request.reranker_model = Some(model);
         }
 
         // Workspace-scoped Qwen3-Embedding query instruction (None = engine default).

@@ -96,7 +96,8 @@ pub async fn create_workspace(
         // SPEC-085: Pass entity_types from HTTP request body if provided
         entity_types: request.entity_types.clone(),
         chunk_min_score: request.chunk_min_score,
-        enable_rerank: request.enable_rerank,
+        reranker_strategy: request.reranker_strategy.clone(),
+        reranker_model: request.reranker_model.clone(),
         embedding_query_instruction: request.embedding_query_instruction.clone(),
     };
 
@@ -282,7 +283,8 @@ pub async fn update_workspace(
         accept_unofficial_implementations: request.accept_unofficial_implementations,
         entity_types: request.entity_types,
         chunk_min_score: request.chunk_min_score,
-        enable_rerank: request.enable_rerank,
+        reranker_strategy: request.reranker_strategy,
+        reranker_model: request.reranker_model,
         embedding_query_instruction: request.embedding_query_instruction,
     };
 

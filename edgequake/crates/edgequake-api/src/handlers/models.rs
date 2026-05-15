@@ -39,7 +39,7 @@ use crate::state::AppState;
 pub use crate::handlers::models_types::{
     EmbeddingModelItem, EmbeddingModelsResponse, LlmModelItem, LlmModelsResponse,
     ModelCapabilitiesResponse, ModelCostResponse, ModelResponse, ModelsListResponse,
-    ProviderHealthResponse, ProviderResponse,
+    ProviderHealthResponse, ProviderResponse, RerankerModelItem, RerankerModelsResponse,
 };
 
 /// Convert a ModelCard to a ModelResponse DTO.
@@ -205,6 +205,43 @@ pub async fn list_embedding_models(
         models,
         default_provider: config.defaults.embedding_provider.clone(),
         default_model: config.defaults.embedding_model.clone(),
+    }))
+}
+
+/// List reranker models.
+///
+/// Mirrors `list_embedding_models` / `list_llm_models`: reads from the
+/// shared `state.models_config` and filters `[[providers.models]]` entries
+/// by `model_type = "reranker"`. The runtime-active default comes from
+/// the `RERANKER_MODEL` env var; `semantic_enabled` reflects whether
+/// `RERANKER_URL` was set at boot.
+#[utoipa::path(
+    get,
+    path = "/api/models/rerankers",
+    tag = "Models",
+    responses(
+        (status = 200, description = "List of reranker models", body = RerankerModelsResponse)
+    )
+)]
+pub async fn list_rerankers(
+    State(state): State<AppState>,
+) -> ApiResult<Json<RerankerModelsResponse>> {
+    let config = &*state.models_config;
+    let models: Vec<RerankerModelItem> = config
+        .all_reranker_models()
+        .into_iter()
+        .map(|(provider, model)| RerankerModelItem {
+            provider: provider.name.clone(),
+            provider_display_name: provider.display_name.clone(),
+            model: model_card_to_response(model),
+        })
+        .collect();
+    Ok(Json(RerankerModelsResponse {
+        models,
+        default_model: std::env::var("RERANKER_MODEL").ok(),
+        semantic_enabled: std::env::var("RERANKER_URL")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false),
     }))
 }
 
