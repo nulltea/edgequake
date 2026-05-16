@@ -39,6 +39,10 @@ services:
             # Uses host.docker.internal to reach the user's host-side SearXNG/Crawl4AI.
             SEARXNG_URL: "${SEARXNG_URL:-http://host.docker.internal:8888}"
             CRAWL4AI_URL: "${CRAWL4AI_URL:-http://host.docker.internal:11235}"
+            # Reference Code GraphRAG — Layer B GitHub Search (replaces SearXNG
+            # for repo discovery). Unauthenticated mode is 60 req/hr; set a
+            # PAT to lift to 5000 req/hr. Token only needs `public_repo` scope.
+            GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
 
             # Phase 1 — code-analyzer sidecar (algorithm localization in cloned repos).
             CODE_ANALYZER_URL: "${CODE_ANALYZER_URL:-http://code-analyzer:9100}"

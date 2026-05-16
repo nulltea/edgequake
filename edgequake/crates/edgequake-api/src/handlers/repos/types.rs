@@ -182,6 +182,7 @@ fn host_str(h: RepoHost) -> &'static str {
 fn method_str(m: DetectionMethod) -> &'static str {
     match m {
         DetectionMethod::PdfLink => "pdf_link",
+        DetectionMethod::GithubApi => "github_api",
         DetectionMethod::WebSearch => "web_search",
         DetectionMethod::Manual => "manual",
     }

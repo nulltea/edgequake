@@ -49,10 +49,16 @@ impl RepoHost {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectionMethod {
+    /// Layer A: URL extracted from the paper PDF's link annotations.
     PdfLink,
+    /// Layer B (primary): hit from the GitHub Search API (octocrab).
+    GithubApi,
+    /// Layer C (fallback): hit from SearXNG meta-search + Crawl4AI page
+    /// fetch. Catches niche academic repos GitHub Search misses, and
+    /// non-GitHub hosts (gitlab/bitbucket).
     WebSearch,
     /// Manually added by the user via the References-tab "Add reference"
-    /// action (migration 049). Skips Layer A / Layer B detection.
+    /// action (migration 049). Skips Layer A / Layer B / Layer C.
     Manual,
 }
 
@@ -60,6 +66,7 @@ impl DetectionMethod {
     pub fn as_str(self) -> &'static str {
         match self {
             DetectionMethod::PdfLink => "pdf_link",
+            DetectionMethod::GithubApi => "github_api",
             DetectionMethod::WebSearch => "web_search",
             DetectionMethod::Manual => "manual",
         }
@@ -68,6 +75,7 @@ impl DetectionMethod {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pdf_link" => Some(DetectionMethod::PdfLink),
+            "github_api" => Some(DetectionMethod::GithubApi),
             "web_search" => Some(DetectionMethod::WebSearch),
             "manual" => Some(DetectionMethod::Manual),
             _ => None,

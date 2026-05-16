@@ -15,7 +15,7 @@ use edgequake_agents::repo_detection::{
     run_detection, DetectionOutcome, PostgresRepoStorage, RepoDetectionConfig, RepoStorage,
     VerificationVerdict, WebSearchClients,
 };
-use edgequake_agents::web_search::{Crawl4aiClient, SearxngClient};
+use edgequake_agents::web_search::{Crawl4aiClient, GithubClient, SearxngClient};
 use tokio_util::sync::CancellationToken;
 
 impl DocumentTaskProcessor {
@@ -109,7 +109,7 @@ impl DocumentTaskProcessor {
             .await
             .ok();
 
-        let web_clients = self.build_web_search_clients();
+        let web_clients = self.build_web_search_clients(workspace_id).await;
         let config = RepoDetectionConfig::default();
 
         let outcome_result =
@@ -232,19 +232,101 @@ impl DocumentTaskProcessor {
         Ok(PostgresRepoStorage::new(pool))
     }
 
-    /// Build Layer B clients from env, returning `None` when either service
-    /// is unconfigured — callers treat that as "Layer B disabled, Layer A alone".
-    fn build_web_search_clients(&self) -> Option<WebSearchClients> {
-        let sx = std::env::var("SEARXNG_URL")
+    /// Build Layer B clients. The search arm is **GitHub** now — the
+    /// SearXNG/Crawl4AI path stayed compiled because the verifier still
+    /// uses Crawl4AI for non-GitHub README fetches, but they no longer
+    /// drive repo discovery. Returns `None` only when no LLM is reachable;
+    /// SearXNG/Crawl4AI are optional and we substitute no-op URLs if
+    /// their env vars are unset.
+    ///
+    /// The verifier + resolver LLM is resolved from the workspace's
+    /// configured `llm_provider`/`llm_model` so repo-detection talks to
+    /// the same model the rest of the pipeline uses for that workspace.
+    /// Falls back to `self.llm_provider` (server default from env at
+    /// startup) when workspace lookup fails — the alternative is
+    /// hard-failing detection on a transient DB blip.
+    async fn build_web_search_clients(
+        &self,
+        workspace_id: uuid::Uuid,
+    ) -> Option<WebSearchClients> {
+        let llm = self.resolve_workspace_llm(workspace_id).await;
+        let github = GithubClient::from_env();
+        if !github.authenticated {
+            warn!(
+                "GITHUB_TOKEN not set — Layer B GitHub Search runs unauthenticated \
+                 (60 req/hr). Set GITHUB_TOKEN to lift the cap to 5000/hr."
+            );
+        }
+        // Crawl4AI/SearXNG are optional — substitute placeholder URLs so
+        // the verifier's "fall back to crawl4ai for non-github readme"
+        // path returns a clean error instead of panicking.
+        let crawl4ai_url = std::env::var("CRAWL4AI_URL")
             .ok()
-            .filter(|v| !v.is_empty())?;
-        let cr = std::env::var("CRAWL4AI_URL")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "http://localhost:0".to_string());
+        let searxng_url = std::env::var("SEARXNG_URL")
             .ok()
-            .filter(|v| !v.is_empty())?;
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "http://localhost:0".to_string());
         Some(WebSearchClients {
-            searxng: SearxngClient::new(sx),
-            crawl4ai: Crawl4aiClient::new(cr),
-            llm: std::sync::Arc::clone(&self.llm_provider),
+            github,
+            searxng: SearxngClient::new(searxng_url),
+            crawl4ai: Crawl4aiClient::new(crawl4ai_url),
+            llm,
         })
+    }
+
+    /// Build a workspace-bound LLM client for repo-detection. Mirrors the
+    /// resolution chain used by `algorithm_extraction::resolve_algorithm_llm_providers`:
+    /// workspace's `llm_provider`+`llm_model` → server default. Logs the
+    /// outcome so misconfiguration is easy to spot in tracing.
+    async fn resolve_workspace_llm(
+        &self,
+        workspace_id: uuid::Uuid,
+    ) -> std::sync::Arc<dyn edgequake_llm::traits::LLMProvider> {
+        use crate::safety_limits::create_safe_llm_provider;
+
+        let default = std::sync::Arc::clone(&self.llm_provider);
+        let Some(ws_svc) = self.workspace_service.as_ref() else {
+            return default;
+        };
+        match ws_svc.get_workspace(workspace_id).await {
+            Ok(Some(ws)) => match create_safe_llm_provider(&ws.llm_provider, &ws.llm_model) {
+                Ok(p) => {
+                    info!(
+                        workspace_id = %workspace_id,
+                        provider = %ws.llm_provider,
+                        model = %ws.llm_model,
+                        "repo-detection: using workspace LLM"
+                    );
+                    p
+                }
+                Err(e) => {
+                    warn!(
+                        workspace_id = %workspace_id,
+                        provider = %ws.llm_provider,
+                        model = %ws.llm_model,
+                        error = %e,
+                        "repo-detection: workspace LLM init failed; falling back to server default"
+                    );
+                    default
+                }
+            },
+            Ok(None) => {
+                warn!(
+                    workspace_id = %workspace_id,
+                    "repo-detection: workspace not found; falling back to server-default LLM"
+                );
+                default
+            }
+            Err(e) => {
+                warn!(
+                    workspace_id = %workspace_id,
+                    error = %e,
+                    "repo-detection: failed to fetch workspace; falling back to server-default LLM"
+                );
+                default
+            }
+        }
     }
 }

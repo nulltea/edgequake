@@ -51,15 +51,28 @@ function statusVariant(
 }
 
 function methodLabel(m: RepoCandidate['detection_method']): string {
-  return m === 'pdf_link' ? 'PDF link' : 'Web search';
+  switch (m) {
+    case 'pdf_link':
+      return 'PDF link';
+    case 'github_api':
+      return 'GitHub API';
+    case 'web_search':
+      return 'Web search';
+    case 'manual':
+      return 'Manual';
+  }
 }
 
 function MethodIcon({ method }: { method: RepoCandidate['detection_method'] }) {
-  return method === 'pdf_link' ? (
-    <FileText className="h-3.5 w-3.5" />
-  ) : (
-    <Globe className="h-3.5 w-3.5" />
-  );
+  switch (method) {
+    case 'pdf_link':
+      return <FileText className="h-3.5 w-3.5" />;
+    case 'github_api':
+      return <GitBranch className="h-3.5 w-3.5" />;
+    case 'web_search':
+    case 'manual':
+      return <Globe className="h-3.5 w-3.5" />;
+  }
 }
 
 export function RepoCard({ repo, onApprove, onReject, onDelete }: RepoCardProps) {
@@ -109,9 +122,11 @@ export function RepoCard({ repo, onApprove, onReject, onDelete }: RepoCardProps)
         {repo.detection_method === 'pdf_link' && repo.pdf_page_index !== null && (
           <span>page {repo.pdf_page_index + 1}</span>
         )}
-        {repo.detection_method === 'web_search' && repo.search_rank !== null && (
-          <span>search rank #{repo.search_rank + 1}</span>
-        )}
+        {(repo.detection_method === 'web_search' ||
+          repo.detection_method === 'github_api') &&
+          repo.search_rank !== null && (
+            <span>search rank #{repo.search_rank + 1}</span>
+          )}
         <span className="uppercase tracking-wide">{repo.host}</span>
       </div>
 

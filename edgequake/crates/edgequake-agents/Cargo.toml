@@ -18,6 +18,17 @@ tracing.workspace = true
 chrono = { workspace = true }
 uuid = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+# GitHub Search API client for Layer B repo discovery (replaces the
+# SearXNG path, which kept tripping over CAPTCHAs from upstream
+# engines). Octocrab handles pagination, auth headers, and the small
+# differences between `/search/repositories` and `/search/code`.
+octocrab = "0.46"
+# rustls is a transitive dep of octocrab. We pull it in directly to
+# call `crypto::ring::default_provider().install_default()` from
+# `GithubClient::new` — required because both `ring` and `aws-lc-rs`
+# end up in the dep graph and rustls refuses to auto-pick a provider.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+base64 = "0.22"
 url = "2"
 edgequake-llm = { workspace = true }
 edgequake-pdf = { workspace = true }
