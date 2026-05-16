@@ -10,7 +10,7 @@ import {
 import { getAlgorithms } from '@/lib/api/edgequake';
 import type { Document } from '@/types';
 import { useQuery } from '@tanstack/react-query';
-import { Brain, Copy, Eye, MoreVertical, RefreshCcw, RefreshCw, StopCircle, Trash2 } from 'lucide-react';
+import { Archive, Brain, Copy, Eye, MoreVertical, RefreshCcw, RefreshCw, StopCircle, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ResetDocumentStatusButton } from './reset-document-status-button';
@@ -29,6 +29,8 @@ interface DocumentActionsMenuProps {
   onReprocess: (id: string) => void;
   /** Callback to delete document */
   onDelete: (id: string) => void;
+  /** Callback to archive document (keeps PDF/MD/algorithms/refs, drops derived data) */
+  onArchive: (id: string) => void;
   /** Callback to extract algorithms from document */
   onExtractAlgorithms?: (id: string) => void;
   /** Whether a cancel operation is in progress */
@@ -57,6 +59,7 @@ export function DocumentActionsMenu({
   onCancel,
   onReprocess,
   onDelete,
+  onArchive,
   onExtractAlgorithms,
   isCancelling = false,
 }: DocumentActionsMenuProps) {
@@ -152,6 +155,12 @@ export function DocumentActionsMenu({
         <DropdownMenuItem onClick={() => onReprocess(doc.id)}>
           <RefreshCw className="h-4 w-4 mr-2" />
           {t('documents.actions.reprocess')}
+        </DropdownMenuItem>
+
+        {/* Archive — soft-delete that keeps PDF/MD/algorithms/references */}
+        <DropdownMenuItem onClick={() => onArchive(doc.id)}>
+          <Archive className="h-4 w-4 mr-2" />
+          {t('documents.actions.archive', 'Archive')}
         </DropdownMenuItem>
 
         {/* Delete */}

@@ -541,6 +541,8 @@ export async function getDocuments(
     date_to?: string;
     /** @implements SPEC-005 */
     document_pattern?: string;
+    /** "true" lists only archived docs, "all" lists both; defaults server-side to "false". */
+    archived?: "true" | "false" | "all";
   },
 ): Promise<DocumentsListResult> {
   const searchParams = new URLSearchParams();
@@ -554,6 +556,7 @@ export async function getDocuments(
   if (params?.date_to) searchParams.set("date_to", params.date_to);
   if (params?.document_pattern)
     searchParams.set("document_pattern", params.document_pattern);
+  if (params?.archived) searchParams.set("archived", params.archived);
 
   const query = searchParams.toString();
 
@@ -896,6 +899,35 @@ export function getFigureMediaUrl(
 
 export async function deleteDocument(documentId: string): Promise<void> {
   return api.delete<void>(`/documents/${documentId}`);
+}
+
+export interface ArchiveDocumentResponse {
+  document_id: string;
+  archived: boolean;
+  archived_at: string | null;
+  chunks_deleted: number;
+  embeddings_deleted: number;
+  entities_affected: number;
+  relationships_affected: number;
+  indexed_code_deleted: number;
+}
+
+export async function archiveDocument(
+  documentId: string,
+): Promise<ArchiveDocumentResponse> {
+  return api.post<ArchiveDocumentResponse>(
+    `/documents/${documentId}/archive`,
+    {},
+  );
+}
+
+export async function unarchiveDocument(
+  documentId: string,
+): Promise<{ document_id: string; unarchived: boolean }> {
+  return api.post<{ document_id: string; unarchived: boolean }>(
+    `/documents/${documentId}/unarchive`,
+    {},
+  );
 }
 
 export async function deleteAllDocuments(): Promise<{ deleted_count: number }> {

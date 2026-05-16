@@ -1,8 +1,8 @@
 //! Document storage helper functions.
 //!
-//! Private utilities used by upload, delete, and recovery sub-modules.
-//! Includes workspace vector storage resolution, graph cleanup,
-//! and re-ingestion support.
+//! Private utilities used by upload, delete, archive, and recovery sub-modules.
+//! Includes workspace vector storage resolution, KV key prefix resolution,
+//! graph cleanup, and re-ingestion support.
 
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -619,4 +619,152 @@ pub(super) async fn delete_document_for_reingestion(
     );
 
     Ok(true)
+}
+
+// ============================================================================
+// Shared KV key resolution + KG cleanup (used by delete + archive handlers).
+// ============================================================================
+
+/// Resolve the actual KV key prefix for a document.
+///
+/// The list endpoint shows documents by the JSON `id` field inside KV metadata
+/// values, but the KV key is `{early_doc_id}-metadata`. These can diverge due to
+/// historical bugs (interrupted retries, restarts with older code). When the
+/// caller passes the JSON `id`, we must find the real key prefix to delete all
+/// associated keys (chunks, content, metadata).
+///
+/// Returns `(actual_key_prefix, metadata_key, has_metadata)`.
+pub(crate) async fn resolve_kv_key_prefix(
+    document_id: &str,
+    keys: &[String],
+    state: &AppState,
+) -> (String, String, bool) {
+    let direct_metadata_key = format!("{}-metadata", document_id);
+    if keys.contains(&direct_metadata_key) {
+        return (document_id.to_string(), direct_metadata_key, true);
+    }
+
+    for key in keys.iter().filter(|k| k.ends_with("-metadata")) {
+        if let Ok(Some(val)) = state.kv_storage.get_by_id(key).await {
+            if let Some(json_id) = val.get("id").and_then(|v| v.as_str()) {
+                if json_id == document_id {
+                    let prefix = key.strip_suffix("-metadata").unwrap_or(key).to_string();
+                    return (prefix, key.clone(), true);
+                }
+            }
+        }
+    }
+
+    (document_id.to_string(), direct_metadata_key, false)
+}
+
+/// Strip a document's contributions from the workspace knowledge graph.
+///
+/// Walks every node and edge: removes matching prefixes from `source_ids`,
+/// deletes nodes whose source_ids become empty (and their entity embeddings),
+/// updates the rest in place, and prunes orphaned edges that connect to nodes
+/// that no longer exist.
+///
+/// `source_prefixes` should typically include the document's KV key prefix and
+/// (in mismatch cases) its JSON id so both representations get matched.
+///
+/// Reused by `delete_document` and `archive_document` — keep the orphan-handling
+/// semantics identical between the two paths.
+pub(crate) async fn strip_document_from_graph(
+    state: &AppState,
+    source_prefixes: &[String],
+    workspace_vector_storage: &Arc<dyn VectorStorage>,
+) -> Result<CleanupStats, ApiError> {
+    let mut stats = CleanupStats::default();
+
+    let all_nodes = state.graph_storage.get_all_nodes().await?;
+    for node in all_nodes {
+        let sources = extract_source_docs(&node.properties);
+        if sources.is_empty() {
+            continue;
+        }
+
+        let remaining_sources: Vec<String> = sources
+            .iter()
+            .filter(|s| {
+                !source_prefixes
+                    .iter()
+                    .any(|prefix| s.starts_with(prefix.as_str()))
+            })
+            .cloned()
+            .collect();
+
+        if remaining_sources.is_empty() {
+            state.graph_storage.delete_node(&node.id).await?;
+            let _ = workspace_vector_storage.delete_entity(&node.id).await;
+            stats.entities_removed += 1;
+            stats.embeddings_deleted += 1;
+        } else if remaining_sources.len() < sources.len() {
+            let mut updated_props = node.properties.clone();
+            updated_props.insert(
+                "source_ids".to_string(),
+                serde_json::json!(remaining_sources),
+            );
+            state
+                .graph_storage
+                .upsert_node(&node.id, updated_props)
+                .await?;
+            stats.entities_updated += 1;
+        }
+    }
+
+    let all_edges = state.graph_storage.get_all_edges().await?;
+    let existing_nodes = state.graph_storage.get_all_nodes().await?;
+    let existing_node_ids: std::collections::HashSet<String> =
+        existing_nodes.iter().map(|n| n.id.clone()).collect();
+
+    for edge in all_edges {
+        let is_orphaned =
+            !existing_node_ids.contains(&edge.source) || !existing_node_ids.contains(&edge.target);
+
+        if is_orphaned {
+            state
+                .graph_storage
+                .delete_edge(&edge.source, &edge.target)
+                .await?;
+            stats.relationships_removed += 1;
+            continue;
+        }
+
+        let sources = extract_source_docs(&edge.properties);
+        if sources.is_empty() {
+            continue;
+        }
+
+        let remaining_sources: Vec<String> = sources
+            .iter()
+            .filter(|s| {
+                !source_prefixes
+                    .iter()
+                    .any(|prefix| s.starts_with(prefix.as_str()))
+            })
+            .cloned()
+            .collect();
+
+        if remaining_sources.is_empty() {
+            state
+                .graph_storage
+                .delete_edge(&edge.source, &edge.target)
+                .await?;
+            stats.relationships_removed += 1;
+        } else if remaining_sources.len() < sources.len() {
+            let mut updated_props = edge.properties.clone();
+            updated_props.insert(
+                "source_ids".to_string(),
+                serde_json::json!(remaining_sources),
+            );
+            state
+                .graph_storage
+                .upsert_edge(&edge.source, &edge.target, updated_props)
+                .await?;
+            stats.relationships_updated += 1;
+        }
+    }
+
+    Ok(stats)
 }

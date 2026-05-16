@@ -436,6 +436,31 @@ pub trait PdfDocumentStorage: Send + Sync {
     ///
     /// @implements FIX-ISSUE-73: Cascade delete pdf_documents/chunks on document removal
     async fn delete_document_record(&self, document_id: &Uuid) -> Result<()>;
+
+    /// Mark a document as archived (sets `archived_at = NOW()`, zeroes derived counts).
+    ///
+    /// The `documents`, `pdf_documents`, `algorithms`, and `document_repos` rows are
+    /// preserved; the archive handler is responsible for deleting the derived data
+    /// (chunks, embeddings, KG nodes, `reference_codebase_*`) before calling this.
+    async fn archive_document(&self, document_id: &Uuid) -> Result<()>;
+
+    /// Reverse [`archive_document`] (clears `archived_at`).
+    ///
+    /// Counts stay at zero — the caller is expected to trigger a rebuild to
+    /// regenerate chunks / embeddings / KG / indexed code.
+    async fn unarchive_document(&self, document_id: &Uuid) -> Result<()>;
+
+    /// Delete all chunks belonging to a document without removing the document row.
+    ///
+    /// Used by the archive flow: the document survives but its chunks (and the
+    /// figures stored as `kind='figure'` chunks) are dropped.
+    async fn delete_chunks_for_document(&self, document_id: &Uuid) -> Result<u64>;
+
+    /// Delete every `reference_codebase_indexes` row for a document.
+    ///
+    /// Children (`_files`, `_symbols`, `_edges`, `_chunks`, `_embeddings`) cascade
+    /// via the `index_id` FKs in migration 045.
+    async fn delete_reference_codebase_for_document(&self, document_id: &str) -> Result<u64>;
 }
 
 // ============================================================================

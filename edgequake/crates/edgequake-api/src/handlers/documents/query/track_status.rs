@@ -142,6 +142,10 @@ pub async fn get_track_status(
                         .and_then(|v| v.as_str())
                         .map(String::from),
                     pdf_id: obj.get("pdf_id").and_then(|v| v.as_str()).map(String::from),
+                    archived_at: obj
+                        .get("archived_at")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
                 });
             }
         }

@@ -480,6 +480,98 @@ impl PdfDocumentStorage for PostgresPdfStorage {
         Ok(())
     }
 
+    async fn archive_document(&self, document_id: &Uuid) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            UPDATE documents
+               SET archived_at = NOW(),
+                   chunk_count = 0,
+                   entity_count = 0,
+                   relationship_count = 0,
+                   updated_at = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(document_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(format!("Failed to archive document: {}", e)))?;
+
+        debug!(
+            "Archived document: id={}, rows_affected={}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(())
+    }
+
+    async fn unarchive_document(&self, document_id: &Uuid) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            UPDATE documents
+               SET archived_at = NULL,
+                   updated_at = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(document_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(format!("Failed to unarchive document: {}", e)))?;
+
+        debug!(
+            "Unarchived document: id={}, rows_affected={}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(())
+    }
+
+    async fn delete_chunks_for_document(&self, document_id: &Uuid) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM chunks WHERE document_id = $1
+            "#,
+        )
+        .bind(document_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(format!("Failed to delete chunks: {}", e)))?;
+
+        debug!(
+            "Deleted chunks for document: id={}, rows_affected={}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_reference_codebase_for_document(&self, document_id: &str) -> Result<u64> {
+        // Children cascade via index_id FKs (migration 045).
+        let result = sqlx::query(
+            r#"
+            DELETE FROM reference_codebase_indexes WHERE document_id = $1
+            "#,
+        )
+        .bind(document_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            StorageError::Database(format!("Failed to delete reference codebase rows: {}", e))
+        })?;
+
+        debug!(
+            "Deleted reference_codebase rows for document: id={}, rows_affected={}",
+            document_id,
+            result.rows_affected()
+        );
+
+        Ok(result.rows_affected())
+    }
+
     async fn count_pdfs(
         &self,
         workspace_id: &Uuid,

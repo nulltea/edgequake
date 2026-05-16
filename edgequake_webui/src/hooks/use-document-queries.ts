@@ -123,6 +123,8 @@ export function useDocumentQueries({
         page: currentPage,
         page_size: pageSize,
         status: statusFilter === "all" ? undefined : statusFilter,
+        // The main documents list hides archived docs — they live on /archive.
+        archived: "false",
       }),
     // Smart polling:
     // 1. Poll for documents currently processing (to catch real-time updates)

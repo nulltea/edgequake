@@ -18,11 +18,14 @@
 "use client";
 
 import {
+    archiveDocument,
     cancelTask,
     deleteAllDocuments,
     deleteDocument,
     reprocessDocument,
     retryTask,
+    unarchiveDocument,
+    type ArchiveDocumentResponse,
 } from "@/lib/api/edgequake";
 import type { Document } from "@/types";
 import type { UseMutationResult } from "@tanstack/react-query";
@@ -87,6 +90,29 @@ export interface UseDocumentMutationsReturn {
    */
   retryTaskMutation: UseMutationResult<
     import("@/types").TaskResponse,
+    Error,
+    string,
+    unknown
+  >;
+
+  /**
+   * Archive a document by ID. Removes derived data (chunks, embeddings,
+   * KG contributions, indexed code) but keeps the PDF, Markdown,
+   * algorithms, and references.
+   */
+  archiveMutation: UseMutationResult<
+    ArchiveDocumentResponse,
+    Error,
+    string,
+    unknown
+  >;
+
+  /**
+   * Unarchive a document. Sets archived_at = null; the caller should
+   * subsequently trigger Rebuild Embeddings + Rebuild KG to repopulate.
+   */
+  unarchiveMutation: UseMutationResult<
+    { document_id: string; unarchived: boolean },
     Error,
     string,
     unknown
@@ -346,13 +372,71 @@ export function useDocumentMutations(
     },
   });
 
+  /**
+   * Archive a document. The backend removes chunks, embeddings, KG
+   * contributions, and reference_codebase rows, but keeps the document
+   * row, PDF, Markdown, algorithms, and document_repos. Both the active
+   * documents list and the archive list need to be refreshed.
+   */
+  const archiveMutation = useMutation({
+    mutationFn: archiveDocument,
+    onSuccess: () => {
+      toast.success(t("documents.archive.success", "Document archived"), {
+        duration: 4000,
+        description: t(
+          "documents.archive.successDesc",
+          "PDF, Markdown, algorithms, and references kept. Chunks, embeddings, and indexed code dropped.",
+        ),
+      });
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["archived-documents"] });
+    },
+    onError: (error: Error) => {
+      toast.error(t("documents.archive.failed", "Archive failed"), {
+        description:
+          error instanceof Error
+            ? error.message
+            : t("common.unknownError", "Unknown error"),
+      });
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+    },
+  });
+
+  const unarchiveMutation = useMutation({
+    mutationFn: unarchiveDocument,
+    onSuccess: () => {
+      toast.success(
+        t("documents.unarchive.success", "Document unarchived"),
+        {
+          duration: 4000,
+          description: t(
+            "documents.unarchive.successDesc",
+            "Run Rebuild Embeddings and Rebuild Knowledge Graph to regenerate derived data.",
+          ),
+        },
+      );
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
+      queryClient.invalidateQueries({ queryKey: ["archived-documents"] });
+    },
+    onError: (error: Error) => {
+      toast.error(t("documents.unarchive.failed", "Unarchive failed"), {
+        description:
+          error instanceof Error
+            ? error.message
+            : t("common.unknownError", "Unknown error"),
+      });
+    },
+  });
+
   // WHY: Convenience flag for disabling UI during any mutation
   const isAnyMutationPending =
     deleteMutation.isPending ||
     deleteAllMutation.isPending ||
     reprocessMutation.isPending ||
     cancelMutation.isPending ||
-    retryTaskMutation.isPending;
+    retryTaskMutation.isPending ||
+    archiveMutation.isPending ||
+    unarchiveMutation.isPending;
 
   return {
     deleteMutation,
@@ -360,6 +444,8 @@ export function useDocumentMutations(
     reprocessMutation,
     cancelMutation,
     retryTaskMutation,
+    archiveMutation,
+    unarchiveMutation,
     isAnyMutationPending,
   };
 }

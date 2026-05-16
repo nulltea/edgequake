@@ -35,6 +35,12 @@ pub struct ListDocumentsRequest {
     /// @implements SPEC-005
     #[serde(default)]
     pub document_pattern: Option<String>,
+
+    /// Archive filter. Accepts `"true"`, `"false"`, or `"all"`. Defaults to
+    /// `"false"`, so the main documents listing hides archived rows. The
+    /// Archive page passes `"true"`.
+    #[serde(default)]
+    pub archived: Option<String>,
 }
 
 /// Status counts for document filtering.
@@ -199,4 +205,8 @@ pub struct DocumentSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(example = "8866e3c3-bbd6-4384-b86f-215c9844914d")]
     pub pdf_id: Option<String>,
+
+    /// When the document was archived (RFC 3339). `None` for active documents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
 }

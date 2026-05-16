@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useSettingsStore } from '@/stores/use-settings-store';
-import { Activity, BookOpen, ChevronLeft, ChevronRight, DollarSign, FileText, FolderKanban, Home, Menu, MessageSquare, Network, Settings, Terminal } from 'lucide-react';
+import { Activity, Archive, BookOpen, ChevronLeft, ChevronRight, DollarSign, FileText, FolderKanban, Home, Menu, MessageSquare, Network, Settings, Terminal } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
@@ -35,6 +35,7 @@ import { HeaderTenantSelector } from './header-tenant-selector';
 const navItems = [
   { href: '/', icon: Home, labelKey: 'nav.dashboard' },
   { href: '/documents', icon: FileText, labelKey: 'nav.documents' },
+  { href: '/archive', icon: Archive, labelKey: 'nav.archive' },
   { href: '/graph', icon: Network, labelKey: 'nav.graph' },
   { href: '/knowledge', icon: BookOpen, labelKey: 'nav.knowledge' },
   { href: '/pipeline', icon: Activity, labelKey: 'nav.pipeline' },

@@ -124,6 +124,7 @@ pub async fn list_documents(
         stage_progress: Option<f32>,
         stage_message: Option<String>,
         pdf_id: Option<String>,
+        archived_at: Option<String>,
     }
 
     let mut doc_metadata: std::collections::HashMap<String, DocMetadata> =
@@ -277,6 +278,11 @@ pub async fn list_documents(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
+                meta.archived_at = obj
+                    .get("archived_at")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 doc_metadata.insert(id.to_string(), meta);
             }
         }
@@ -330,6 +336,7 @@ pub async fn list_documents(
                 stage_progress: meta.stage_progress,
                 stage_message: meta.stage_message,
                 pdf_id: meta.pdf_id,
+                archived_at: meta.archived_at,
             })
         })
         .collect();
@@ -365,7 +372,21 @@ pub async fn list_documents(
             stage_progress: meta.stage_progress,
             stage_message: meta.stage_message,
             pdf_id: meta.pdf_id,
+            archived_at: meta.archived_at,
         });
+    }
+
+    // Archive filter. Defaults to "false": the main listing hides archived
+    // rows; the Archive page passes "true"; "all" disables the filter.
+    let archive_filter = params
+        .archived
+        .as_deref()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "false".to_string());
+    match archive_filter.as_str() {
+        "true" => documents.retain(|d| d.archived_at.is_some()),
+        "all" => {}
+        _ => documents.retain(|d| d.archived_at.is_none()),
     }
 
     // Sort by created_at descending (newest first)

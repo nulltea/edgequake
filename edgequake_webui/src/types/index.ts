@@ -184,6 +184,15 @@ export interface Document {
    * @implements SPEC-002
    */
   pdf_id?: string;
+
+  /**
+   * Archive timestamp (RFC 3339). When set, the document's chunks,
+   * embeddings, knowledge-graph contributions, and indexed code have been
+   * dropped; the PDF, Markdown, algorithms, and references are kept.
+   * Archived docs are hidden from the main documents list and skipped by
+   * workspace-level rebuilds.
+   */
+  archived_at?: string | null;
 }
 
 /** Extraction lineage information for a document. */

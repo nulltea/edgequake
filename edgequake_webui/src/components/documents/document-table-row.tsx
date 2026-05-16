@@ -131,6 +131,8 @@ export interface DocumentTableRowProps {
   onCancel: (trackId: string) => void;
   /** Called when Delete action is triggered */
   onDelete: (docId: string) => void;
+  /** Called when Archive action is triggered */
+  onArchive: (docId: string) => void;
   /** Called when Extract Algorithms action is triggered */
   onExtractAlgorithms?: (docId: string) => void;
   /** Called when View Algorithms action is triggered */
@@ -168,6 +170,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onRetry,
   onCancel,
   onDelete,
+  onArchive,
   onExtractAlgorithms,
   onViewAlgorithms,
   hasAlgorithms = false,
@@ -266,6 +269,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
             onCancel={onCancel}
             onReprocess={onRetry}
             onDelete={onDelete}
+            onArchive={onArchive}
             onExtractAlgorithms={onExtractAlgorithms}
             isCancelling={isCancelling}
           />

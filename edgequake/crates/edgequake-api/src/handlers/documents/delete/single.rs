@@ -12,45 +12,9 @@ use crate::services::ContentHasher;
 use crate::state::AppState;
 use edgequake_core::MetricsTriggerType;
 
-use super::super::storage_helpers::{extract_source_docs, get_workspace_vector_storage_for_delete};
-
-/// Resolve the actual KV key prefix for a document.
-///
-/// WHY: The `list_documents` endpoint shows documents by their JSON `id` field
-/// inside KV metadata values, but the KV key is `{early_doc_id}-metadata`.
-/// These can diverge due to historical bugs (interrupted retries, backend restarts
-/// with older code). When the user requests deletion by JSON `id`, we must find
-/// the real KV key prefix to delete all associated keys (chunks, content, metadata).
-///
-/// Returns `(actual_key_prefix, metadata_key, has_metadata)`.
-async fn resolve_kv_key_prefix(
-    document_id: &str,
-    keys: &[String],
-    state: &AppState,
-) -> (String, String, bool) {
-    // Fast path: direct key lookup — key prefix == document_id
-    let direct_metadata_key = format!("{}-metadata", document_id);
-    if keys.contains(&direct_metadata_key) {
-        return (document_id.to_string(), direct_metadata_key, true);
-    }
-
-    // Slow path: scan ALL metadata keys and check if any has a JSON `id` field
-    // that matches `document_id`. This handles key/id mismatch cases.
-    for key in keys.iter().filter(|k| k.ends_with("-metadata")) {
-        if let Ok(Some(val)) = state.kv_storage.get_by_id(key).await {
-            if let Some(json_id) = val.get("id").and_then(|v| v.as_str()) {
-                if json_id == document_id {
-                    // Found it! Extract the real key prefix.
-                    let prefix = key.strip_suffix("-metadata").unwrap_or(key).to_string();
-                    return (prefix, key.clone(), true);
-                }
-            }
-        }
-    }
-
-    // Neither direct key nor JSON id match — return document_id as-is
-    (document_id.to_string(), direct_metadata_key, false)
-}
+use super::super::storage_helpers::{
+    get_workspace_vector_storage_for_delete, resolve_kv_key_prefix, strip_document_from_graph,
+};
 
 /// Delete a document by ID.
 #[utoipa::path(
@@ -217,10 +181,6 @@ pub async fn delete_document(
         get_workspace_vector_storage_for_delete(&state, &workspace_id_for_storage).await;
 
     let chunks_deleted = chunk_ids.len();
-    let mut entities_removed = 0usize;
-    let mut entities_updated = 0usize;
-    let mut relationships_removed = 0usize;
-    let mut relationships_updated = 0usize;
     let mut embeddings_deleted = 0usize;
 
     // SPEC-028: Delete chunk embeddings from vector storage first
@@ -243,135 +203,15 @@ pub async fn delete_document(
         }
     }
 
-    // Cascade delete: Process graph entities - remove document sources
-    let all_nodes = state.graph_storage.get_all_nodes().await?;
-    for node in all_nodes {
-        let sources = extract_source_docs(&node.properties);
-        if sources.is_empty() {
-            continue;
-        }
-
-        // Filter out sources that belong to this document.
-        // WHY: Use source_prefixes to match both JSON id and KV key prefix
-        // in case of historical key/id mismatch.
-        let remaining_sources: Vec<String> = sources
-            .iter()
-            .filter(|s| {
-                !source_prefixes
-                    .iter()
-                    .any(|prefix| s.starts_with(prefix.as_str()))
-            })
-            .cloned()
-            .collect();
-
-        if remaining_sources.is_empty() {
-            // No sources left - delete the entity entirely
-
-            // WHY-OODA01: DO NOT delete edges here!
-            // Edges have their own source_ids tracking and will be processed
-            // independently in the edge processing loop below (line ~1500).
-            // Deleting them here would cause data loss if the edge has other
-            // source documents that are not being deleted.
-            //
-            // Example bug scenario (fixed):
-            //   Document A: "Alice works at Google"
-            //   Document B: "Alice graduated from MIT"
-            //   DELETE Document A:
-            //     - ALICE entity sources: [doc_a, doc_b] → [doc_b] (update)
-            //     - GOOGLE entity sources: [doc_a] → [] (delete entity)
-            //     - OLD BUG: Deleted ALL edges from GOOGLE, including MIT edge!
-            //     - FIXED: Edges are processed separately based on their own sources
-
-            // Delete the node (backend may cascade edges, but we handle explicitly below)
-            state.graph_storage.delete_node(&node.id).await?;
-            // SPEC-033: Use workspace-specific vector storage for entity deletion
-            let _ = workspace_vector_storage.delete_entity(&node.id).await;
-            entities_removed += 1;
-        } else if remaining_sources.len() < sources.len() {
-            // Some sources were removed - update the entity
-            let mut updated_props = node.properties.clone();
-            // Use source_ids (JSON array) format for updates
-            updated_props.insert(
-                "source_ids".to_string(),
-                serde_json::json!(remaining_sources),
-            );
-            state
-                .graph_storage
-                .upsert_node(&node.id, updated_props)
-                .await?;
-            entities_updated += 1;
-        }
-    }
-
-    // Process graph edges - remove document sources
-    // WHY-OODA01: We must also check for orphaned edges (edges connecting to deleted nodes)
-    // This handles the case where a node was deleted above but edges still reference it.
-    let all_edges = state.graph_storage.get_all_edges().await?;
-
-    // Get current node IDs for orphan detection
-    let existing_nodes = state.graph_storage.get_all_nodes().await?;
-    let existing_node_ids: std::collections::HashSet<String> =
-        existing_nodes.iter().map(|n| n.id.clone()).collect();
-
-    for edge in all_edges {
-        // Check if edge is orphaned (connects to deleted node)
-        let is_orphaned =
-            !existing_node_ids.contains(&edge.source) || !existing_node_ids.contains(&edge.target);
-
-        if is_orphaned {
-            // Edge connects to a deleted node - delete it
-            state
-                .graph_storage
-                .delete_edge(&edge.source, &edge.target)
-                .await?;
-            relationships_removed += 1;
-            tracing::debug!(
-                source = %edge.source,
-                target = %edge.target,
-                "Deleted orphaned edge (connects to deleted node)"
-            );
-            continue;
-        }
-
-        let sources = extract_source_docs(&edge.properties);
-        if sources.is_empty() {
-            continue;
-        }
-
-        // Filter out sources that belong to this document.
-        // WHY: Use source_prefixes (same as entity loop) for key/id mismatch safety.
-        let remaining_sources: Vec<String> = sources
-            .iter()
-            .filter(|s| {
-                !source_prefixes
-                    .iter()
-                    .any(|prefix| s.starts_with(prefix.as_str()))
-            })
-            .cloned()
-            .collect();
-
-        if remaining_sources.is_empty() {
-            // No sources left - delete the relationship
-            state
-                .graph_storage
-                .delete_edge(&edge.source, &edge.target)
-                .await?;
-            relationships_removed += 1;
-        } else if remaining_sources.len() < sources.len() {
-            // Some sources were removed - update the relationship
-            let mut updated_props = edge.properties.clone();
-            // Use source_ids (JSON array) format for updates
-            updated_props.insert(
-                "source_ids".to_string(),
-                serde_json::json!(remaining_sources),
-            );
-            state
-                .graph_storage
-                .upsert_edge(&edge.source, &edge.target, updated_props)
-                .await?;
-            relationships_updated += 1;
-        }
-    }
+    // Cascade delete: strip this document from every KG entity/edge, deleting
+    // entities that no longer have any source and pruning orphaned edges.
+    let graph_stats =
+        strip_document_from_graph(&state, &source_prefixes, &workspace_vector_storage).await?;
+    let entities_removed = graph_stats.entities_removed;
+    let entities_updated = graph_stats.entities_updated;
+    let relationships_removed = graph_stats.relationships_removed;
+    let relationships_updated = graph_stats.relationships_updated;
+    embeddings_deleted += graph_stats.embeddings_deleted;
 
     // Collect all keys to delete from KV storage
     let mut keys_to_delete = keys_to_delete_for_vectors;

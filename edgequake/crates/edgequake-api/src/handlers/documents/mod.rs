@@ -28,6 +28,8 @@
 //! | GET | `/api/v1/documents` | [`list_documents`] | List all documents |
 //! | GET | `/api/v1/documents/:id` | [`get_document`] | Get document details |
 //! | DELETE | `/api/v1/documents/:id` | [`delete_document`] | Delete with cascade |
+//! | POST | `/api/v1/documents/:id/archive` | [`archive_document`] | Soft-archive (keep PDF/MD/algorithms/refs) |
+//! | POST | `/api/v1/documents/:id/unarchive` | [`unarchive_document`] | Reverse archive |
 //!
 //! # WHY: Two Ingestion Modes
 //!
@@ -49,6 +51,7 @@
 pub use crate::handlers::documents_types::*;
 
 // Sub-modules: each owns a single responsibility
+mod archive;
 mod delete;
 mod query;
 mod recovery;
@@ -56,6 +59,7 @@ pub(crate) mod storage_helpers;
 mod upload;
 
 // Re-export all public items (includes utoipa __path_* structs for OpenAPI)
+pub use archive::*;
 pub use delete::*;
 pub use query::*;
 pub use recovery::*;
@@ -178,6 +182,7 @@ mod tests {
             stage_progress: Some(1.0),
             stage_message: None,
             pdf_id: None,
+            archived_at: None,
         };
 
         let json = serde_json::to_string(&summary).unwrap();
@@ -213,6 +218,7 @@ mod tests {
                 stage_progress: None,
                 stage_message: None,
                 pdf_id: None,
+                archived_at: None,
             }],
             total: 1,
             page: 1,
@@ -326,6 +332,7 @@ mod tests {
                 stage_progress: None,
                 stage_message: None,
                 pdf_id: None,
+                archived_at: None,
             }],
             total_count: 1,
             status_summary: StatusCounts {

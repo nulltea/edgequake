@@ -323,6 +323,16 @@ fn api_v1_routes() -> Router<AppState> {
             "/documents/{document_id}/lineage/export",
             get(handlers::export_document_lineage),
         )
+        // Soft-archive endpoints — keep PDF/Markdown/algorithms/references,
+        // drop chunks/embeddings/KG/indexed-code.
+        .route(
+            "/documents/{document_id}/archive",
+            post(handlers::archive_document),
+        )
+        .route(
+            "/documents/{document_id}/unarchive",
+            post(handlers::unarchive_document),
+        )
         // Document by ID - comes last because {document_id} matches any path segment
         .route("/documents/{document_id}", get(handlers::get_document))
         .route(

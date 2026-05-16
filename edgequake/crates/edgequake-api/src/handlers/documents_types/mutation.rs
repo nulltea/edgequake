@@ -26,6 +26,48 @@ pub struct DeleteDocumentResponse {
     pub relationships_affected: usize,
 }
 
+/// Document archive response.
+///
+/// Returned by the archive endpoint: the document row, PDF, Markdown,
+/// algorithms, and references are preserved; chunks, embeddings, KG
+/// contributions, and indexed-code rows have been deleted.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ArchiveDocumentResponse {
+    /// Document ID.
+    pub document_id: String,
+
+    /// Whether the document is archived after this call.
+    pub archived: bool,
+
+    /// Archive timestamp (RFC 3339).
+    pub archived_at: Option<String>,
+
+    /// Number of chunks deleted.
+    pub chunks_deleted: usize,
+
+    /// Number of chunk embeddings deleted from vector storage.
+    pub embeddings_deleted: usize,
+
+    /// Number of KG entities affected (removed + updated).
+    pub entities_affected: usize,
+
+    /// Number of KG relationships affected (removed + updated).
+    pub relationships_affected: usize,
+
+    /// Number of `reference_codebase_indexes` rows deleted (cascades to children).
+    pub indexed_code_deleted: u64,
+}
+
+/// Document unarchive response.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct UnarchiveDocumentResponse {
+    /// Document ID.
+    pub document_id: String,
+
+    /// Whether the document is unarchived after this call.
+    pub unarchived: bool,
+}
+
 /// Bulk document deletion response.
 ///
 /// WHY: Frontend "Clear All" button needs a bulk delete endpoint.

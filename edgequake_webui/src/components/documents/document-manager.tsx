@@ -48,6 +48,16 @@ import { useDocumentTitle } from '@/hooks/use-document-title';
 import { useDocumentWebSocket } from '@/hooks/use-document-websocket';
 import { useFileUpload } from '@/hooks/use-file-upload';
 import { useStuckDetection } from '@/hooks/use-stuck-detection';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { DocumentErrorAlert } from './document-error-alert';
 import { DocumentHeader } from './document-header';
 import { DocumentPreviewRightPanel } from './document-preview-right-panel';
@@ -145,9 +155,14 @@ export function DocumentManager() {
     deleteMutation,
     reprocessMutation,
     cancelMutation,
+    archiveMutation,
   } = useDocumentMutations({
     onReprocessSuccess: () => setPipelineDialogOpen(true),
   });
+
+  // Confirmation dialog for archive. WHY: archive is non-trivial (drops chunks,
+  // embeddings, KG contributions, indexed code) so we want an explicit confirm.
+  const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null);
 
   // Navigate to document's algorithms tab
   const handleViewAlgorithms = (doc: Document) => {
@@ -395,6 +410,7 @@ export function DocumentManager() {
         onRetry={(id) => reprocessMutation.mutate(id)}
         onCancel={(trackId) => cancelMutation.mutate(trackId)}
         onDelete={(id) => deleteMutation.mutate(id)}
+        onArchive={(id) => setArchiveTargetId(id)}
         onExtractAlgorithms={handleExtractAlgorithms}
         onViewAlgorithms={handleViewAlgorithms}
         docsWithAlgorithms={docsWithAlgorithms}
@@ -438,6 +454,42 @@ export function DocumentManager() {
         duplicates={pendingDuplicates}
         onResolve={resolvePendingDuplicates}
       />
+
+      {/* Archive confirmation — archive removes derived data but keeps the
+          PDF, Markdown, algorithms, and references. */}
+      <AlertDialog
+        open={archiveTargetId !== null}
+        onOpenChange={(open) => !open && setArchiveTargetId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('documents.archive.title', 'Archive this document?')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'documents.archive.confirm',
+                'Archiving removes the chunks, embeddings, knowledge graph contributions, and indexed code derived from this document. The original PDF, converted Markdown, extracted algorithms, and references will be kept. Archived documents are excluded from queries and workspace rebuilds. You can find them on the Archive page.',
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>
+              {t('common.cancel', 'Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (archiveTargetId) {
+                  archiveMutation.mutate(archiveTargetId);
+                  setArchiveTargetId(null);
+                }
+              }}
+            >
+              {t('documents.actions.archive', 'Archive')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -37,7 +37,6 @@ edgequake/crates/*/target/
 lightrag.log*
 logs/
 /.playwright-mcp
-archive/
 specs/
 logf/
 zz_test_docs/
