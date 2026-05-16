@@ -6,13 +6,16 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Distinguishes plain text chunks from chunks carrying an inline media payload
-/// (currently: PDF figures captured by VLM-OCR).
+/// Distinguishes plain text chunks from chunks carrying inline media:
+/// PDF figures (PNG image bytes) and PDF tables (rendered HTML + parsed
+/// rows). The HTML / rows for tables live in dedicated columns on the
+/// `chunks` table; only the kind is carried at the type level here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChunkKind {
     Text,
     Figure,
+    Table,
 }
 
 impl Default for ChunkKind {
@@ -124,6 +127,12 @@ pub struct Chunk {
     /// pipeline so the chunker can pair markdown sites with figure payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub figure_id: Option<String>,
+    /// Extractor-side stable id for a table chunk (`tbl_{page}_{order_index}`).
+    /// Matches the `![tbl_…](edgequake-table)` placeholder. HTML and parsed
+    /// rows are stored directly on the `chunks` table by the PDF processor's
+    /// backfill step — not carried in this in-memory struct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_id: Option<String>,
 }
 
 impl Chunk {
@@ -175,6 +184,7 @@ impl Chunk {
             media_bytes: None,
             media_mime: None,
             figure_id: None,
+            table_id: None,
         }
     }
 
@@ -212,6 +222,7 @@ impl Chunk {
             media_bytes: Some(media_bytes),
             media_mime: Some(media_mime.into()),
             figure_id: Some(figure_id),
+            table_id: None,
         }
     }
 

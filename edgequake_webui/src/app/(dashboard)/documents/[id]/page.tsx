@@ -5,6 +5,7 @@ import { CodeMatchesTabContent } from '@/components/code-artifacts';
 import { CodeGraphTabContent } from '@/components/code-graph';
 import { DocumentReposTabContent } from '@/components/document-repos';
 import { ContentRenderer } from '@/components/document/content-renderer';
+import { FiguresTabContent } from '@/components/figures';
 import { MetadataSidebar } from '@/components/document/metadata-sidebar';
 import { PDFViewer } from '@/components/documents/pdf-viewer';
 import { SideBySideViewer } from '@/components/documents/side-by-side-viewer';
@@ -23,6 +24,7 @@ import {
     Download,
     FileCode2,
     GitBranch,
+    Images,
     Loader2,
     Network,
     RefreshCw,
@@ -57,7 +59,8 @@ export default function DocumentViewPage() {
       t === 'algorithms' ||
       t === 'repos' ||
       t === 'code-matches' ||
-      t === 'code-graph'
+      t === 'code-graph' ||
+      t === 'figures'
     )
       return t;
     return 'content';
@@ -319,6 +322,10 @@ export default function DocumentViewPage() {
                 <Network className="h-3.5 w-3.5" />
                 Code Graph
               </TabsTrigger>
+              <TabsTrigger value="figures">
+                <Images className="h-3.5 w-3.5" />
+                Figures
+              </TabsTrigger>
             </TabsList>
 
             {/* Content tab */}
@@ -406,13 +413,18 @@ export default function DocumentViewPage() {
             <TabsContent value="code-graph" className="flex-1 overflow-hidden m-0 mt-0">
               <CodeGraphTabContent documentId={documentId} />
             </TabsContent>
+
+            {/* Figures gallery — image figures + extracted tables. */}
+            <TabsContent value="figures" className="flex-1 overflow-auto m-0 mt-0">
+              <FiguresTabContent documentId={documentId} />
+            </TabsContent>
           </Tabs>
         </div>
 
         {/* Mobile/Tablet: Tabbed layout */}
         <div className="flex-1 lg:hidden overflow-hidden">
           <Tabs defaultValue={defaultTab} className="h-full flex flex-col">
-            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-7' : 'grid-cols-6'} rounded-none border-b`}>
+            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-8' : 'grid-cols-7'} rounded-none border-b`}>
               {isPdfDocument && <TabsTrigger value="pdf">PDF</TabsTrigger>}
               <TabsTrigger value="content">Markdown</TabsTrigger>
               <TabsTrigger value="algorithms">
@@ -430,6 +442,10 @@ export default function DocumentViewPage() {
               <TabsTrigger value="code-graph">
                 <Network className="h-3.5 w-3.5" />
                 Graph
+              </TabsTrigger>
+              <TabsTrigger value="figures">
+                <Images className="h-3.5 w-3.5" />
+                Figures
               </TabsTrigger>
               <TabsTrigger value="metadata">Details</TabsTrigger>
             </TabsList>
@@ -467,6 +483,9 @@ export default function DocumentViewPage() {
             </TabsContent>
             <TabsContent value="code-graph" className="flex-1 overflow-hidden m-0 mt-0">
               <CodeGraphTabContent documentId={documentId} />
+            </TabsContent>
+            <TabsContent value="figures" className="flex-1 overflow-auto m-0 mt-0">
+              <FiguresTabContent documentId={documentId} />
             </TabsContent>
             <TabsContent value="metadata" className="flex-1 overflow-hidden m-0 mt-0">
               <MetadataSidebar

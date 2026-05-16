@@ -1,5 +1,6 @@
 mod edgeparse;
 mod figure_extract;
+mod table_extract;
 mod vision;
 pub mod vlm_client;
 mod vlm_ocr;
@@ -33,6 +34,36 @@ pub struct ExtractedFigure {
     /// VLM-generated caption / description for the figure.
     pub caption: String,
     /// 1-based page number the figure was cropped from.
+    pub page: u32,
+    /// Reading-order index within the page (preserves intra-page order).
+    pub order_index: u32,
+}
+
+/// A table extracted from a PDF during VLM-OCR conversion: VLM-rendered HTML
+/// plus the algorithmically-parsed `{ headers, rows }` structure and the
+/// caption needed to display the table in the gallery. The HTML lives in
+/// `chunks.table_html`; `rows` lives in `chunks.table_rows` as JSONB.
+///
+/// The pipeline writes a `![tbl_{page}_{order_index}](edgequake-table)`
+/// placeholder into the markdown so the chunker can emit a Table-kind chunk
+/// at the table's source position. Inline rendering on the frontend swaps the
+/// placeholder back for the rendered HTML on read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedTable {
+    /// Stable extractor-side id, `tbl_{page}_{order_index}`.
+    pub id: String,
+    /// VLM-rendered HTML for the table (e.g. `<table border="1">…</table>`).
+    pub html: String,
+    /// Algorithmically-parsed header row, if a `<th>` row was detected.
+    pub headers: Vec<String>,
+    /// Algorithmically-parsed body rows. Each inner Vec is one `<tr>`.
+    /// Empty when the parser couldn't make sense of the HTML; the raw HTML
+    /// in `html` is still usable for display and classification.
+    pub rows: Vec<Vec<String>>,
+    /// Caption text (TableTitle / FigureTableChartTitle / FigureTitle below or
+    /// above the table). Empty when no nearby caption was detected.
+    pub caption: String,
+    /// 1-based page number the table was extracted from.
     pub page: u32,
     /// Reading-order index within the page (preserves intra-page order).
     pub order_index: u32,
@@ -130,6 +161,13 @@ pub struct PdfConversionConfig {
     /// Setting this opts the converter into figure extraction; leaving it
     /// `None` preserves the legacy text-only behaviour.
     pub figure_sink: Option<Arc<std::sync::Mutex<Vec<ExtractedFigure>>>>,
+    /// VLM-OCR: if set, tables detected during layout parsing are recorded
+    /// here as VLM-rendered HTML + parsed rows + caption. The returned
+    /// markdown gets a `![tbl_{page}_{order_index}](edgequake-table)`
+    /// placeholder in the table's source position so the chunker can emit a
+    /// Table-kind chunk paired by id. `None` preserves text-only behaviour
+    /// (raw HTML stays inline in the markdown).
+    pub table_sink: Option<Arc<std::sync::Mutex<Vec<ExtractedTable>>>>,
 }
 
 impl std::fmt::Debug for PdfConversionConfig {
@@ -147,6 +185,10 @@ impl std::fmt::Debug for PdfConversionConfig {
             .field(
                 "figure_sink",
                 &self.figure_sink.as_ref().map(|_| "<sink>"),
+            )
+            .field(
+                "table_sink",
+                &self.table_sink.as_ref().map(|_| "<sink>"),
             )
             .finish()
     }

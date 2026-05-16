@@ -599,6 +599,7 @@ impl std::str::FromStr for crate::types::TaskType {
             "repo_detection" => Ok(crate::types::TaskType::RepoDetection),
             "code_reference_analysis" => Ok(crate::types::TaskType::CodeReferenceAnalysis),
             "reference_codebase_index" => Ok(crate::types::TaskType::ReferenceCodebaseIndex),
+            "table_classification" => Ok(crate::types::TaskType::TableClassification),
             _ => Err(format!("Invalid task type: {}", s)),
         }
     }

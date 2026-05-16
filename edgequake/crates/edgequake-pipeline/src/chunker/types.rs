@@ -7,14 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-/// Distinguishes plain text chunks from figure chunks carrying an inline image
-/// payload. Mirrors `edgequake_core::types::ChunkKind` so the chunker can
-/// surface the same distinction at the strategy boundary.
+/// Distinguishes plain text chunks from figure chunks (PNG image payload) and
+/// table chunks (HTML + parsed-rows payload). Mirrors
+/// `edgequake_core::types::ChunkKind` so the chunker can surface the same
+/// distinction at the strategy boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChunkKind {
     Text,
     Figure,
+    Table,
 }
 
 impl Default for ChunkKind {
@@ -54,6 +56,12 @@ pub struct ChunkResult {
     /// chunk to the `![figure:<id>](...)` markdown placeholder it replaced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub figure_id: Option<String>,
+    /// Extractor-side stable id (`tbl_{page}_{order_index}`) linking this
+    /// chunk to the `![tbl_…](edgequake-table)` placeholder it replaced.
+    /// The HTML and parsed rows live in `chunks.table_html` / `table_rows`
+    /// and get written by the PDF processor's backfill step, not here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_id: Option<String>,
 }
 
 /// Trait for custom chunking strategies.
@@ -189,6 +197,10 @@ pub struct TextChunk {
     /// in `extracted_figures`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub figure_id: Option<String>,
+    /// Stable extractor-side table id (`tbl_{page}_{order_index}`) for table
+    /// chunks emitted at `![tbl_…](edgequake-table)` placeholder sites.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_id: Option<String>,
 }
 
 impl TextChunk {
@@ -217,6 +229,7 @@ impl TextChunk {
             media_bytes: None,
             media_mime: None,
             figure_id: None,
+            table_id: None,
         }
     }
 
@@ -247,6 +260,7 @@ impl TextChunk {
             media_bytes: None,
             media_mime: None,
             figure_id: None,
+            table_id: None,
         }
     }
 

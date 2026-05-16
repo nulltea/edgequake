@@ -29,6 +29,13 @@ use crate::error::{PipelineError, Result};
 static FIGURE_PLACEHOLDER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[([A-Za-z0-9_]+)\]\(edgequake-figure\)").unwrap());
 
+/// Matches the `![<id>](edgequake-table)` placeholders emitted by the
+/// VLM-OCR table extractor. The id is captured in group 1
+/// (`tbl_{page}_{order_index}`). Same conservative `[A-Za-z0-9_]+` as the
+/// figure sentinel so id-format changes don't silently stop matching.
+static TABLE_PLACEHOLDER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[([A-Za-z0-9_]+)\]\(edgequake-table\)").unwrap());
+
 /// Default token-based chunking strategy.
 ///
 /// This is the standard chunking strategy that splits text into chunks
@@ -430,20 +437,25 @@ impl ChunkingStrategy for ContextAwareChunking {
             return Ok(Vec::new());
         }
 
-        // Pre-scan for figure placeholders. When the VLM-OCR figure extractor
-        // captured a figure on this document, the markdown contains one
-        // `![<id>](edgequake-figure)` per figure, in reading order. We split
-        // the markdown around them, text-chunk each surrounding segment
-        // normally, and inject a figure ChunkResult at each placeholder so
-        // the persistence layer can attach the image bytes by `figure_id`.
-        let placeholders: Vec<(usize, usize, String)> = FIGURE_PLACEHOLDER_RE
-            .captures_iter(content)
-            .map(|cap| {
-                let m = cap.get(0).unwrap();
-                let id = cap.get(1).unwrap().as_str().to_string();
-                (m.start(), m.end(), id)
-            })
-            .collect();
+        // Pre-scan for figure and table placeholders. When the VLM-OCR
+        // extractors captured media on this document, the markdown contains
+        // one `![<id>](edgequake-figure)` or `![<id>](edgequake-table)` per
+        // captured item in reading order. We split the markdown around them,
+        // text-chunk each surrounding segment normally, and inject a
+        // media ChunkResult at each placeholder so the persistence layer can
+        // attach the image bytes / table HTML by `figure_id` / `table_id`.
+        let mut placeholders: Vec<(usize, usize, String, ChunkKind)> = Vec::new();
+        for cap in FIGURE_PLACEHOLDER_RE.captures_iter(content) {
+            let m = cap.get(0).unwrap();
+            let id = cap.get(1).unwrap().as_str().to_string();
+            placeholders.push((m.start(), m.end(), id, ChunkKind::Figure));
+        }
+        for cap in TABLE_PLACEHOLDER_RE.captures_iter(content) {
+            let m = cap.get(0).unwrap();
+            let id = cap.get(1).unwrap().as_str().to_string();
+            placeholders.push((m.start(), m.end(), id, ChunkKind::Table));
+        }
+        placeholders.sort_by_key(|(s, _, _, _)| *s);
 
         if placeholders.is_empty() {
             return chunk_text_only(content, config).await;
@@ -452,7 +464,7 @@ impl ChunkingStrategy for ContextAwareChunking {
         let mut out: Vec<ChunkResult> = Vec::new();
         let mut cursor = 0usize;
         let mut next_index = 0usize;
-        for (start, end, id) in placeholders {
+        for (start, end, id, kind) in placeholders {
             // Text segment before this placeholder.
             if start > cursor {
                 let segment = &content[cursor..start];
@@ -465,18 +477,33 @@ impl ChunkingStrategy for ContextAwareChunking {
                     out.extend(segs);
                 }
             }
-            // The figure chunk itself. Caption + image bytes are NOT in the
-            // markdown — they live in the `extracted_figures` Vec the PDF
-            // processor holds. The persistence layer pairs by figure_id.
-            let content_placeholder = format!("[figure: {id}]");
+            // The media chunk itself. The actual payload (image bytes /
+            // table HTML + parsed rows) is NOT in the markdown — it lives
+            // in the PDF processor's sink and is paired by id at backfill
+            // time. The placeholder text is purely a human-readable
+            // anchor stored in `chunks.content`.
+            let (content_placeholder, figure_id, table_id) = match kind {
+                ChunkKind::Figure => (
+                    format!("[figure: {id}]"),
+                    Some(id.clone()),
+                    None,
+                ),
+                ChunkKind::Table => (
+                    format!("[table: {id}]"),
+                    None,
+                    Some(id.clone()),
+                ),
+                ChunkKind::Text => unreachable!("placeholder kinds are Figure or Table"),
+            };
             let tokens = estimate_tokens(&content_placeholder);
             out.push(ChunkResult {
                 content: content_placeholder,
                 tokens,
                 chunk_order_index: next_index,
                 heading_path: Vec::new(),
-                kind: ChunkKind::Figure,
-                figure_id: Some(id),
+                kind,
+                figure_id,
+                table_id,
                 ..Default::default()
             });
             next_index += 1;

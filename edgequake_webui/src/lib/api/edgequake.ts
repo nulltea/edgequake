@@ -897,6 +897,87 @@ export function getFigureMediaUrl(
   return `${baseUrl}/api/v1/documents/${documentId}/figures/${figureId}`;
 }
 
+export interface DocumentFigureListItem {
+  figure_id: string;
+  caption: string;
+  page: number;
+  order_index: number;
+  mime: string | null;
+}
+
+export interface DocumentFigureListResponse {
+  document_id: string;
+  figures: DocumentFigureListItem[];
+}
+
+export interface DocumentTableListItem {
+  table_id: string;
+  caption: string;
+  page: number;
+  order_index: number;
+  /** `performance` | `quality` | `complexity` | `other`, or null while the
+   *  classification stage hasn't run yet for this document. */
+  table_type: string | null;
+}
+
+export interface DocumentTableListResponse {
+  document_id: string;
+  tables: DocumentTableListItem[];
+}
+
+export interface DocumentTableDetail {
+  table_id: string;
+  caption: string;
+  page: number;
+  order_index: number;
+  table_type: string | null;
+  rationale: string | null;
+  /** VLM-rendered `<table…>…</table>` HTML. */
+  html: string;
+  /** Parsed `{ headers: string[], rows: string[][] }`, or null when parsing failed. */
+  rows: { headers?: string[]; rows?: string[][] } | null;
+}
+
+export async function listDocumentFigures(
+  documentId: string,
+): Promise<DocumentFigureListResponse> {
+  return api.get<DocumentFigureListResponse>(
+    `/documents/${documentId}/figures`,
+  );
+}
+
+export async function listDocumentTables(
+  documentId: string,
+): Promise<DocumentTableListResponse> {
+  return api.get<DocumentTableListResponse>(
+    `/documents/${documentId}/tables`,
+  );
+}
+
+export async function getDocumentTable(
+  documentId: string,
+  tableId: string,
+): Promise<DocumentTableDetail> {
+  return api.get<DocumentTableDetail>(
+    `/documents/${documentId}/tables/${tableId}`,
+  );
+}
+
+export interface ReclassifyTablesResponse {
+  document_id: string;
+  tables_reset: number;
+  track_id: string;
+}
+
+export async function reclassifyDocumentTables(
+  documentId: string,
+): Promise<ReclassifyTablesResponse> {
+  return api.post<ReclassifyTablesResponse>(
+    `/documents/${documentId}/tables/reclassify`,
+    {},
+  );
+}
+
 export async function deleteDocument(documentId: string): Promise<void> {
   return api.delete<void>(`/documents/${documentId}`);
 }

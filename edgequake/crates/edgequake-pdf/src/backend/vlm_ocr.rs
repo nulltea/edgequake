@@ -58,6 +58,7 @@ impl PdfConverter for VlmOcrConverter {
             .and_then(|v| v.progress_callback.clone());
         let algo_sink = config.algorithm_block_sink.clone();
         let figure_sink = config.figure_sink.clone();
+        let table_sink = config.table_sink.clone();
 
         tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
@@ -197,6 +198,28 @@ impl PdfConverter for VlmOcrConverter {
                                         )
                                     }
                                     _ => md,
+                                };
+
+                                // Table extraction. The VLM already produced
+                                // HTML for each Table-class layout element
+                                // during `parser.parse(...)` via the existing
+                                // RecognitionTask::Table path — the markdown
+                                // contains those as `<div style="text-align:
+                                // center;"><table border="1">…</table></div>`
+                                // blocks. We swap each block for a
+                                // `![tbl_N_M](edgequake-table)` placeholder,
+                                // parse the HTML into headers + rows, and
+                                // push an `ExtractedTable` into the sink so
+                                // the chunker can emit a Table-kind chunk
+                                // and the gallery can list / classify it.
+                                let md = match table_sink.as_ref() {
+                                    Some(sink) => super::table_extract::extract_and_patch(
+                                        &result.layout_elements,
+                                        page_num as u32,
+                                        &md,
+                                        sink,
+                                    ),
+                                    None => md,
                                 };
 
                                 if md.trim().is_empty() {

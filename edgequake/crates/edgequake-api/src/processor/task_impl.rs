@@ -19,7 +19,10 @@ impl TaskProcessor for DocumentTaskProcessor {
                         ))
                     })?;
 
-                self.process_text_insert(task, data, cancel_token).await
+                // finalize_status: true — for standalone text inserts the
+                // pipeline IS the whole task, so process_text_insert writes
+                // the final status itself.
+                self.process_text_insert(task, data, cancel_token, true).await
             }
             TaskType::Upload => {
                 // For file uploads, we need to read the file content first
@@ -32,7 +35,7 @@ impl TaskProcessor for DocumentTaskProcessor {
                         ))
                     })?;
 
-                self.process_text_insert(task, data, cancel_token).await
+                self.process_text_insert(task, data, cancel_token, true).await
             }
             TaskType::Scan => {
                 // Directory scanning not yet implemented
@@ -147,6 +150,28 @@ impl TaskProcessor for DocumentTaskProcessor {
                     ))
                 }
             }
+            TaskType::TableClassification => {
+                let data: edgequake_tasks::TableClassificationData =
+                    serde_json::from_value(task.task_data.clone()).map_err(|e| {
+                        edgequake_tasks::TaskError::InvalidPayload(format!(
+                            "Invalid TableClassificationData: {}",
+                            e
+                        ))
+                    })?;
+                #[cfg(feature = "postgres")]
+                {
+                    self.process_table_classification(task, data, cancel_token)
+                        .await
+                }
+                #[cfg(not(feature = "postgres"))]
+                {
+                    let _ = data;
+                    let _ = cancel_token;
+                    Err(edgequake_tasks::TaskError::UnsupportedOperation(
+                        "Table classification requires postgres feature".to_string(),
+                    ))
+                }
+            }
         }
     }
 
@@ -193,6 +218,7 @@ impl TaskProcessor for DocumentTaskProcessor {
                 | TaskType::RepoDetection
                 | TaskType::CodeReferenceAnalysis
                 | TaskType::ReferenceCodebaseIndex
+                | TaskType::TableClassification
         );
 
         if let Some(ref doc_id) = document_id {

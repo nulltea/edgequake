@@ -178,3 +178,12 @@ pub struct ReindexData {
     pub workspace_id: String,
     pub reason: String,
 }
+
+/// Table-classification task payload. Runs after algorithm extraction has
+/// completed for the document; classifies every `chunks` row with
+/// `kind='table' AND table_type IS NULL` for this document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableClassificationData {
+    pub document_id: String,
+    pub workspace_id: String,
+}

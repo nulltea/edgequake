@@ -98,7 +98,7 @@ pub use tenant_limiter::TenantConcurrencyLimiter;
 pub use types::{
     AlgorithmEmbeddingData, AlgorithmExtractionData, ChunkProgress, CodeReferenceAnalysisData,
     DirectoryScanData, DocumentUploadData, PdfProcessingData, ReferenceCodebaseIndexData,
-    ReindexData, RepoDetectionData, Task, TaskFailureInfo, TaskProgress, TaskStatus, TaskType,
-    TextInsertData,
+    ReindexData, RepoDetectionData, TableClassificationData, Task, TaskFailureInfo, TaskProgress,
+    TaskStatus, TaskType, TextInsertData,
 };
 pub use worker::{SharedTaskProcessor, TaskProcessor, WorkerPool, WorkerPoolConfig};

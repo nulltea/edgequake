@@ -300,6 +300,28 @@ fn api_v1_routes() -> Router<AppState> {
             "/documents/{document_id}/figures/{figure_id}",
             get(handlers::get_figure_media),
         )
+        // Figures list — gallery enumeration of figure-kind chunks.
+        .route(
+            "/documents/{document_id}/figures",
+            get(handlers::list_document_figures),
+        )
+        // Tables list + detail — gallery enumeration and full HTML/rows fetch.
+        // Both MUST come before /documents/{document_id} for the same shadowing
+        // reason as figures.
+        .route(
+            "/documents/{document_id}/tables",
+            get(handlers::list_document_tables),
+        )
+        .route(
+            "/documents/{document_id}/tables/{table_id}",
+            get(handlers::get_document_table),
+        )
+        // Re-classify all tables for a document (resets table_type + enqueues
+        // a fresh TableClassification task). Workspace-isolated.
+        .route(
+            "/documents/{document_id}/tables/reclassify",
+            post(handlers::reclassify_document_tables),
+        )
         // OODA-03: Chunk-level retry endpoints - MUST come before /documents/{document_id}
         .route(
             "/documents/{document_id}/retry-chunks",

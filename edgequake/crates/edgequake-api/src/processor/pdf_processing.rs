@@ -243,17 +243,20 @@ impl DocumentTaskProcessor {
                 }
             }
 
-            // Purge prior figure rows from the public `chunks` table for
-            // this document. Without this, a reprocess that yields a
-            // different page count or layout (figures at new bboxes →
+            // Purge prior figure / table rows from the public `chunks` table
+            // for this document. Without this, a reprocess that yields a
+            // different page count or layout (media at new bboxes →
             // different `chunk_index`) leaves stale rows from the previous
-            // run that the media-fetch endpoint would still happily serve.
-            // Best-effort: failures are logged and the reprocess continues.
+            // run that the media-fetch / gallery endpoints would still
+            // happily serve. Best-effort: failures are logged and the
+            // reprocess continues.
             #[cfg(feature = "postgres")]
             if let Ok(doc_uuid) = uuid::Uuid::parse_str(&early_doc_id) {
                 if let Ok(database_url) = std::env::var("DATABASE_URL") {
                     if let Ok(pool) = sqlx::PgPool::connect(&database_url).await {
-                        match sqlx::query("DELETE FROM chunks WHERE document_id = $1 AND kind = 'figure'")
+                        match sqlx::query(
+                            "DELETE FROM chunks WHERE document_id = $1 AND kind IN ('figure', 'table')",
+                        )
                             .bind(doc_uuid)
                             .execute(&pool)
                             .await
@@ -262,13 +265,13 @@ impl DocumentTaskProcessor {
                                 info!(
                                     document_id = %early_doc_id,
                                     rows_deleted = r.rows_affected(),
-                                    "Reprocess: purged figure rows from chunks table"
+                                    "Reprocess: purged figure + table rows from chunks table"
                                 );
                             }
                             Err(e) => warn!(
                                 document_id = %early_doc_id,
                                 error = %e,
-                                "Reprocess: figure-row purge failed (continuing)"
+                                "Reprocess: figure/table row purge failed (continuing)"
                             ),
                         }
                     }
@@ -481,6 +484,18 @@ impl DocumentTaskProcessor {
             None
         };
 
+        // VLM-OCR: parallel sink for extracted tables. The converter rewrites
+        // each `<div…><table…>` block in the page markdown to a
+        // `![tbl_…](edgequake-table)` placeholder so the chunker can emit a
+        // Table-kind chunk; the HTML + parsed rows + caption land here.
+        let table_sink = if backend == edgequake_pdf::PdfParserBackend::VlmOcr {
+            Some(Arc::new(std::sync::Mutex::new(Vec::<
+                edgequake_pdf::ExtractedTable,
+            >::new())))
+        } else {
+            None
+        };
+
         let conversion_config = edgequake_pdf::PdfConversionConfig {
             page_count_hint: pdf.page_count.map(|count| count as usize),
             table_method: None,
@@ -490,6 +505,7 @@ impl DocumentTaskProcessor {
             vlm_model,
             algorithm_block_sink: algo_block_sink.clone(),
             figure_sink: figure_sink.clone(),
+            table_sink: table_sink.clone(),
         };
 
         let markdown = match backend {
@@ -703,6 +719,92 @@ impl DocumentTaskProcessor {
         // consumes this list.
         let _ = &extracted_figures;
 
+        // Drain the table sink — parallel to figures. The HTML + parsed rows
+        // are written to the chunks table by `backfill_table_content` below,
+        // after `process_text_insert` has created the placeholder Table-kind
+        // chunks via the chunker.
+        let extracted_tables: Vec<edgequake_pdf::ExtractedTable> =
+            if let Some(ref sink) = table_sink {
+                let tabs: Vec<edgequake_pdf::ExtractedTable> = sink
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|e| e.into_inner().clone());
+                if !tabs.is_empty() {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        table_count = tabs.len(),
+                        "VLM-OCR: captured tables"
+                    );
+                }
+                tabs
+            } else {
+                Vec::new()
+            };
+        let _ = &extracted_tables;
+
+        // 5b. Early media backfill — write figure PNGs and table HTML/rows
+        //     into the chunks table NOW, before algorithm extraction +
+        //     entity extraction run. Those steps are slow (multi-minute LLM
+        //     calls) and the gallery / inline-render endpoints only need
+        //     the chunks rows to serve media. Doing the inserts up front
+        //     means users see figures and tables within seconds of
+        //     conversion finishing instead of waiting for the whole
+        //     pipeline to drain.
+        //
+        //     The vector-store / multimodal-embedding / entity-link steps
+        //     for figures still run later (after process_text_insert)
+        //     because they depend on the workspace pipeline being warm.
+        //     Same for table classification.
+        #[cfg(feature = "postgres")]
+        {
+            if !extracted_figures.is_empty() {
+                if let Err(e) = backfill_figure_media(
+                    &early_doc_id,
+                    data.tenant_id,
+                    data.workspace_id,
+                    &extracted_figures,
+                )
+                .await
+                {
+                    warn!(
+                        pdf_id = %data.pdf_id,
+                        error = %e,
+                        figure_count = extracted_figures.len(),
+                        "Early figure-bytes backfill failed (non-fatal); figures will be retried after text insert"
+                    );
+                } else {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        figure_count = extracted_figures.len(),
+                        "Early figure-bytes backfill: wrote PNG payloads to chunks table"
+                    );
+                }
+            }
+            if !extracted_tables.is_empty() {
+                if let Err(e) = backfill_table_content(
+                    &early_doc_id,
+                    data.tenant_id,
+                    data.workspace_id,
+                    &extracted_tables,
+                )
+                .await
+                {
+                    warn!(
+                        pdf_id = %data.pdf_id,
+                        error = %e,
+                        table_count = extracted_tables.len(),
+                        "Early table backfill failed (non-fatal); will be retried after text insert"
+                    );
+                } else {
+                    info!(
+                        pdf_id = %data.pdf_id,
+                        table_count = extracted_tables.len(),
+                        "Early table backfill: wrote HTML + parsed rows to chunks table"
+                    );
+                }
+            }
+        }
+
         // 6. Algorithm extraction (VLM-OCR path only — pass 2+3 runs on
         //    blocks detected during conversion). Moved ahead of
         //    `process_text_insert` so entity extraction no longer
@@ -831,9 +933,38 @@ impl DocumentTaskProcessor {
             })),
         };
 
+        // Clone the cancellation token so the inline table-classification
+        // step below (which needs it to bail on user cancel) can share the
+        // same signal as the text-insert call that consumes it here.
+        let cancel_token_for_classification = cancel_token.clone();
+        // finalize_status: false — we run figure-embedding, figure-entity,
+        // table-backfill, and table-classification AFTER process_text_insert
+        // returns, and we don't want the document to flip to "completed"
+        // until those finish. The caller (us) writes the final status at
+        // the end of this function instead.
         let result = self
-            .process_text_insert(task, text_data, cancel_token)
+            .process_text_insert(task, text_data, cancel_token, false)
             .await?;
+        // Pull the final-status hint that process_text_insert returned —
+        // either "completed" or "partial_failure" depending on what it saw.
+        // We honour it when writing the final status so a partial failure
+        // doesn't get paved over with "completed".
+        let text_insert_final_status: String = result
+            .get("final_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("completed")
+            .to_string();
+
+        // Surface the post-text-insert sub-stage to both the document
+        // detail page (`current_stage` field) and the task tracker
+        // (`task.update_progress` percentages). Until this fix landed, the
+        // document flipped to "completed" inside process_text_insert and
+        // then sat there silently while figure/table enrichment ran for
+        // another several minutes.
+        self.update_document_status(&early_doc_id, "media_enrichment", None)
+            .await
+            .ok();
+        task.update_progress("media_enrichment".to_string(), 6, 75);
 
         // 6b. Figure backfill. process_text_insert created figure chunk markers
         //     in the workspace vector store (kind=figure, figure_id set) but
@@ -969,6 +1100,70 @@ impl DocumentTaskProcessor {
             }
         }
 
+        // 6d. Table backfill + classification (VLM-OCR path only). Writes
+        //     the HTML / parsed rows for each extracted table into the
+        //     `chunks` table (mirrors the figure flow), then asks the
+        //     workspace's LLM to label each as performance / quality /
+        //     complexity / other. Runs *after* `process_text_insert` so the
+        //     placeholder Table-kind chunks the chunker emitted are already
+        //     in place; we just enrich the rows with HTML+rows and then
+        //     classify them. All steps are best-effort.
+        #[cfg(feature = "postgres")]
+        if !extracted_tables.is_empty() {
+            if let Err(e) = backfill_table_content(
+                &early_doc_id,
+                data.tenant_id,
+                data.workspace_id,
+                &extracted_tables,
+            )
+            .await
+            {
+                warn!(
+                    pdf_id = %data.pdf_id,
+                    error = %e,
+                    table_count = extracted_tables.len(),
+                    "Table backfill failed (non-fatal); tables captured but HTML/rows not persisted"
+                );
+            } else {
+                info!(
+                    pdf_id = %data.pdf_id,
+                    table_count = extracted_tables.len(),
+                    "Table backfill: wrote HTML + parsed rows to chunks table"
+                );
+            }
+
+            if let Ok(doc_uuid) = uuid::Uuid::parse_str(&early_doc_id) {
+                // Surface the classifier sub-stage so the documents list
+                // and task tracker stop showing a misleading "completed"
+                // while the LLM is still labelling tables one by one.
+                self.update_document_status(&early_doc_id, "classifying_tables", None)
+                    .await
+                    .ok();
+                task.update_progress("classifying_tables".to_string(), 6, 90);
+                match self
+                    .run_table_classification_inline(
+                        &data.workspace_id.to_string(),
+                        data.workspace_id,
+                        doc_uuid,
+                        cancel_token_for_classification,
+                    )
+                    .await
+                {
+                    Ok((classified, total)) => info!(
+                        pdf_id = %data.pdf_id,
+                        classified,
+                        total,
+                        "Table classification (inline): completed"
+                    ),
+                    Err(e) => warn!(
+                        pdf_id = %data.pdf_id,
+                        error = %e,
+                        "Table classification (inline) failed (non-fatal); rows remain unlabelled"
+                    ),
+                }
+            }
+        }
+
         // == Progress: extraction complete, linking PDF ==
         task.update_progress("linking".to_string(), 5, 95);
 
@@ -1027,6 +1222,17 @@ impl DocumentTaskProcessor {
         // `process_text_insert` (see steps 6+7 above). Keeping this
         // comment as a signpost — older log grep patterns and design
         // docs still reference the previous ordering.
+
+        // Finalize the document status now that every late-stage step has
+        // run. We delegated this to `process_text_insert` with
+        // `finalize_status: false`, then advanced through the
+        // `media_enrichment` and `classifying_tables` substages. Honour the
+        // hint it returned so a partial_failure outcome doesn't get paved
+        // over with `completed`.
+        self.update_document_status(&early_doc_id, &text_insert_final_status, None)
+            .await
+            .ok();
+        task.update_progress("completed".to_string(), 7, 100);
 
         info!(
             pdf_id = %data.pdf_id,
@@ -1840,7 +2046,89 @@ fn sanitize_filename_segment(s: &str) -> String {
 /// of any future text-chunk rows the same document might pick up — text chunks
 /// today live in KV, not this table, but the unique `(document_id, chunk_index)`
 /// constraint means we want a stable, collision-free range.
+/// Insert / upsert one `chunks` row per extracted table. Mirrors
+/// `backfill_figure_media`: `kind='table'`, `table_id` keys the row, the
+/// rendered HTML and parsed rows go into the table_html / table_rows JSONB
+/// columns. The caption goes into `content` so retrieval has something
+/// human-readable to surface and the classifier has its label.
+///
+/// `table_type` is left NULL — populated later by
+/// `run_table_classification_inline`. Chunk-index lives in
+/// [2_000_000, 2_999_999] so it never collides with text (≤ ~1M) or figure
+/// rows (1_000_000 + …).
 #[cfg(feature = "postgres")]
+async fn backfill_table_content(
+    early_doc_id: &str,
+    tenant_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    tables: &[edgequake_pdf::ExtractedTable],
+) -> Result<(), String> {
+    let document_id = uuid::Uuid::parse_str(early_doc_id)
+        .map_err(|e| format!("invalid early_doc_id {early_doc_id:?}: {e}"))?;
+
+    let database_url = std::env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL not set for table backfill".to_string())?;
+    let pool = sqlx::PgPool::connect(&database_url)
+        .await
+        .map_err(|e| format!("connect failed: {e}"))?;
+
+    for t in tables {
+        // Bump the chunk_index by 500_000 above the figure range to avoid
+        // colliding on a page with the same order_index. Figures live in
+        // [1_000_000, 1_999_999]; tables live in [2_000_000, 2_999_999].
+        let chunk_index: i32 = 2_000_000
+            + (t.page as i32).saturating_mul(1_000)
+            + t.order_index as i32;
+        let rows_json = serde_json::json!({
+            "headers": t.headers,
+            "rows": t.rows,
+        });
+        let metadata = serde_json::json!({
+            "kind": "table",
+            "table_id": t.id,
+            "page": t.page,
+            "order_index": t.order_index,
+        });
+        let res = sqlx::query(
+            r#"
+            INSERT INTO chunks (
+                document_id, tenant_id, workspace_id,
+                content, chunk_index,
+                kind, table_id, table_html, table_rows,
+                metadata
+            ) VALUES ($1, $2, $3, $4, $5, 'table', $6, $7, $8, $9)
+            ON CONFLICT (document_id, chunk_index) DO UPDATE SET
+                content    = EXCLUDED.content,
+                kind       = EXCLUDED.kind,
+                table_id   = EXCLUDED.table_id,
+                table_html = EXCLUDED.table_html,
+                table_rows = EXCLUDED.table_rows,
+                metadata   = EXCLUDED.metadata
+            "#,
+        )
+        .bind(document_id)
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(&t.caption)
+        .bind(chunk_index)
+        .bind(&t.id)
+        .bind(&t.html)
+        .bind(&rows_json)
+        .bind(&metadata)
+        .execute(&pool)
+        .await;
+        if let Err(e) = res {
+            warn!(
+                table_id = %t.id,
+                document_id = %document_id,
+                error = %e,
+                "table backfill: row insert failed"
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn backfill_figure_media(
     early_doc_id: &str,
     tenant_id: uuid::Uuid,

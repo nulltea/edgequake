@@ -128,12 +128,20 @@ impl Chunker {
         Ok(results
             .into_iter()
             .map(|result| {
-                // Figure chunks get a deterministic id keyed by figure_id so
-                // the PDF processor can address them post-chunking without
-                // having to discover the chunker's index → figure mapping.
-                let id = match (result.kind, result.figure_id.as_deref()) {
-                    (ChunkKind::Figure, Some(fid)) => format!("{}-figure-{}", doc_id, fid),
-                    _ => format!("{}-chunk-{}", doc_id, result.chunk_order_index),
+                // Figure / table chunks get a deterministic id keyed by
+                // figure_id / table_id so the PDF processor can address them
+                // post-chunking without having to discover the chunker's
+                // index → media mapping.
+                let id = match result.kind {
+                    ChunkKind::Figure => match result.figure_id.as_deref() {
+                        Some(fid) => format!("{}-figure-{}", doc_id, fid),
+                        None => format!("{}-chunk-{}", doc_id, result.chunk_order_index),
+                    },
+                    ChunkKind::Table => match result.table_id.as_deref() {
+                        Some(tid) => format!("{}-table-{}", doc_id, tid),
+                        None => format!("{}-chunk-{}", doc_id, result.chunk_order_index),
+                    },
+                    ChunkKind::Text => format!("{}-chunk-{}", doc_id, result.chunk_order_index),
                 };
                 let start_offset = cumulative_offset;
                 let end_offset = cumulative_offset + result.content.len();
@@ -154,6 +162,7 @@ impl Chunker {
                 chunk.media_bytes = result.media_bytes;
                 chunk.media_mime = result.media_mime;
                 chunk.figure_id = result.figure_id;
+                chunk.table_id = result.table_id;
                 chunk
             })
             .collect())

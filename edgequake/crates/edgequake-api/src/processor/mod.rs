@@ -84,6 +84,8 @@ pub mod pipeline_checkpoint;
 mod reference_codebase;
 mod repo_detection;
 mod status_updates;
+#[cfg(feature = "postgres")]
+mod table_classification;
 mod task_impl;
 mod text_insert;
 mod workspace_resolver;

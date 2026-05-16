@@ -43,6 +43,11 @@ pub enum TaskType {
     RepoDetection,
     CodeReferenceAnalysis,
     ReferenceCodebaseIndex,
+    /// Classify extracted tables (performance | quality | complexity | other)
+    /// after algorithm extraction has populated the document. Document-scoped
+    /// and idempotent: runs over `chunks` rows with `kind='table'` and
+    /// `table_type IS NULL`.
+    TableClassification,
 }
 
 impl fmt::Display for TaskType {
@@ -58,6 +63,7 @@ impl fmt::Display for TaskType {
             Self::RepoDetection => write!(f, "repo_detection"),
             Self::CodeReferenceAnalysis => write!(f, "code_reference_analysis"),
             Self::ReferenceCodebaseIndex => write!(f, "reference_codebase_index"),
+            Self::TableClassification => write!(f, "table_classification"),
         }
     }
 }

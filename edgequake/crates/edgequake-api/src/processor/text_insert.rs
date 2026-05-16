@@ -27,11 +27,24 @@ impl DocumentTaskProcessor {
     }
 
     /// Process a text insert task.
+    ///
+    /// `finalize_status = true` is the default for standalone Insert / Upload
+    /// task types: when the text-insert pipeline is the whole task, this method
+    /// writes the final document status (`completed` / `partial_failure`) and
+    /// dual-writes it to PostgreSQL. Callers that wrap text-insert with
+    /// additional post-processing — specifically `process_pdf_processing`,
+    /// which runs figure-embedding / figure-entity / table-classification
+    /// AFTER text_insert returns — pass `false` so the document doesn't show
+    /// "completed" while those steps are still running. The caller is then
+    /// responsible for the final status flip. The hint we'd otherwise have
+    /// written is returned in the JSON under `final_status` so the caller can
+    /// honour partial-failure outcomes instead of paving over them.
     pub(super) async fn process_text_insert(
         &self,
         task: &mut Task,
         data: TextInsertData,
         cancel_token: CancellationToken,
+        finalize_status: bool,
     ) -> TaskResult<serde_json::Value> {
         let document_id = data
             .metadata
@@ -586,6 +599,12 @@ impl DocumentTaskProcessor {
                             metadata["figure_id"] = json!(fid);
                         }
                     }
+                    edgequake_pipeline::chunker::ChunkKind::Table => {
+                        metadata["kind"] = json!("table");
+                        if let Some(ref tid) = chunk.table_id {
+                            metadata["table_id"] = json!(tid);
+                        }
+                    }
                     edgequake_pipeline::chunker::ChunkKind::Text => {
                         metadata["kind"] = json!("text");
                     }
@@ -957,15 +976,36 @@ impl DocumentTaskProcessor {
             "completed"
         };
 
-        // Update document status with validation
-        self.update_document_status_with_stats(&document_id, final_status, &stats_with_lineage)
-            .await?;
+        // Update document status with validation — only when the caller
+        // wants us to finalize. PDF processing wraps this method with
+        // additional late-stage work (figure embedding, table classification)
+        // and finalizes the status itself after those finish.
+        if finalize_status {
+            self.update_document_status_with_stats(&document_id, final_status, &stats_with_lineage)
+                .await?;
+        } else {
+            // Still persist stats so the document lineage view has them; the
+            // status itself stays at whatever stage the caller set (e.g.
+            // `media_enrichment`) until the caller writes the final value.
+            self.update_document_status_with_stats(
+                &document_id,
+                "media_enrichment",
+                &stats_with_lineage,
+            )
+            .await
+            .ok();
+        }
 
         // FIX-ISSUE-81 Phase 2: Dual-write document record to PostgreSQL (async path)
         // WHY: Without this, async text/markdown uploads only write to KV storage.
         // The PostgreSQL `documents` table stays incomplete, causing Dashboard KPI mismatch.
+        //
+        // Skip when the caller is going to finalize status itself — the dual
+        // write would otherwise lock in `indexed` before late-stage
+        // classification runs, mirroring the KV-side issue.
         #[cfg(feature = "postgres")]
-        if let Some(ref pdf_storage) = self.pdf_storage {
+        if finalize_status {
+            if let Some(ref pdf_storage) = self.pdf_storage {
             if let Ok(doc_uuid) = uuid::Uuid::parse_str(&document_id) {
                 if let Ok(workspace_uuid) = uuid::Uuid::parse_str(&workspace_id_meta) {
                     let tenant_uuid = tenant_id
@@ -1007,6 +1047,7 @@ impl DocumentTaskProcessor {
                         );
                     }
                 }
+            }
             }
         }
 
@@ -1104,6 +1145,11 @@ impl DocumentTaskProcessor {
             "relationship_count": result.stats.relationship_count,
             "dropped_structural_entities": result.stats.dropped_structural_entities,
             "dropped_structural_relationships": result.stats.dropped_structural_relationships,
+            // Hint for callers that pass `finalize_status: false`: whatever
+            // status we would have written. They use this to honour
+            // partial_failure outcomes instead of paving over them with
+            // `completed` at the end of their own late-stage work.
+            "final_status": final_status,
         }))
     }
 }

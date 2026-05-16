@@ -19,8 +19,18 @@ import {
     VirtualizedMarkdownContent,
 } from '@/components/query/markdown/VirtualizedMarkdownContent';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+    getDocumentTable,
+    listDocumentTables,
+    type DocumentTableListItem,
+} from '@/lib/api/edgequake';
 import { resolveFigureSentinels } from '@/lib/markdown/resolve-figure-sentinels';
+import {
+    resolveTableSentinels,
+    type InlineTablePayload,
+} from '@/lib/markdown/resolve-table-sentinels';
 import type { Document } from '@/types';
+import { useQuery } from '@tanstack/react-query';
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { CodeRenderer } from './code-renderer';
 import { PlainTextRenderer } from './plain-text-renderer';
@@ -34,10 +44,53 @@ interface ContentRendererProps {
 
 export function ContentRenderer({ document, highlightText, startLine, endLine }: ContentRendererProps) {
   const contentRef = useRef<HTMLDivElement>(null);
-  
+
+  // Fetch the document's tables so VLM-OCR `![tbl_…](edgequake-table)`
+  // sentinels can be inlined as rendered HTML. Skipped when the document
+  // has no id (rare). Detail bodies are fetched lazily per visible table
+  // — the list endpoint only carries captions/types, not HTML.
+  const tablesQuery = useQuery({
+    queryKey: ['document-tables-inline', document.id],
+    queryFn: () => listDocumentTables(document.id),
+    enabled: !!document.id,
+    staleTime: 60 * 1000,
+  });
+
+  const inlineTablesQuery = useQuery({
+    queryKey: [
+      'document-tables-inline-html',
+      document.id,
+      (tablesQuery.data?.tables ?? []).map((t) => t.table_id).join(','),
+    ],
+    queryFn: async (): Promise<InlineTablePayload[]> => {
+      const list: DocumentTableListItem[] = tablesQuery.data?.tables ?? [];
+      const details = await Promise.all(
+        list.map((t) => getDocumentTable(document.id, t.table_id)),
+      );
+      return details.map((d) => ({ table_id: d.table_id, html: d.html }));
+    },
+    enabled:
+      !!document.id &&
+      !!tablesQuery.data &&
+      (tablesQuery.data.tables ?? []).length > 0,
+    staleTime: 60 * 1000,
+  });
+
   const renderer = useMemo(() => {
-    return getRendererForDocument(document, highlightText, startLine, endLine);
-  }, [document, highlightText, startLine, endLine]);
+    return getRendererForDocument(
+      document,
+      highlightText,
+      startLine,
+      endLine,
+      inlineTablesQuery.data ?? [],
+    );
+  }, [
+    document,
+    highlightText,
+    startLine,
+    endLine,
+    inlineTablesQuery.data,
+  ]);
 
   // Scroll to and highlight the text when highlightText or line numbers change
   useEffect(() => {
@@ -79,7 +132,13 @@ export function ContentRenderer({ document, highlightText, startLine, endLine }:
   );
 }
 
-function getRendererForDocument(doc: Document, highlightText?: string, startLine?: number, endLine?: number) {
+function getRendererForDocument(
+  doc: Document,
+  highlightText?: string,
+  startLine?: number,
+  endLine?: number,
+  inlineTables: InlineTablePayload[] = [],
+) {
   const mimeType = doc.mime_type?.toLowerCase() || '';
   const fileName = doc.file_name?.toLowerCase() || '';
   const content = doc.content || doc.content_summary || '';
@@ -111,7 +170,10 @@ function getRendererForDocument(doc: Document, highlightText?: string, startLine
     // figures actually render. `![<id>](edgequake-figure)` is what the Rust
     // figure extractor emits as a stable, render-neutral marker; the
     // resolver rewrites it to GET /api/v1/documents/{id}/figures/{figureId}.
-    const renderedContent = resolveFigureSentinels(content, doc.id);
+    // Then swap `![<id>](edgequake-table)` sentinels for the inlined
+    // HTML fetched via the tables API.
+    const withFigures = resolveFigureSentinels(content, doc.id);
+    const renderedContent = resolveTableSentinels(withFigures, inlineTables);
 
     // WHY: For very large markdown (e.g. 1000-page PDF), tokenising the
     // entire string freezes the browser. VirtualizedMarkdownContent splits the
