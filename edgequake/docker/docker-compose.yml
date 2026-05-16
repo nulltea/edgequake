@@ -47,7 +47,7 @@ services:
             # Phase 1 — code embedder (jina-code-embeddings via llama-server).
             # Both approval-time indexing and query-time semantic search use it.
             # Unset EDGEQUAKE_CODE_EMBEDDING_URL to disable the feature entirely.
-            EDGEQUAKE_CODE_EMBEDDING_URL: "${EDGEQUAKE_CODE_EMBEDDING_URL:-http://host.docker.internal:11437/v1}"
+            EDGEQUAKE_CODE_EMBEDDING_URL: "${EDGEQUAKE_CODE_EMBEDDING_URL:-http://host.docker.internal:8060/v1}"
             EDGEQUAKE_CODE_EMBEDDING_MODEL: "${EDGEQUAKE_CODE_EMBEDDING_MODEL:-jina-code-embeddings}"
             EDGEQUAKE_CODE_EMBEDDING_DIMENSION: "${EDGEQUAKE_CODE_EMBEDDING_DIMENSION:-896}"
 

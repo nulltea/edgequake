@@ -233,6 +233,41 @@ impl TaskProcessor for DocumentTaskProcessor {
             }
         }
 
+        // For ReferenceCodebaseIndex tasks, flip any non-terminal index
+        // row to `failed` so the UI stops showing "in progress" forever.
+        // The in-task handler already does this when its inner Result
+        // errors, but this safety net covers timeout / circuit-breaker /
+        // cancellation paths where the handler doesn't run cleanup.
+        #[cfg(feature = "postgres")]
+        if task.task_type == TaskType::ReferenceCodebaseIndex {
+            if let Some(ref doc_id) = document_id {
+                let repo_id = task
+                    .task_data
+                    .get("document_repo_id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                if let Some(repo_id) = repo_id {
+                    let failure_msg =
+                        format!("task permanently failed after {} attempts: {}", task.retry_count, error_msg);
+                    if let Err(e) = mark_active_codebase_index_failed(
+                        task.tenant_id,
+                        task.workspace_id,
+                        doc_id,
+                        repo_id,
+                        &failure_msg,
+                    )
+                    .await
+                    {
+                        error!(
+                            document_id = %doc_id,
+                            error = %e,
+                            "Failed to mark reference_codebase_indexes row failed on permanent failure"
+                        );
+                    }
+                }
+            }
+        }
+
         // For PDF tasks, also update the PDF processing status
         #[cfg(feature = "postgres")]
         if task.task_type == TaskType::PdfProcessing {
@@ -262,4 +297,45 @@ impl TaskProcessor for DocumentTaskProcessor {
             state.remove_pdf_progress(&track_id).await;
         });
     }
+}
+
+/// Flip any non-terminal `reference_codebase_indexes` row for the given
+/// (tenant, workspace, document, repo) to `failed`. Opens a short-lived
+/// pool because `on_permanent_failure` doesn't otherwise need one — the
+/// cost is trivial and only paid on actual failure.
+#[cfg(feature = "postgres")]
+async fn mark_active_codebase_index_failed(
+    tenant_id: uuid::Uuid,
+    workspace_id: uuid::Uuid,
+    document_id: &str,
+    document_repo_id: uuid::Uuid,
+    error_message: &str,
+) -> Result<(), String> {
+    let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL not set".to_string())?;
+    let pool = sqlx::PgPool::connect(&url)
+        .await
+        .map_err(|e| format!("connect postgres: {e}"))?;
+    sqlx::query(
+        r#"
+        UPDATE reference_codebase_indexes
+        SET status = 'failed',
+            error_message = $5,
+            completed_at = NOW(),
+            updated_at = NOW()
+        WHERE tenant_id = $1
+          AND workspace_id = $2
+          AND document_id = $3
+          AND document_repo_id = $4
+          AND status NOT IN ('complete', 'failed')
+        "#,
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(document_id)
+    .bind(document_repo_id)
+    .bind(error_message)
+    .execute(&pool)
+    .await
+    .map_err(|e| format!("update reference_codebase_indexes: {e}"))?;
+    Ok(())
 }

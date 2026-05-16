@@ -122,107 +122,112 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| TaskError::Storage(format!("start reference codebase index: {e}")))?;
 
-        ref_storage
-            .mark_status(index.id, CodebaseIndexStatus::Scanning, None)
-            .await
-            .ok();
-        self.check_cancelled(&cancel_token, "reference_codebase_scanning", &document_id)
-            .await?;
-        task.update_progress("reference_codebase_scanning".to_string(), 5, 30);
-
-        // Honor the per-row max_files_override when set. Populated by
-        // the Phase 2 auto-enqueue path with a conservative cap (~5k);
-        // explicit POST /indexes calls leave it NULL and fall back to
-        // the global EDGEQUAKE_REFERENCE_CODEBASE_MAX_FILES env.
-        let mut limits = IndexLimits::default();
-        if let Some(cap) = read_max_files_override(index.id, &ref_storage).await {
-            limits.max_files = limits.max_files.min(cap as usize);
-            tracing::info!(
-                index_id = %index.id,
-                capped_max_files = cap,
-                "reference-codebase indexer honouring max_files_override"
-            );
-        }
-
-        let build = match ReferenceCodebaseIndexer::new(limits).build(
-            &repo_root,
-            mode,
-            &approved_artifacts,
-        ) {
-            Ok(output) => output,
-            Err(e) => {
-                let msg = e.to_string();
-                ref_storage
-                    .mark_status(index.id, CodebaseIndexStatus::Failed, Some(&msg))
-                    .await
-                    .ok();
-                return Err(TaskError::Process(msg));
-            }
-        };
-
-        ref_storage
-            .mark_status(index.id, CodebaseIndexStatus::Chunking, None)
-            .await
-            .ok();
-        self.check_cancelled(&cancel_token, "reference_codebase_persisting", &document_id)
-            .await?;
-        task.update_progress("reference_codebase_persisting".to_string(), 5, 55);
-
-        ref_storage
-            .replace_index_data(&index, &build)
-            .await
-            .map_err(|e| TaskError::Storage(format!("persist reference codebase index: {e}")))?;
-
-        ref_storage
-            .mark_status(index.id, CodebaseIndexStatus::Embedding, None)
-            .await
-            .ok();
-        task.update_progress("reference_codebase_embedding".to_string(), 5, 70);
-
-        let code_embed_url = std::env::var("EDGEQUAKE_CODE_EMBEDDING_URL")
-            .map_err(|_| TaskError::Process("EDGEQUAKE_CODE_EMBEDDING_URL not set".to_string()))?;
-        let code_model = std::env::var("EDGEQUAKE_CODE_EMBEDDING_MODEL")
-            .unwrap_or_else(|_| "jina-code-embeddings".to_string());
-        let code_dim: usize = std::env::var("EDGEQUAKE_CODE_EMBEDDING_DIMENSION")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(896);
-        let embedder = JinaEmbedder::new(&code_embed_url, &code_model, code_dim);
-
-        let mut embedded = 0usize;
-        for chunk in &build.chunks {
-            self.check_cancelled(&cancel_token, "reference_codebase_embedding", &document_id)
-                .await?;
-            let embedding = embedder
-                .embed_code_for_indexing(&chunk.content)
-                .await
-                .map_err(|e| TaskError::Process(format!("embed codebase chunk: {e}")))?;
+        // Once `start_index` has written a row, every subsequent error path
+        // must flip that row to `failed` — otherwise the row stays at its
+        // last intermediate state (`scanning` / `chunking` / `embedding`)
+        // and the UI shows "in progress" forever. Wrap the rest of the
+        // work in a closure so we have a single error sink.
+        let result: TaskResult<serde_json::Value> = async {
             ref_storage
-                .insert_embedding(&index, chunk, &code_model, code_dim as i32, &embedding)
+                .mark_status(index.id, CodebaseIndexStatus::Scanning, None)
                 .await
-                .map_err(|e| TaskError::Storage(format!("insert codebase embedding: {e}")))?;
-            embedded += 1;
+                .ok();
+            self.check_cancelled(&cancel_token, "reference_codebase_scanning", &document_id)
+                .await?;
+            task.update_progress("reference_codebase_scanning".to_string(), 5, 30);
+
+            // Honor the per-row max_files_override when set. Populated by
+            // the Phase 2 auto-enqueue path with a conservative cap (~5k);
+            // explicit POST /indexes calls leave it NULL and fall back to
+            // the global EDGEQUAKE_REFERENCE_CODEBASE_MAX_FILES env.
+            let mut limits = IndexLimits::default();
+            if let Some(cap) = read_max_files_override(index.id, &ref_storage).await {
+                limits.max_files = limits.max_files.min(cap as usize);
+                tracing::info!(
+                    index_id = %index.id,
+                    capped_max_files = cap,
+                    "reference-codebase indexer honouring max_files_override"
+                );
+            }
+
+            let build = ReferenceCodebaseIndexer::new(limits)
+                .build(&repo_root, mode, &approved_artifacts)
+                .map_err(|e| TaskError::Process(e.to_string()))?;
+
+            ref_storage
+                .mark_status(index.id, CodebaseIndexStatus::Chunking, None)
+                .await
+                .ok();
+            self.check_cancelled(&cancel_token, "reference_codebase_persisting", &document_id)
+                .await?;
+            task.update_progress("reference_codebase_persisting".to_string(), 5, 55);
+
+            ref_storage
+                .replace_index_data(&index, &build)
+                .await
+                .map_err(|e| TaskError::Storage(format!("persist reference codebase index: {e}")))?;
+
+            ref_storage
+                .mark_status(index.id, CodebaseIndexStatus::Embedding, None)
+                .await
+                .ok();
+            task.update_progress("reference_codebase_embedding".to_string(), 5, 70);
+
+            let code_embed_url = std::env::var("EDGEQUAKE_CODE_EMBEDDING_URL").map_err(|_| {
+                TaskError::Process("EDGEQUAKE_CODE_EMBEDDING_URL not set".to_string())
+            })?;
+            let code_model = std::env::var("EDGEQUAKE_CODE_EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "jina-code-embeddings".to_string());
+            let code_dim: usize = std::env::var("EDGEQUAKE_CODE_EMBEDDING_DIMENSION")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(896);
+            let embedder = JinaEmbedder::new(&code_embed_url, &code_model, code_dim);
+
+            let mut embedded = 0usize;
+            for chunk in &build.chunks {
+                self.check_cancelled(&cancel_token, "reference_codebase_embedding", &document_id)
+                    .await?;
+                let embedding = embedder
+                    .embed_code_for_indexing(&chunk.content)
+                    .await
+                    .map_err(|e| TaskError::Process(format!("embed codebase chunk: {e}")))?;
+                ref_storage
+                    .insert_embedding(&index, chunk, &code_model, code_dim as i32, &embedding)
+                    .await
+                    .map_err(|e| TaskError::Storage(format!("insert codebase embedding: {e}")))?;
+                embedded += 1;
+            }
+
+            ref_storage
+                .mark_status(index.id, CodebaseIndexStatus::Complete, None)
+                .await
+                .map_err(|e| TaskError::Storage(format!("complete reference codebase index: {e}")))?;
+            task.update_progress("completed".to_string(), 5, 100);
+
+            Ok(json!({
+                "index_id": index.id,
+                "document_id": document_id,
+                "document_repo_id": repo_id,
+                "repo_commit": snapshot.repo_commit,
+                "repo_path": snapshot.repo_path,
+                "mode": mode.as_str(),
+                "file_count": build.files.iter().filter(|f| f.skipped_reason.is_none()).count(),
+                "symbol_count": build.symbols.len(),
+                "edge_count": build.edges.len(),
+                "chunk_count": build.chunks.len(),
+                "embedding_count": embedded,
+            }))
         }
+        .await;
 
-        ref_storage
-            .mark_status(index.id, CodebaseIndexStatus::Complete, None)
-            .await
-            .map_err(|e| TaskError::Storage(format!("complete reference codebase index: {e}")))?;
-        task.update_progress("completed".to_string(), 5, 100);
-
-        Ok(json!({
-            "index_id": index.id,
-            "document_id": document_id,
-            "document_repo_id": repo_id,
-            "repo_commit": snapshot.repo_commit,
-            "repo_path": snapshot.repo_path,
-            "mode": mode.as_str(),
-            "file_count": build.files.iter().filter(|f| f.skipped_reason.is_none()).count(),
-            "symbol_count": build.symbols.len(),
-            "edge_count": build.edges.len(),
-            "chunk_count": build.chunks.len(),
-            "embedding_count": embedded,
-        }))
+        if let Err(ref e) = result {
+            ref_storage
+                .mark_status(index.id, CodebaseIndexStatus::Failed, Some(&e.to_string()))
+                .await
+                .ok();
+        }
+        result
     }
 
     #[cfg(feature = "postgres")]
