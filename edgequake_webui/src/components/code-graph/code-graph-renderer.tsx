@@ -137,6 +137,12 @@ export function CodeGraphRenderer({
       // text — invisible in dark mode. Swap in a drawer that forces a
       // dark text color so the label stays readable.
       defaultDrawNodeHover: drawNodeHoverReadable,
+      // The tab content can mount before flexbox has resolved a width
+      // (deep-link to ?tab=code-graph, parent transitions). Without this,
+      // Sigma throws "Container has no width" and the tab dies with a
+      // client-side exception. allowInvalidContainer makes Sigma defer
+      // drawing until its ResizeObserver sees a non-zero size.
+      allowInvalidContainer: true,
     });
     sigmaRef.current = sigma;
 

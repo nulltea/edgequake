@@ -44,6 +44,18 @@ type DocumentStatus =
   | 'failed'
   | 'cancelled';
 
+const VALID_TABS = [
+  'content',
+  'algorithms',
+  'repos',
+  'code-matches',
+  'code-graph',
+  'figures',
+  'pdf',
+  'metadata',
+] as const;
+type DocTab = (typeof VALID_TABS)[number];
+
 export default function DocumentViewPage() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -52,19 +64,26 @@ export default function DocumentViewPage() {
   const documentId = params.id as string;
   const { selectedWorkspaceId } = useTenantStore();
   
-  // Get tab and highlight parameters from URL
-  const defaultTab = (() => {
-    const t = searchParams.get('tab');
-    if (
-      t === 'algorithms' ||
-      t === 'repos' ||
-      t === 'code-matches' ||
-      t === 'code-graph' ||
-      t === 'figures'
-    )
-      return t;
-    return 'content';
-  })();
+  const tabParam = searchParams.get('tab');
+  const activeTab: DocTab = (VALID_TABS as readonly string[]).includes(tabParam ?? '')
+    ? (tabParam as DocTab)
+    : 'content';
+
+  const handleTabChange = useCallback(
+    (next: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === 'content') {
+        params.delete('tab');
+      } else {
+        params.set('tab', next);
+      }
+      const qs = params.toString();
+      router.replace(`/documents/${documentId}${qs ? `?${qs}` : ''}`, {
+        scroll: false,
+      });
+    },
+    [searchParams, router, documentId],
+  );
   const highlightText = searchParams.get('highlight') || undefined;
   const startLine = searchParams.get('start_line') 
     ? parseInt(searchParams.get('start_line')!) 
@@ -302,7 +321,7 @@ export default function DocumentViewPage() {
       <div className="flex-1 flex overflow-hidden">
         {/* OODA-43: Desktop layout with PDF side-by-side support */}
         <div className="hidden lg:flex flex-1 overflow-hidden">
-          <Tabs defaultValue={defaultTab} className="flex-1 flex flex-col overflow-hidden">
+          <Tabs value={activeTab} onValueChange={handleTabChange} className="flex-1 flex flex-col overflow-hidden">
             {/* Desktop tab bar */}
             <TabsList className="shrink-0 w-fit mx-3 mt-2">
               <TabsTrigger value="content">Content</TabsTrigger>
@@ -423,7 +442,7 @@ export default function DocumentViewPage() {
 
         {/* Mobile/Tablet: Tabbed layout */}
         <div className="flex-1 lg:hidden overflow-hidden">
-          <Tabs defaultValue={defaultTab} className="h-full flex flex-col">
+          <Tabs value={activeTab} onValueChange={handleTabChange} className="h-full flex flex-col">
             <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-8' : 'grid-cols-7'} rounded-none border-b`}>
               {isPdfDocument && <TabsTrigger value="pdf">PDF</TabsTrigger>}
               <TabsTrigger value="content">Markdown</TabsTrigger>
