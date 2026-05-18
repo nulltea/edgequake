@@ -289,7 +289,16 @@ impl WorkerPool {
                                     // FEAT-TENANT-FAIRNESS: Check per-tenant concurrency limit
                                     // before processing. If tenant is at capacity, requeue the
                                     // task with a short delay so this worker can serve other tenants.
-                                    let _tenant_permit = if let Some(ref limiter) = tenant_limiter {
+                                    //
+                                    // Exception: task types flagged as bypassing the limit (see
+                                    // `TaskType::bypasses_tenant_concurrency_limit`) skip the
+                                    // semaphore entirely, so they can run alongside a saturating
+                                    // document-ingest task instead of stalling behind it.
+                                    let bypass_limit =
+                                        task.task_type.bypasses_tenant_concurrency_limit();
+                                    let _tenant_permit = if let (false, Some(ref limiter)) =
+                                        (bypass_limit, tenant_limiter.as_ref())
+                                    {
                                         match limiter.try_acquire(task.tenant_id).await {
                                             Some(permit) => Some(permit),
                                             None => {

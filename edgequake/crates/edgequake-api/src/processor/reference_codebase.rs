@@ -34,6 +34,13 @@ impl DocumentTaskProcessor {
             ))
         })?;
 
+        self.pipeline_state
+            .info(format!(
+                "Reference-codebase indexing started for document {document_id} (repo {repo_id}, mode {mode_str})",
+                mode_str = mode.as_str(),
+            ))
+            .await;
+
         self.check_cancelled(&cancel_token, "reference_codebase_start", &document_id)
             .await?;
         task.update_progress("reference_codebase_start".to_string(), 5, 5);
@@ -221,11 +228,31 @@ impl DocumentTaskProcessor {
         }
         .await;
 
-        if let Err(ref e) = result {
-            ref_storage
-                .mark_status(index.id, CodebaseIndexStatus::Failed, Some(&e.to_string()))
-                .await
-                .ok();
+        match &result {
+            Ok(v) => {
+                let embeddings = v
+                    .get("embedding_count")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                let chunks = v.get("chunk_count").and_then(|x| x.as_u64()).unwrap_or(0);
+                self.pipeline_state
+                    .info(format!(
+                        "Reference-codebase indexing complete for document {document_id}: \
+                         {embeddings} embedding(s) over {chunks} chunk(s)"
+                    ))
+                    .await;
+            }
+            Err(e) => {
+                self.pipeline_state
+                    .error(format!(
+                        "Reference-codebase indexing failed for document {document_id}: {e}"
+                    ))
+                    .await;
+                ref_storage
+                    .mark_status(index.id, CodebaseIndexStatus::Failed, Some(&e.to_string()))
+                    .await
+                    .ok();
+            }
         }
         result
     }

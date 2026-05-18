@@ -41,6 +41,11 @@ impl DocumentTaskProcessor {
             document_repo_id = %repo_id,
             "Processing code-reference analysis task"
         );
+        self.pipeline_state
+            .info(format!(
+                "Code-reference analysis started for document {document_id} (repo {repo_id})"
+            ))
+            .await;
 
         self.check_cancelled(&cancel_token, "code_ref_cloning", document_id)
             .await?;
@@ -82,6 +87,11 @@ impl DocumentTaskProcessor {
                 document_id = %document_id,
                 "No approved algorithms — skipping code-reference analysis"
             );
+            self.pipeline_state
+                .info(format!(
+                    "Code-reference analysis skipped (no approved algorithms) for document {document_id}"
+                ))
+                .await;
             code_storage
                 .mark_run_complete(tenant_id, workspace_id, document_id, repo_id, 0, 0, None)
                 .await
@@ -151,6 +161,11 @@ impl DocumentTaskProcessor {
             Err(AnalyzerClientError::Status { status, body }) => {
                 let msg = format!("code-analyzer returned {status}: {body}");
                 warn!(document_id, error = %msg, "analyzer call failed");
+                self.pipeline_state
+                    .error(format!(
+                        "Code-reference analysis failed for document {document_id}: {msg}"
+                    ))
+                    .await;
                 code_storage
                     .mark_run_failed(tenant_id, workspace_id, document_id, repo_id, &msg)
                     .await
@@ -160,6 +175,11 @@ impl DocumentTaskProcessor {
             Err(e) => {
                 let msg = format!("code-analyzer error: {e}");
                 warn!(document_id, error = %msg, "analyzer call failed");
+                self.pipeline_state
+                    .error(format!(
+                        "Code-reference analysis failed for document {document_id}: {msg}"
+                    ))
+                    .await;
                 code_storage
                     .mark_run_failed(tenant_id, workspace_id, document_id, repo_id, &msg)
                     .await
@@ -265,6 +285,14 @@ impl DocumentTaskProcessor {
             .map_err(|e| TaskError::Storage(format!("close run: {e}")))?;
 
         task.update_progress("completed".to_string(), 4, 100);
+        self.pipeline_state
+            .info(format!(
+                "Code-reference analysis complete for document {document_id}: \
+                 {finding_count} match(es) across {algorithm_count} algorithm(s), {dropped} dropped",
+                finding_count = candidates.len(),
+                algorithm_count = algorithms.len(),
+            ))
+            .await;
         Ok(json!({
             "document_id": document_id,
             "document_repo_id": repo_id,

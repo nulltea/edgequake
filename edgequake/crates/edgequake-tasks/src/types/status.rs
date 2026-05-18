@@ -67,3 +67,42 @@ impl fmt::Display for TaskType {
         }
     }
 }
+
+impl TaskType {
+    /// Whether tasks of this type bypass the per-tenant concurrency limit
+    /// (`MAX_TASKS_PER_TENANT`). Bypassed tasks are still bounded by the
+    /// worker-pool size, but they don't compete with — or get gated by —
+    /// the slot reserved for document-ingest work.
+    ///
+    /// Why: the document-upload pipeline runs with a low per-tenant cap
+    /// (default 1) so it doesn't saturate LLM / embedding backends. The
+    /// reference-code workflows (analyzer match-detection and codebase
+    /// indexing) call out to a *different* sidecar / embedding model, so
+    /// gating them behind the same 1-slot lock just makes them wait
+    /// behind PDF ingests for no resource reason.
+    pub const fn bypasses_tenant_concurrency_limit(&self) -> bool {
+        matches!(
+            self,
+            Self::CodeReferenceAnalysis | Self::ReferenceCodebaseIndex
+        )
+    }
+}
+
+#[cfg(test)]
+mod task_type_tests {
+    use super::TaskType;
+
+    #[test]
+    fn bypass_flag_only_covers_code_tasks() {
+        assert!(TaskType::CodeReferenceAnalysis.bypasses_tenant_concurrency_limit());
+        assert!(TaskType::ReferenceCodebaseIndex.bypasses_tenant_concurrency_limit());
+
+        assert!(!TaskType::Upload.bypasses_tenant_concurrency_limit());
+        assert!(!TaskType::Insert.bypasses_tenant_concurrency_limit());
+        assert!(!TaskType::PdfProcessing.bypasses_tenant_concurrency_limit());
+        assert!(!TaskType::AlgorithmExtraction.bypasses_tenant_concurrency_limit());
+        assert!(!TaskType::AlgorithmEmbedding.bypasses_tenant_concurrency_limit());
+        assert!(!TaskType::RepoDetection.bypasses_tenant_concurrency_limit());
+        assert!(!TaskType::TableClassification.bypasses_tenant_concurrency_limit());
+    }
+}
