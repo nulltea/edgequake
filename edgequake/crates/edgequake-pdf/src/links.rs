@@ -98,6 +98,53 @@ fn refs_heading_regex() -> &'static regex::Regex {
     })
 }
 
+/// Truncate `markdown` at the first References / Bibliography / Works Cited
+/// heading line. Returns the markdown up to (but not including) the heading;
+/// returns the input verbatim when no heading is found.
+///
+/// Why this exists: the bibliography of an academic paper is dense with
+/// author names, journal titles, and URLs that all behave as noise during
+/// entity extraction — they get harvested as entities/relationships and
+/// pollute the knowledge graph + vector store with citation-only matches.
+/// Excluding the bibliography at chunking time keeps it out of every
+/// downstream consumer (chunks, embeddings, entities, retrieval) while the
+/// full markdown stays available for human viewing in the document Content
+/// tab (which renders from `pdf_documents.markdown_content`, not from
+/// chunks).
+///
+/// Markdown heading markers (`#`, `##`, …) are tolerated: each line's
+/// leading `#`s and whitespace are stripped before matching, so both
+/// `## References` and bare `References` are detected. The regex is
+/// case-insensitive and anchored to the whole line, so `References and
+/// notes` mid-paragraph won't accidentally trip it.
+pub fn strip_references_section(markdown: &str) -> &str {
+    let re = refs_heading_regex();
+    let mut cursor: usize = 0;
+    while cursor < markdown.len() {
+        // Find the end of the current line (exclusive of '\n').
+        let line_end = markdown[cursor..]
+            .find('\n')
+            .map(|p| cursor + p)
+            .unwrap_or(markdown.len());
+        let line = &markdown[cursor..line_end];
+        // Strip leading whitespace, then any `#` heading markers, then
+        // trailing whitespace, so the regex only sees the heading text.
+        let cleaned = line
+            .trim_start()
+            .trim_start_matches('#')
+            .trim();
+        if re.is_match(cleaned) {
+            return &markdown[..cursor];
+        }
+        // Slicing at line_end is safe — '\n' is single-byte ASCII so
+        // line_end is always a UTF-8 boundary. line_end + 1 likewise lands
+        // on the start of the next line (or one past the end on the final
+        // line without a trailing newline, harmlessly terminating the loop).
+        cursor = line_end + 1;
+    }
+    markdown
+}
+
 /// Extract all URI link annotations from `pdf_bytes` and locate the
 /// references-section heading, if present.
 ///
@@ -244,5 +291,60 @@ mod tests {
         ] {
             assert!(!re.is_match(s.trim()), "should NOT match: {s:?}");
         }
+    }
+
+    #[test]
+    fn strip_references_truncates_at_markdown_heading() {
+        let md = "# Title\n\nIntro paragraph.\n\n## Method\n\nWe do X.\n\n## References\n\n[1] Alice et al, 2024.\n[2] Bob, 2025.\n";
+        let out = strip_references_section(md);
+        assert!(out.ends_with("We do X.\n\n"), "out: {out:?}");
+        assert!(!out.contains("References"));
+        assert!(!out.contains("Alice"));
+    }
+
+    #[test]
+    fn strip_references_handles_bibliography_and_works_cited() {
+        for heading in ["## Bibliography", "## Works Cited", "## Literature Cited"] {
+            let md = format!("Body.\n\n{heading}\n\nCitation 1.\n");
+            let out = strip_references_section(&md);
+            assert_eq!(out, "Body.\n\n", "heading={heading:?}");
+        }
+    }
+
+    #[test]
+    fn strip_references_returns_input_when_no_heading() {
+        let md = "Just a body, no references heading anywhere.\n";
+        assert_eq!(strip_references_section(md), md);
+    }
+
+    #[test]
+    fn strip_references_ignores_mid_paragraph_mentions() {
+        let md = "We see References [1] and the references show that…\nMore body.\n";
+        assert_eq!(strip_references_section(md), md);
+    }
+
+    #[test]
+    fn strip_references_handles_numbered_heading() {
+        let md = "Body.\n\n6. References\n\n[1] Citation.\n";
+        let out = strip_references_section(md);
+        assert_eq!(out, "Body.\n\n");
+    }
+
+    #[test]
+    fn strip_references_handles_bare_heading_without_hash() {
+        // Some VLM-OCR output emits the section heading without the `#`s.
+        let md = "Body line.\n\nReferences\n\n[1] Citation.\n";
+        let out = strip_references_section(md);
+        assert_eq!(out, "Body line.\n\n");
+    }
+
+    #[test]
+    fn strip_references_drops_at_first_heading_only() {
+        // If "References" appears twice (rare — duplicated heading in
+        // converted PDF), strip at the first one. Everything after the
+        // first heading is dropped regardless of what's in there.
+        let md = "Body.\n\n## References\n[1] A\n## References\n[2] B\n";
+        let out = strip_references_section(md);
+        assert_eq!(out, "Body.\n\n");
     }
 }

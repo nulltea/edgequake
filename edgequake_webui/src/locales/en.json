@@ -46,6 +46,7 @@
     "graph": "Knowledge Graph",
     "documents": "Documents",
     "knowledge": "Knowledge",
+    "archive": "Archive",
     "pipeline": "Pipeline",
     "query": "Query",
     "workspace": "Workspace",

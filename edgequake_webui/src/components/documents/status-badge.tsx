@@ -76,6 +76,14 @@ const statusConfig = {
   algo_verifying: { icon: CodeXml, color: 'bg-violet-500', textColor: 'text-violet-600 dark:text-violet-400', label: 'Verifying Algorithms', animate: true },
   algo_embedding: { icon: CodeXml, color: 'bg-violet-500', textColor: 'text-violet-600 dark:text-violet-400', label: 'Embedding Algorithms', animate: true },
 
+  // Post-text-insert enrichment stages (figure-embedding, figure-entity
+  // backfill, table backfill). The doc isn't truly "completed" until
+  // table classification finishes, so it lingers here briefly.
+  media_enrichment: { icon: Database, color: 'bg-sky-500', textColor: 'text-sky-600 dark:text-sky-400', label: 'Enriching Media', animate: true },
+  // Table type classification (perf / quality / complexity / other) — one
+  // LLM call per extracted table.
+  classifying_tables: { icon: Brain, color: 'bg-fuchsia-500', textColor: 'text-fuchsia-600 dark:text-fuchsia-400', label: 'Classifying Tables', animate: true },
+
   // Terminal states
   completed: { icon: CheckCircle, color: 'bg-green-500', textColor: 'text-green-600 dark:text-green-400', label: 'Completed', animate: false },
   failed: { icon: XCircle, color: 'bg-red-500', textColor: 'text-red-600 dark:text-red-400', label: 'Failed', animate: false },
@@ -132,7 +140,7 @@ function getStageProgress(status: DocumentStatus): { current: number; total: num
  * Check if a status represents an active processing state
  */
 export function isProcessingStatus(status: DocumentStatus): boolean {
-  return ['processing', 'chunking', 'extracting', 'embedding', 'indexing', 'algo_identifying', 'algo_extracting', 'algo_verifying', 'algo_embedding'].includes(status);
+  return ['processing', 'chunking', 'extracting', 'embedding', 'indexing', 'algo_identifying', 'algo_extracting', 'algo_verifying', 'algo_embedding', 'media_enrichment', 'classifying_tables'].includes(status);
 }
 
 /**

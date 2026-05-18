@@ -10,6 +10,7 @@ pub use backend::{
 };
 pub use error::PdfConversionError;
 pub use links::{
-    extract_links, LinkExtraction, PdfLinkAnnotation, PdfLinkError, ReferenceBoundary,
+    extract_links, strip_references_section, LinkExtraction, PdfLinkAnnotation, PdfLinkError,
+    ReferenceBoundary,
 };
 pub use repos::{detect_repos, DetectedRepo, RepoHost};
