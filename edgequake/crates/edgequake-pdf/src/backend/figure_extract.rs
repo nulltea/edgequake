@@ -97,8 +97,24 @@ pub fn extract_and_patch(
         }
 
         let figure_id = format!("fig_{page_num}_{i}");
-        let placeholder = format!("![{figure_id}](edgequake-figure)");
-        patched = re.replace(&patched, placeholder.as_str()).into_owned();
+
+        // Crop + PNG-encode FIRST. The placeholder write and the sink push
+        // must be atomic — either both happen for this figure or neither.
+        // The previous ordering emitted the `![fig_X_Y](edgequake-figure)`
+        // sentinel before attempting the crop, so a crop / encode failure
+        // would leave a dangling sentinel in the markdown with no matching
+        // entry in the sink (and therefore no chunks row, no media-fetch
+        // hit, broken link in the rendered doc).
+        let crop = match BBoxCrop::crop_bounding_box(page_image, &element.bbox) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(figure_id = %figure_id, error = %e, "figure_extract: crop failed");
+                continue;
+            }
+        };
+        let Some(png_bytes) = encode_png(&crop) else {
+            continue;
+        };
 
         // Pull the caption text from the nearest figure_title below this
         // figure (same column, vertical gap ≤ 100px). Falls back to the
@@ -110,16 +126,10 @@ pub fn extract_and_patch(
             .filter(|s| !s.is_empty())
             .unwrap_or_default();
 
-        let crop = match BBoxCrop::crop_bounding_box(page_image, &element.bbox) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(figure_id = %figure_id, error = %e, "figure_extract: crop failed");
-                continue;
-            }
-        };
-        let Some(png_bytes) = encode_png(&crop) else {
-            continue;
-        };
+        // Crop+encode succeeded: now commit the markdown rewrite and the
+        // sink entry together.
+        let placeholder = format!("![{figure_id}](edgequake-figure)");
+        patched = re.replace(&patched, placeholder.as_str()).into_owned();
 
         new_figures.push(ExtractedFigure {
             id: figure_id,

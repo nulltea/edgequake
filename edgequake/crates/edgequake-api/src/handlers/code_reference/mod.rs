@@ -5,7 +5,7 @@ pub mod types;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use tracing::info;
 use uuid::Uuid;
@@ -21,8 +21,13 @@ pub fn code_reference_routes() -> Router<AppState> {
         .route("/analyze/{document_repo_id}", post(analyze))
         .route("/by-document/{document_id}", get(list_for_document))
         .route("/by-document/{document_id}/submit", post(submit))
+        .route(
+            "/by-document/{document_id}/approve-all",
+            post(approve_all_for_document),
+        )
         .route("/counts", get(counts))
         .route("/{code_artifact_id}/review", post(review))
+        .route("/{code_artifact_id}", delete(delete_artifact))
 }
 
 #[cfg(feature = "postgres")]
@@ -158,6 +163,47 @@ pub async fn submit(
     }
 }
 
+/// Hard-delete a single code-match candidate (and its embedding + graph
+/// edge). Used by the per-card delete button in the Code Matches tab.
+pub async fn delete_artifact(
+    State(state): State<AppState>,
+    tenant_ctx: TenantContext,
+    Path(code_artifact_id): Path<Uuid>,
+) -> ApiResult<Json<DeleteCodeArtifactResponse>> {
+    #[cfg(feature = "postgres")]
+    {
+        delete_artifact_impl(state, tenant_ctx, code_artifact_id).await
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (state, tenant_ctx, code_artifact_id);
+        Err(ApiError::Internal(
+            "Code-reference delete requires the postgres feature".to_string(),
+        ))
+    }
+}
+
+/// Approve every pending code-match for a document in one shot. Mirrors
+/// the per-row review path: each flip drives the same graph + embedding
+/// sync.
+pub async fn approve_all_for_document(
+    State(state): State<AppState>,
+    tenant_ctx: TenantContext,
+    Path(document_id): Path<String>,
+) -> ApiResult<Json<ApproveAllCodeReferencesResponse>> {
+    #[cfg(feature = "postgres")]
+    {
+        approve_all_impl(state, tenant_ctx, document_id).await
+    }
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = (state, tenant_ctx, document_id);
+        Err(ApiError::Internal(
+            "Code-reference approve-all requires the postgres feature".to_string(),
+        ))
+    }
+}
+
 // ── Implementations ────────────────────────────────────────────────────────
 
 #[cfg(feature = "postgres")]
@@ -166,6 +212,7 @@ async fn analyze_impl(
     tenant_ctx: TenantContext,
     document_repo_id: Uuid,
 ) -> ApiResult<(StatusCode, Json<AnalyzeCodeReferenceResponse>)> {
+    use edgequake_agents::code_analysis::{CodeArtifactStorage, PostgresCodeArtifactStorage};
     use edgequake_agents::repo_detection::PostgresRepoStorage;
     use edgequake_tasks::{CodeReferenceAnalysisData, Task, TaskType};
 
@@ -182,6 +229,54 @@ async fn analyze_impl(
     let repo_row = find_repo_by_id(&repo_storage, tenant_id, workspace_id, document_repo_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("document_repo {document_repo_id} not found")))?;
+
+    // Wipe prior matches for this (document, repo) BEFORE queuing the new
+    // run. The previous behaviour upserted into the table on each
+    // re-analysis, leaving stale rows from the prior LLM judgement behind
+    // and forcing users to reject them by hand. Re-analyze now means "I
+    // want a fresh result" — anything we don't re-discover should be gone.
+    //
+    // Best-effort on the graph + embedding side: a failure there leaves
+    // dangling edges/vectors but doesn't block the new run. We log loud
+    // enough that an oncall can clean up by hand if needed.
+    let code_storage = PostgresCodeArtifactStorage::new(pool.clone());
+    let deleted_ids = code_storage
+        .delete_for_document_repo(
+            tenant_id,
+            workspace_id,
+            &repo_row.document_id,
+            document_repo_id,
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to purge prior code_artifacts: {e}")))?;
+    if !deleted_ids.is_empty() {
+        info!(
+            document_id = %repo_row.document_id,
+            document_repo_id = %document_repo_id,
+            deleted = deleted_ids.len(),
+            "Purged prior code_artifacts ahead of re-analysis"
+        );
+        // Drop embedding rows + graph artifacts for the deleted ids.
+        // These are best-effort; analysis still proceeds even if cleanup
+        // hits a transient failure.
+        for id in &deleted_ids {
+            if let Err(e) = drop_artifact_side_effects(
+                pool,
+                state.graph_storage.clone(),
+                tenant_id,
+                workspace_id,
+                *id,
+            )
+            .await
+            {
+                tracing::warn!(
+                    code_artifact_id = %id,
+                    error = %e,
+                    "side-effect cleanup failed during re-analysis purge (non-fatal)"
+                );
+            }
+        }
+    }
 
     let task_data = CodeReferenceAnalysisData {
         document_id: repo_row.document_id.clone(),
@@ -362,6 +457,228 @@ async fn review_impl(
         id: code_artifact_id,
         status: types::status_str(request.status),
     }))
+}
+
+#[cfg(feature = "postgres")]
+async fn delete_artifact_impl(
+    state: AppState,
+    tenant_ctx: TenantContext,
+    code_artifact_id: Uuid,
+) -> ApiResult<Json<DeleteCodeArtifactResponse>> {
+    use edgequake_agents::code_analysis::{CodeArtifactStorage, PostgresCodeArtifactStorage};
+
+    let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
+    let pool = state.pg_pool.as_ref().ok_or_else(|| {
+        ApiError::Internal("Code-reference storage requires PostgreSQL pool".to_string())
+    })?;
+    let storage = PostgresCodeArtifactStorage::new(pool.clone());
+
+    // Drop the embedding + graph edge first so a partial delete doesn't
+    // leave dangling references when the row delete succeeds. Both are
+    // best-effort: if the side-effects fail, we still want the row gone
+    // (UI deleted it on purpose). Failures are logged.
+    if let Err(e) = drop_artifact_side_effects(
+        pool,
+        state.graph_storage.clone(),
+        tenant_id,
+        workspace_id,
+        code_artifact_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            code_artifact_id = %code_artifact_id,
+            error = %e,
+            "delete: side-effect cleanup failed (non-fatal)"
+        );
+    }
+
+    let deleted = storage
+        .delete_by_id(code_artifact_id, tenant_id, workspace_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to delete code_artifact: {e}")))?;
+    if !deleted {
+        return Err(ApiError::NotFound(format!(
+            "code_artifact {code_artifact_id} not found"
+        )));
+    }
+    info!(
+        code_artifact_id = %code_artifact_id,
+        "code_artifact deleted by user"
+    );
+    Ok(Json(DeleteCodeArtifactResponse {
+        id: code_artifact_id,
+        deleted: true,
+    }))
+}
+
+#[cfg(feature = "postgres")]
+async fn approve_all_impl(
+    state: AppState,
+    tenant_ctx: TenantContext,
+    document_id: String,
+) -> ApiResult<Json<ApproveAllCodeReferencesResponse>> {
+    use edgequake_agents::code_analysis::{
+        ArtifactStatus, CodeArtifactStorage, PostgresCodeArtifactStorage,
+    };
+
+    let (tenant_id, workspace_id) = parse_tenant_context(&tenant_ctx)?;
+    let pool = state.pg_pool.as_ref().ok_or_else(|| {
+        ApiError::Internal("Code-reference storage requires PostgreSQL pool".to_string())
+    })?;
+    let storage = PostgresCodeArtifactStorage::new(pool.clone());
+
+    let rows = storage
+        .list_for_document(tenant_id, workspace_id, &document_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to list code_artifacts: {e}")))?;
+
+    let mut approved_count: usize = 0;
+    let mut sync_failures: usize = 0;
+    for row in rows {
+        if !matches!(row.status, ArtifactStatus::Pending) {
+            continue;
+        }
+        // Same path as the per-row review endpoint — keeps graph + embedding
+        // state consistent without duplicating logic.
+        match storage
+            .update_status(row.id, tenant_id, workspace_id, ArtifactStatus::Approved)
+            .await
+        {
+            Ok(true) => {
+                approved_count += 1;
+                let storage_for_graph = PostgresCodeArtifactStorage::new(pool.clone());
+                if let Err(e) = sync_graph_for_review(
+                    &storage_for_graph,
+                    &state.graph_storage,
+                    tenant_id,
+                    workspace_id,
+                    row.id,
+                    ArtifactStatus::Approved,
+                )
+                .await
+                {
+                    sync_failures += 1;
+                    tracing::warn!(
+                        code_artifact_id = %row.id,
+                        error = %e,
+                        "approve-all: graph sync failed (non-fatal)"
+                    );
+                }
+                if let Err(e) = sync_embedding_for_review(
+                    pool,
+                    tenant_id,
+                    workspace_id,
+                    row.id,
+                    ArtifactStatus::Approved,
+                )
+                .await
+                {
+                    sync_failures += 1;
+                    tracing::warn!(
+                        code_artifact_id = %row.id,
+                        error = %e,
+                        "approve-all: embedding sync failed (non-fatal)"
+                    );
+                }
+            }
+            Ok(false) => {
+                // Race: row vanished between list and update (e.g. user
+                // hit delete in another tab). Skip and keep going.
+                tracing::debug!(
+                    code_artifact_id = %row.id,
+                    "approve-all: row vanished mid-flight (skipped)"
+                );
+            }
+            Err(e) => {
+                return Err(ApiError::Internal(format!(
+                    "Failed to approve code_artifact {}: {e}",
+                    row.id
+                )));
+            }
+        }
+    }
+
+    info!(
+        document_id = %document_id,
+        approved_count,
+        sync_failures,
+        "approve-all completed"
+    );
+    Ok(Json(ApproveAllCodeReferencesResponse {
+        document_id,
+        approved_count,
+        sync_failures,
+    }))
+}
+
+/// Tear down the embedding row + graph edge/node owned by a code_artifact.
+/// Shared by single-row delete, bulk re-analyze purge — anything that
+/// removes the row needs to drop these too or we leave orphaned vectors
+/// and dangling graph edges. Returns the first error encountered (further
+/// cleanup still attempted).
+#[cfg(feature = "postgres")]
+async fn drop_artifact_side_effects(
+    pool: &sqlx::PgPool,
+    graph: std::sync::Arc<dyn edgequake_storage::traits::GraphStorage>,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    code_artifact_id: Uuid,
+) -> Result<(), String> {
+    use edgequake_agents::code_analysis::CodeEmbeddingStorage;
+
+    let mut first_err: Option<String> = None;
+
+    // Look up the algorithm_id so we can drop the HAS_REFERENCE_IMPL edge.
+    // If the row is already gone (e.g. delete called twice), skip the edge
+    // drop silently — there's nothing to point at anyway.
+    let algorithm_id: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT algorithm_id FROM code_artifacts
+           WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3"#,
+    )
+    .bind(code_artifact_id)
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("lookup algorithm_id: {e}"))?
+    .flatten();
+
+    let code_key = code_artifact_id.to_string();
+    if let Some(algo_id) = algorithm_id {
+        let algo_key = algo_id.to_string();
+        if let Err(e) = graph.delete_edge(&algo_key, &code_key).await {
+            // Edge may already be gone (reject then delete); not a real
+            // problem but surface for visibility.
+            tracing::debug!(
+                code_artifact_id = %code_artifact_id,
+                error = %e,
+                "graph edge drop returned error (likely already gone)"
+            );
+        }
+    }
+    // Drop the CODE_FUNCTION node as well — unlike reject, we're hard-
+    // deleting so there's no reason to keep the orphan node around.
+    if let Err(e) = graph.delete_node(&code_key).await {
+        tracing::debug!(
+            code_artifact_id = %code_artifact_id,
+            error = %e,
+            "graph node drop returned error (likely already gone)"
+        );
+    }
+
+    let emb = CodeEmbeddingStorage::new(pool.clone());
+    if let Err(e) = emb.delete_for_artifact(code_artifact_id).await {
+        let msg = format!("drop embedding row: {e}");
+        if first_err.is_none() {
+            first_err = Some(msg);
+        }
+    }
+
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 #[cfg(feature = "postgres")]

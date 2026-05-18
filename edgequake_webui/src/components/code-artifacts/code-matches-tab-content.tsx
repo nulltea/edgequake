@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   analyzeCodeReference,
+  approveAllCodeReferences,
+  deleteCodeArtifact,
   getAlgorithms,
   getDocumentRepos,
   getCodeReferences,
@@ -12,11 +14,19 @@ import {
 } from '@/lib/api/edgequake';
 import type {
   CodeArtifact,
+  CodeReferenceListResponse,
   CodeReferenceRun,
 } from '@/types/code-artifacts';
 import type { RepoCandidate } from '@/types/document-repos';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle, FileCode2, Loader2, RefreshCw, Send } from 'lucide-react';
+import {
+  CheckCheck,
+  CheckCircle,
+  FileCode2,
+  Loader2,
+  RefreshCw,
+  Send,
+} from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { InlineMath } from '@/components/algorithms/inline-math';
@@ -130,14 +140,148 @@ export function CodeMatchesTabContent({
       id: string;
       status: 'approved' | 'rejected';
     }) => reviewCodeArtifact(id, status),
-    onSuccess: () => {
+    // Optimistic update: flip the row's status in the cache before the
+    // request returns. Without this, the badge + action buttons don't
+    // update until the next refetch — which earlier could take ~30s
+    // because of the query's staleTime, so users had to hit the browser
+    // refresh to see their click take effect.
+    onMutate: async ({ id, status }) => {
+      await queryClient.cancelQueries({
+        queryKey: ['code-references', documentId],
+      });
+      const previous = queryClient.getQueryData<CodeReferenceListResponse>([
+        'code-references',
+        documentId,
+      ]);
+      if (previous) {
+        queryClient.setQueryData<CodeReferenceListResponse>(
+          ['code-references', documentId],
+          {
+            ...previous,
+            candidates: previous.candidates.map((c) =>
+              c.id === id ? { ...c, status } : c,
+            ),
+          },
+        );
+      }
+      return { previous };
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(
+          ['code-references', documentId],
+          ctx.previous,
+        );
+      }
+      toast.error('Failed to update status', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    },
+    onSettled: () => {
+      // Always reconcile with the server — covers the case where the
+      // backend's graph/embedding sync surfaces information we want
+      // (e.g. updated counts in `runs`).
       queryClient.invalidateQueries({
         queryKey: ['code-references', documentId],
       });
     },
-    onError: (err) => {
-      toast.error('Failed to update status', {
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteCodeArtifact(id),
+    onMutate: async (id: string) => {
+      // Optimistically remove the card from the list so the UI feels
+      // instant. If the request fails, we restore from `previous`.
+      await queryClient.cancelQueries({
+        queryKey: ['code-references', documentId],
+      });
+      const previous = queryClient.getQueryData<CodeReferenceListResponse>([
+        'code-references',
+        documentId,
+      ]);
+      if (previous) {
+        queryClient.setQueryData<CodeReferenceListResponse>(
+          ['code-references', documentId],
+          {
+            ...previous,
+            candidates: previous.candidates.filter((c) => c.id !== id),
+          },
+        );
+      }
+      return { previous };
+    },
+    onError: (err, _id, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(
+          ['code-references', documentId],
+          ctx.previous,
+        );
+      }
+      toast.error('Failed to delete match', {
         description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['code-references', documentId],
+      });
+    },
+  });
+
+  const approveAllMutation = useMutation({
+    mutationFn: () => approveAllCodeReferences(documentId),
+    onMutate: async () => {
+      await queryClient.cancelQueries({
+        queryKey: ['code-references', documentId],
+      });
+      const previous = queryClient.getQueryData<CodeReferenceListResponse>([
+        'code-references',
+        documentId,
+      ]);
+      if (previous) {
+        queryClient.setQueryData<CodeReferenceListResponse>(
+          ['code-references', documentId],
+          {
+            ...previous,
+            candidates: previous.candidates.map((c) =>
+              c.status === 'pending' ? { ...c, status: 'approved' as const } : c,
+            ),
+          },
+        );
+      }
+      return { previous };
+    },
+    onSuccess: (result) => {
+      if (result.sync_failures > 0) {
+        toast.warning(
+          `Approved ${result.approved_count}, ${result.sync_failures} sync warning${result.sync_failures === 1 ? '' : 's'}`,
+          {
+            description:
+              'Graph/embedding sync had partial failures — check server logs.',
+          },
+        );
+      } else if (result.approved_count > 0) {
+        toast.success(
+          `Approved ${result.approved_count} match${result.approved_count === 1 ? '' : 'es'}`,
+        );
+      } else {
+        toast.info('Nothing to approve — no pending matches.');
+      }
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(
+          ['code-references', documentId],
+          ctx.previous,
+        );
+      }
+      toast.error('Failed to approve all', {
+        description: err instanceof Error ? err.message : 'Unknown error',
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['code-references', documentId],
       });
     },
   });
@@ -206,6 +350,10 @@ export function CodeMatchesTabContent({
   const handleReject = useCallback(
     (id: string) => reviewMutation.mutate({ id, status: 'rejected' }),
     [reviewMutation],
+  );
+  const handleDelete = useCallback(
+    (id: string) => deleteMutation.mutate(id),
+    [deleteMutation],
   );
 
   if (isLoading) {
@@ -286,6 +434,23 @@ export function CodeMatchesTabContent({
             />
             Refresh
           </Button>
+          {pendingCount > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-green-700 dark:text-green-400 hover:bg-green-500/10"
+              onClick={() => approveAllMutation.mutate()}
+              disabled={approveAllMutation.isPending}
+              title={`Approve all ${pendingCount} pending match${pendingCount === 1 ? '' : 'es'}`}
+            >
+              {approveAllMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCheck className="h-4 w-4" />
+              )}
+              Approve all ({pendingCount})
+            </Button>
+          )}
           {approvedRepos.map((r) => (
             <Button
               key={r.id}
@@ -293,7 +458,7 @@ export function CodeMatchesTabContent({
               variant="outline"
               onClick={() => analyzeMutation.mutate(r.id)}
               disabled={analyzeMutation.isPending}
-              title={`Re-analyze ${r.owner}/${r.repo}`}
+              title={`Re-analyze ${r.owner}/${r.repo} — clears existing matches first`}
             >
               {analyzeMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -367,6 +532,13 @@ export function CodeMatchesTabContent({
                       repoUrl={repoUrlById.get(c.document_repo_id)}
                       onApprove={handleApprove}
                       onReject={handleReject}
+                      onDelete={handleDelete}
+                      busy={
+                        (reviewMutation.isPending &&
+                          reviewMutation.variables?.id === c.id) ||
+                        (deleteMutation.isPending &&
+                          deleteMutation.variables === c.id)
+                      }
                     />
                   ))}
                 </div>

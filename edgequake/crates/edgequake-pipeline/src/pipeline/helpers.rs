@@ -210,6 +210,32 @@ fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
 /// WHY: A partial embedding is more useful than a pipeline failure.
 /// The 400 "input length exceeds context length" error from Ollama would
 /// otherwise abort the entire document ingestion.
+/// Add `tokens` worth of embedding cost into `stats`. Used by the split
+/// embed methods (`embed_chunks_only`, `embed_extractions_only`) so each
+/// stage contributes its own cost slice without overwriting earlier ones.
+fn accumulate_embed_cost(model_name: &str, tokens: usize, stats: &mut ProcessingStats) {
+    if tokens == 0 {
+        return;
+    }
+    let pricing = crate::progress::default_model_pricing();
+    let embed_pricing = pricing.get(model_name).cloned().unwrap_or_else(|| {
+        crate::progress::ModelPricing::new("text-embedding-3-small", 0.00002, 0.0)
+    });
+    let cost = embed_pricing.calculate_cost(tokens, 0);
+    stats.cost_usd += cost;
+
+    if let Some(ref mut breakdown) = stats.cost_breakdown {
+        breakdown.embedding_cost_usd += cost;
+        breakdown.embedding_tokens += tokens;
+    } else {
+        stats.cost_breakdown = Some(CostBreakdownStats {
+            embedding_cost_usd: cost,
+            embedding_tokens: tokens,
+            ..CostBreakdownStats::default()
+        });
+    }
+}
+
 fn guard_for_embedding(texts: &[String], max_chars: usize) -> Vec<String> {
     texts
         .iter()
@@ -237,6 +263,190 @@ fn guard_for_embedding(texts: &[String], max_chars: usize) -> Vec<String> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl Pipeline {
+    /// Embed only chunk content. Split out of `generate_all_embeddings`
+    /// so the orchestrator (text_insert) can persist chunks + chunk vectors
+    /// to storage BEFORE entity extraction starts — that's the milestone at
+    /// which the document becomes queryable, even though extraction is
+    /// still running. Figure / Table-kind chunks are skipped here exactly
+    /// as in `generate_all_embeddings`; they get their fused multimodal
+    /// vector via the PDF processor's separate path.
+    pub(super) async fn embed_chunks_only(
+        &self,
+        chunks: &mut [TextChunk],
+        stats: &mut ProcessingStats,
+    ) -> Result<()> {
+        let provider = match &self.embedding_provider {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        stats.embedding_model = Some(provider.model().to_string());
+        stats.embedding_provider = Some(provider.name().to_string());
+        stats.embedding_dimensions = Some(provider.dimension());
+
+        let max_chars = embed_max_chars(provider.max_tokens());
+
+        if self.config.enable_chunk_embeddings {
+            let text_indices: Vec<usize> = chunks
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.kind == crate::chunker::ChunkKind::Text)
+                .map(|(i, _)| i)
+                .collect();
+            if !text_indices.is_empty() {
+                let texts: Vec<String> = text_indices
+                    .iter()
+                    .map(|&i| chunks[i].content.clone())
+                    .collect();
+                let safe_texts = guard_for_embedding(&texts, max_chars);
+                let embeddings = provider
+                    .embed(&safe_texts)
+                    .await
+                    .map_err(|e| crate::error::PipelineError::EmbeddingError(e.to_string()))?;
+
+                if embeddings.len() != safe_texts.len() {
+                    tracing::warn!(
+                        expected = safe_texts.len(),
+                        actual = embeddings.len(),
+                        "Chunk embedding count mismatch — some chunks may lack vectors"
+                    );
+                }
+
+                for (i, embedding) in text_indices.iter().zip(embeddings) {
+                    chunks[*i].embedding = Some(embedding);
+                }
+            }
+
+            // Cost accumulation for chunk text only — entities and
+            // relationships add their own contribution later from
+            // `embed_extractions_only`.
+            let chunk_text_len: usize = chunks.iter().map(|c| c.content.len()).sum();
+            let chunk_tokens = chunk_text_len / 4;
+            accumulate_embed_cost(provider.model(), chunk_tokens, stats);
+        }
+
+        Ok(())
+    }
+
+    /// Embed entities and relationships from a finished extraction. Counterpart
+    /// to `embed_chunks_only`. Updates `stats.cost_*` for both kinds.
+    pub(super) async fn embed_extractions_only(
+        &self,
+        extractions: &mut [ExtractionResult],
+        stats: &mut ProcessingStats,
+    ) -> Result<()> {
+        let provider = match &self.embedding_provider {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        // Fill in provider info in case `embed_chunks_only` was skipped
+        // (e.g. resume-from-checkpoint paths feeding into the extract step
+        // directly).
+        if stats.embedding_model.is_none() {
+            stats.embedding_model = Some(provider.model().to_string());
+        }
+        if stats.embedding_provider.is_none() {
+            stats.embedding_provider = Some(provider.name().to_string());
+        }
+        if stats.embedding_dimensions.is_none() {
+            stats.embedding_dimensions = Some(provider.dimension());
+        }
+
+        let max_chars = embed_max_chars(provider.max_tokens());
+
+        if self.config.enable_entity_embeddings {
+            let mut all_entity_texts: Vec<String> = Vec::new();
+            let mut entity_indices: Vec<(usize, usize)> = Vec::new();
+            for (ext_idx, extraction) in extractions.iter().enumerate() {
+                for (ent_idx, entity) in extraction.entities.iter().enumerate() {
+                    all_entity_texts.push(format!("{}: {}", entity.name, entity.description));
+                    entity_indices.push((ext_idx, ent_idx));
+                }
+            }
+
+            if !all_entity_texts.is_empty() {
+                let safe_entity_texts = guard_for_embedding(&all_entity_texts, max_chars);
+                let all_embeddings = provider
+                    .embed(&safe_entity_texts)
+                    .await
+                    .map_err(|e| crate::error::PipelineError::EmbeddingError(e.to_string()))?;
+
+                if all_embeddings.len() != all_entity_texts.len() {
+                    tracing::warn!(
+                        expected = all_entity_texts.len(),
+                        actual = all_embeddings.len(),
+                        "Entity embedding count mismatch - some entities may lack embeddings"
+                    );
+                }
+
+                for (embedding, (ext_idx, ent_idx)) in
+                    all_embeddings.into_iter().zip(entity_indices)
+                {
+                    extractions[ext_idx].entities[ent_idx].embedding = Some(embedding);
+                }
+            }
+
+            let mut entity_tokens = 0usize;
+            for extraction in extractions.iter() {
+                for entity in &extraction.entities {
+                    entity_tokens += (entity.name.len() + entity.description.len()) / 4;
+                }
+            }
+            accumulate_embed_cost(provider.model(), entity_tokens, stats);
+        }
+
+        if self.config.enable_relationship_embeddings {
+            let mut all_relationship_texts: Vec<String> = Vec::new();
+            let mut relationship_indices: Vec<(usize, usize)> = Vec::new();
+            for (ext_idx, extraction) in extractions.iter().enumerate() {
+                for (rel_idx, r) in extraction.relationships.iter().enumerate() {
+                    all_relationship_texts.push(format!(
+                        "{}\t{}->{}\n{}",
+                        r.keywords.join(", "),
+                        r.source,
+                        r.target,
+                        r.description
+                    ));
+                    relationship_indices.push((ext_idx, rel_idx));
+                }
+            }
+
+            if !all_relationship_texts.is_empty() {
+                let safe_rel_texts = guard_for_embedding(&all_relationship_texts, max_chars);
+                let all_embeddings = provider
+                    .embed(&safe_rel_texts)
+                    .await
+                    .map_err(|e| crate::error::PipelineError::EmbeddingError(e.to_string()))?;
+
+                if all_embeddings.len() != all_relationship_texts.len() {
+                    tracing::warn!(
+                        expected = all_relationship_texts.len(),
+                        actual = all_embeddings.len(),
+                        "Relationship embedding count mismatch - some relationships may lack embeddings"
+                    );
+                }
+
+                for (embedding, (ext_idx, rel_idx)) in
+                    all_embeddings.into_iter().zip(relationship_indices)
+                {
+                    extractions[ext_idx].relationships[rel_idx].embedding = Some(embedding);
+                }
+            }
+
+            let mut rel_tokens = 0usize;
+            for extraction in extractions.iter() {
+                for rel in &extraction.relationships {
+                    rel_tokens +=
+                        (rel.source.len() + rel.target.len() + rel.description.len()) / 4;
+                }
+            }
+            accumulate_embed_cost(provider.model(), rel_tokens, stats);
+        }
+
+        Ok(())
+    }
+
     /// Generate embeddings for chunks, entities, and relationships.
     ///
     /// WHY UNIFIED: All three processing methods shared identical embedding
@@ -245,6 +455,12 @@ impl Pipeline {
     /// - Entity embeddings (name: description → vector)
     /// - Relationship embeddings (keywords + source→target + description → vector)
     /// - Embedding cost calculation
+    ///
+    /// Kept for the non-resilient processing modes (`process` and
+    /// `process_with_progress`) that still embed everything in one pass.
+    /// The resilient path now uses `embed_chunks_only` +
+    /// `embed_extractions_only` so chunk vectors can land in storage before
+    /// entity extraction starts.
     pub(super) async fn generate_all_embeddings(
         &self,
         chunks: &mut [TextChunk],

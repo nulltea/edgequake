@@ -3,13 +3,22 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { CodeArtifact } from '@/types/code-artifacts';
-import { CheckCircle, ExternalLink, FileCode2, XCircle } from 'lucide-react';
+import {
+  CheckCircle,
+  ExternalLink,
+  FileCode2,
+  Trash2,
+  XCircle,
+} from 'lucide-react';
 
 interface CodeArtifactCardProps {
   artifact: CodeArtifact;
   repoUrl?: string;
   onApprove?: (id: string) => void;
   onReject?: (id: string) => void;
+  onDelete?: (id: string) => void;
+  /** True while a mutation for this artifact is in flight. */
+  busy?: boolean;
 }
 
 function confidenceColor(c: CodeArtifact['match_confidence']): string {
@@ -55,6 +64,8 @@ export function CodeArtifactCard({
   repoUrl,
   onApprove,
   onReject,
+  onDelete,
+  busy = false,
 }: CodeArtifactCardProps) {
   const link = buildGithubLink(
     repoUrl,
@@ -124,28 +135,47 @@ export function CodeArtifactCard({
       </pre>
 
       {/* Actions */}
-      {(onApprove || onReject) && artifact.status === 'pending' && (
+      {(onApprove || onReject || onDelete) && (
         <div className="flex items-center gap-2 mt-4 pt-3 border-t">
-          {onApprove && (
+          {onApprove && artifact.status === 'pending' && (
             <Button
               variant="outline"
               size="sm"
               className="text-green-700 dark:text-green-400 hover:bg-green-500/10"
               onClick={() => onApprove(artifact.id)}
+              disabled={busy}
             >
               <CheckCircle className="h-4 w-4" />
               Approve
             </Button>
           )}
-          {onReject && (
+          {onReject && artifact.status === 'pending' && (
             <Button
               variant="outline"
               size="sm"
               className="text-red-700 dark:text-red-400 hover:bg-red-500/10"
               onClick={() => onReject(artifact.id)}
+              disabled={busy}
             >
               <XCircle className="h-4 w-4" />
               Reject
+            </Button>
+          )}
+          {onDelete && (
+            // Delete is always available, regardless of approve/reject
+            // status. Pushed to the right so the destructive action sits
+            // apart from the review actions and doesn't get clicked by
+            // muscle memory.
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto text-muted-foreground hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10"
+              onClick={() => onDelete(artifact.id)}
+              disabled={busy}
+              title="Delete this match"
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
             </Button>
           )}
         </div>

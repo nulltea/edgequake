@@ -171,6 +171,48 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
 
+        // Create the relational `documents` row UP FRONT so every downstream
+        // write that references `documents.id` (chunks.figure_id rows from the
+        // figure / table backfills, pdf_documents.document_id link, algorithm
+        // rows, repo rows) finds an anchor to FK against. The previous
+        // ordering deferred this to step 7 (~`ensure_document_record` at the
+        // end of process_pdf_processing) — every chunks INSERT issued by the
+        // early-backfill path then failed with FK violation, was logged at
+        // warn-level, and swallowed, leaving figures and tables invisible on
+        // first-upload PDFs.
+        //
+        // Idempotent: the late-stage `ensure_document_record` call at the end
+        // of this function uses INSERT … ON CONFLICT (id) DO UPDATE, so
+        // re-running it with the real content + final status just refreshes
+        // the row we created here.
+        #[cfg(feature = "postgres")]
+        if let Ok(document_uuid) = uuid::Uuid::parse_str(&early_doc_id) {
+            if let Err(e) = pdf_storage
+                .ensure_document_record(
+                    &document_uuid,
+                    &data.workspace_id,
+                    Some(&data.tenant_id),
+                    &pdf.filename,
+                    "",
+                    "processing",
+                )
+                .await
+            {
+                // Treat as fatal: without the documents row in place, every
+                // downstream FK-dependent write will silently lose data, so
+                // failing here is the loud signal the previous design
+                // suppressed.
+                let msg = format!("Failed to create early documents row: {e}");
+                error!(
+                    document_id = %early_doc_id,
+                    pdf_id = %data.pdf_id,
+                    error = %e,
+                    "{msg}"
+                );
+                return Err(edgequake_tasks::TaskError::Storage(msg));
+            }
+        }
+
         // FIX-REBUILD: When reprocessing, clean up old content and chunk KV entries
         // WHY: Old chunks with stale content must be removed before the pipeline
         // creates new ones, otherwise the document ends up with a mix of old and new chunks.
@@ -805,13 +847,123 @@ impl DocumentTaskProcessor {
             }
         }
 
-        // 6. Algorithm extraction (VLM-OCR path only — pass 2+3 runs on
-        //    blocks detected during conversion). Moved ahead of
-        //    `process_text_insert` so entity extraction no longer
-        //    contends with algorithm content for LLM budget and so the
-        //    algorithms table is populated before the knowledge graph
-        //    extractor sees the markdown. Best-effort: failures are
-        //    logged and swallowed.
+        // Flag that survives across both enrichment stages (algorithm
+        // extraction, repo detection, late media backfill) and trips the
+        // final document status from `completed` to `partial_failure` if
+        // any of them fail. Declared up here so the pre-text_insert blocks
+        // can set it; phase-2 (post-text_insert) backfills set it too.
+        let mut enrichment_persistence_failed = false;
+
+        // ── 6. process_text_insert (chunking → embed → persist → extract) ──
+        //
+        // Runs FIRST among the post-conversion stages so the document
+        // reaches a queryable state ASAP. process_text_insert is itself
+        // a two-phase pipeline (see Pipeline::chunk_and_embed_chunks +
+        // Pipeline::extract_and_embed_graph): phase 1 chunks + embeds +
+        // flushes chunks to KV and the workspace vector store; phase 2
+        // runs the long LLM entity-extraction step. The moment phase 1
+        // completes, hybrid query already returns chunks for this doc —
+        // without waiting for entity extraction or any of the algorithm
+        // / repo-detection enrichment that follows.
+        //
+        // Previously this block ran AFTER algorithm extraction (Pass 2+3)
+        // and reference-repo detection, which delayed phase 1 by
+        // however long those steps took (typically minutes on a paper
+        // with multiple algorithm blocks). Reordering costs nothing:
+        // algorithm extraction reads the markdown and writes its own
+        // `algorithms` table; entity extraction reads the markdown and
+        // writes the graph. No cross-dependency required algorithms to
+        // land first — the chunker still re-processes the full markdown
+        // (including algorithm blocks), and any cross-referencing
+        // between algorithms and chunks/entities can happen at query
+        // time against the populated tables.
+        // == Progress: markdown stored, starting entity extraction ==
+        task.update_progress("entity_extraction".to_string(), 5, 60);
+
+        // ── CANCELLATION GATE: before handing off to text_insert pipeline ──
+        self.check_cancelled(&cancel_token, "pre-text-insert", &early_doc_id)
+            .await?;
+
+        // SPEC-002: Include source_type: "pdf" for unified pipeline tracking
+        // OODA-05: Include tenant_id/workspace_id for multi-tenant document visibility
+        // OODA-04: Include sha256_checksum for end-to-end lineage traceability
+        //
+        // References-section strip. Academic bibliographies are dense with
+        // author names + journal titles + URLs that all behave as noise in
+        // the knowledge graph and pollute retrieval with citation-only
+        // matches. We truncate at the first `References` / `Bibliography` /
+        // `Works Cited` heading so the chunker, entity extractor, embedder,
+        // and retrieval layer never see them. The FULL markdown (with the
+        // bibliography) was already persisted to `pdf_documents.markdown_content`
+        // above, so the document Content tab still renders the citations
+        // for human reading.
+        let markdown_for_chunking = edgequake_pdf::strip_references_section(&markdown).to_string();
+        if markdown_for_chunking.len() < markdown.len() {
+            info!(
+                pdf_id = %data.pdf_id,
+                full_len = markdown.len(),
+                kept_len = markdown_for_chunking.len(),
+                "Stripped references section before chunking ({} bytes dropped)",
+                markdown.len() - markdown_for_chunking.len()
+            );
+        }
+        let text_data = edgequake_tasks::TextInsertData {
+            text: markdown_for_chunking,
+            file_source: pdf.filename.clone(),
+            workspace_id: data.workspace_id.to_string(),
+            metadata: Some(json!({
+                "document_id": early_doc_id.clone(),  // Reuse early document ID
+                "source": "pdf_upload",
+                "source_type": "pdf",
+                "document_type": "pdf",
+                "pdf_id": data.pdf_id.to_string(),
+                "filename": pdf.filename,
+                "page_count": pdf.page_count,
+                "file_size_bytes": pdf.file_size_bytes,
+                "sha256_checksum": pdf.sha256_checksum,
+                "tenant_id": data.tenant_id.to_string(),
+                "workspace_id": data.workspace_id.to_string(),
+                // SPEC-040: Store PDF extraction lineage for document detail view
+                "pdf_vision_model": vision_model,
+                "pdf_extraction_method": extraction_method.as_str(),
+                "pdf_extraction_warning": extraction_warning,
+            })),
+        };
+
+        // Clone the cancellation token so the inline table-classification
+        // step below (which needs it to bail on user cancel) can share the
+        // same signal as the text-insert call that consumes it here.
+        let cancel_token_for_classification = cancel_token.clone();
+        // finalize_status: false — algorithm extraction, repo detection,
+        // and the media-enrichment block all still run after this call;
+        // we don't want the document to flip to "completed" while those
+        // steps are pending. The caller (us) writes the final status at
+        // the end of this function.
+        let result = self
+            .process_text_insert(task, text_data, cancel_token_for_classification.clone(), false)
+            .await?;
+        // Pull the final-status hint that process_text_insert returned —
+        // either "completed" or "partial_failure" depending on what it
+        // saw. We honour it when writing the final status so a partial
+        // failure doesn't get paved over with "completed".
+        let text_insert_final_status: String = result
+            .get("final_status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("completed")
+            .to_string();
+
+        // ── 7. Algorithm extraction (VLM-OCR path only — Pass 2+3) ──
+        //
+        // Runs AFTER process_text_insert (was: before). chunks + entities
+        // are already in storage at this point, so a missing algorithm
+        // row degrades the result to `partial_failure` instead of failing
+        // the whole doc.
+        //
+        // Pass 2+3 writes the `algorithms` table directly; when auto-
+        // approve is on (workspace setting), it also embeds and upserts
+        // the algorithm vectors into the workspace vector store — at
+        // which point algorithms are queryable alongside the chunks
+        // that landed in phase 1 above.
         if let Some(ref sink) = algo_block_sink {
             let blocks = sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if !blocks.is_empty() {
@@ -825,7 +977,7 @@ impl DocumentTaskProcessor {
                 self.update_document_status(&early_doc_id, "algo_extracting", None)
                     .await
                     .ok();
-                task.update_progress("algo_extracting".to_string(), 4, 55);
+                task.update_progress("algo_extracting".to_string(), 5, 70);
 
                 let workspace_id_str = data.workspace_id.to_string();
                 let ws_id = if workspace_id_str != "default" && !workspace_id_str.is_empty() {
@@ -834,37 +986,59 @@ impl DocumentTaskProcessor {
                     None
                 };
 
-                // finalize_status=false: text_insert runs after us and owns
-                // the final document status. If we let the embedding step
-                // stamp `completed` here, entity extraction would appear to
-                // be skipped from the UI's perspective.
+                // finalize_status=false: media enrichment + final status
+                // are still owned by this caller — let the embedding
+                // step finish without stamping `completed`.
+                let expected_blocks = blocks.len();
                 match self
                     .run_algorithm_pass2_pass3(&early_doc_id, ws_id, &blocks, task, false)
                     .await
                 {
-                    Ok(count) => {
+                    Ok((count, pass2_failures)) => {
                         info!(
                             pdf_id = %data.pdf_id,
                             algorithm_count = count,
+                            expected_blocks,
+                            pass2_failures,
                             "Auto algorithm extraction completed"
                         );
+                        // Only flip partial_failure when at least one block's
+                        // Pass 2 LLM call errored — that's information loss
+                        // vs. the layout detector. `count < expected_blocks`
+                        // alone is a false positive: it conflates legitimate
+                        // dedup (two blocks were the same algorithm) and
+                        // legitimate "LLM returned no algorithms for this
+                        // block" outcomes with real failures.
+                        if pass2_failures > 0 {
+                            warn!(
+                                pdf_id = %data.pdf_id,
+                                algorithm_count = count,
+                                expected_blocks,
+                                pass2_failures,
+                                "Pass 2 LLM failed on {pass2_failures} of {expected_blocks} block(s) — marking partial_failure"
+                            );
+                            enrichment_persistence_failed = true;
+                        }
                     }
                     Err(e) => {
                         warn!(
                             pdf_id = %data.pdf_id,
                             error = %e,
-                            "Auto algorithm extraction failed (non-fatal)"
+                            expected_blocks,
+                            "Auto algorithm extraction failed — marking partial_failure"
                         );
+                        enrichment_persistence_failed = true;
                     }
                 }
             }
         }
 
-        // 7. Reference-repo detection (Phase 0 of Reference Code GraphRAG).
-        //    Same relocation rationale as the algorithm step above —
-        //    runs before entity extraction so the `document_repos` table
-        //    is populated first. Layer A works on PDF bytes; if nothing,
-        //    Layer B falls through to SearXNG + Crawl4AI.
+        // ── 8. Reference-repo detection (Phase 0 of Reference Code GraphRAG) ──
+        //
+        // Runs after algorithm extraction so the `document_repos` table
+        // sits next to the algorithm rows on the document detail page.
+        // Layer A works on PDF bytes; if nothing, Layer B falls through
+        // to SearXNG + Crawl4AI.
         let pdf_data_for_detection = pdf_storage
             .get_pdf(&data.pdf_id)
             .await
@@ -885,75 +1059,14 @@ impl DocumentTaskProcessor {
             warn!(
                 pdf_id = %data.pdf_id,
                 error = %e,
-                "Reference-repo detection failed (non-fatal)"
+                "Reference-repo detection failed — marking partial_failure"
             );
+            enrichment_persistence_failed = true;
         }
 
-        // 8. Create document via standard pipeline (chunking + entity
-        //    extraction). Runs AFTER algorithm + repo extraction so
-        //    those tables are populated first; the chunker still re-
-        //    processes the full markdown (including algorithm blocks)
-        //    but downstream consumers can now cross-reference the
-        //    structured algorithm rows.
-        // == Progress: markdown stored + enrichment done, starting entity extraction ==
-        task.update_progress("entity_extraction".to_string(), 5, 60);
-
-        // ── CANCELLATION GATE: before handing off to text_insert pipeline ──
-        self.check_cancelled(&cancel_token, "pre-text-insert", &early_doc_id)
-            .await?;
-
-        // SPEC-002: Include source_type: "pdf" for unified pipeline tracking
-        // OODA-05: Include tenant_id/workspace_id for multi-tenant document visibility
-        // Pass the early_doc_id so we reuse the same document that's already showing in UI
-        // OODA-04: Include sha256_checksum for end-to-end lineage traceability
-        // WHY: Downstream ensure_document_source_type needs checksum for integrity verification
-        let text_data = edgequake_tasks::TextInsertData {
-            text: markdown.clone(),
-            file_source: pdf.filename.clone(),
-            workspace_id: data.workspace_id.to_string(),
-            metadata: Some(json!({
-                "document_id": early_doc_id.clone(),  // Reuse early document ID
-                "source": "pdf_upload",
-                "source_type": "pdf",
-                "document_type": "pdf",
-                "pdf_id": data.pdf_id.to_string(),
-                "filename": pdf.filename,
-                "page_count": pdf.page_count,
-                "file_size_bytes": pdf.file_size_bytes,
-                "sha256_checksum": pdf.sha256_checksum,
-                "tenant_id": data.tenant_id.to_string(),
-                "workspace_id": data.workspace_id.to_string(),
-                // SPEC-040: Store PDF extraction lineage for document detail view
-                // WHY: The lineage builder in documents.rs reads from this metadata JSON.
-                // vision_model and extraction_method are stored in pdf_documents table but
-                // not in the KV document metadata, making them invisible in the lineage view.
-                "pdf_vision_model": vision_model,
-                "pdf_extraction_method": extraction_method.as_str(),
-                "pdf_extraction_warning": extraction_warning,
-            })),
-        };
-
-        // Clone the cancellation token so the inline table-classification
-        // step below (which needs it to bail on user cancel) can share the
-        // same signal as the text-insert call that consumes it here.
-        let cancel_token_for_classification = cancel_token.clone();
-        // finalize_status: false — we run figure-embedding, figure-entity,
-        // table-backfill, and table-classification AFTER process_text_insert
-        // returns, and we don't want the document to flip to "completed"
-        // until those finish. The caller (us) writes the final status at
-        // the end of this function instead.
-        let result = self
-            .process_text_insert(task, text_data, cancel_token, false)
-            .await?;
-        // Pull the final-status hint that process_text_insert returned —
-        // either "completed" or "partial_failure" depending on what it saw.
-        // We honour it when writing the final status so a partial failure
-        // doesn't get paved over with "completed".
-        let text_insert_final_status: String = result
-            .get("final_status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("completed")
-            .to_string();
+        // (enrichment_persistence_failed is declared up at the algorithm
+        // extraction step so the pre-text_insert enrichment can set it.
+        // The figure/table backfills below mutate the same flag.)
 
         // Surface the post-text-insert sub-stage to both the document
         // detail page (`current_stage` field) and the task tracker
@@ -999,8 +1112,9 @@ impl DocumentTaskProcessor {
                     pdf_id = %data.pdf_id,
                     error = %e,
                     figure_count = extracted_figures.len(),
-                    "Figure-bytes backfill failed (non-fatal); figures captured but bytes not persisted"
+                    "Figure-bytes backfill failed; figures captured but bytes not persisted — document will be marked partial_failure"
                 );
+                enrichment_persistence_failed = true;
             } else {
                 info!(
                     pdf_id = %data.pdf_id,
@@ -1122,8 +1236,9 @@ impl DocumentTaskProcessor {
                     pdf_id = %data.pdf_id,
                     error = %e,
                     table_count = extracted_tables.len(),
-                    "Table backfill failed (non-fatal); tables captured but HTML/rows not persisted"
+                    "Table backfill failed; tables captured but HTML/rows not persisted — document will be marked partial_failure"
                 );
+                enrichment_persistence_failed = true;
             } else {
                 info!(
                     pdf_id = %data.pdf_id,
@@ -1228,8 +1343,19 @@ impl DocumentTaskProcessor {
         // `finalize_status: false`, then advanced through the
         // `media_enrichment` and `classifying_tables` substages. Honour the
         // hint it returned so a partial_failure outcome doesn't get paved
-        // over with `completed`.
-        self.update_document_status(&early_doc_id, &text_insert_final_status, None)
+        // over with `completed`. If the figure/table backfill reported a
+        // non-zero per-row failure (fix B), demote from `completed` to
+        // `partial_failure` here — text extraction may have succeeded but
+        // some media artefacts didn't reach the chunks table, so the doc
+        // shouldn't claim full success.
+        let final_status = if enrichment_persistence_failed
+            && text_insert_final_status == "completed"
+        {
+            "partial_failure"
+        } else {
+            text_insert_final_status.as_str()
+        };
+        self.update_document_status(&early_doc_id, final_status, None)
             .await
             .ok();
         task.update_progress("completed".to_string(), 7, 100);
@@ -2072,6 +2198,9 @@ async fn backfill_table_content(
         .await
         .map_err(|e| format!("connect failed: {e}"))?;
 
+    let total = tables.len();
+    let mut failures: usize = 0;
+    let mut first_error: Option<String> = None;
     for t in tables {
         // Bump the chunk_index by 500_000 above the figure range to avoid
         // colliding on a page with the same order_index. Figures live in
@@ -2118,13 +2247,24 @@ async fn backfill_table_content(
         .execute(&pool)
         .await;
         if let Err(e) = res {
+            let err_str = e.to_string();
             warn!(
                 table_id = %t.id,
                 document_id = %document_id,
-                error = %e,
+                error = %err_str,
                 "table backfill: row insert failed"
             );
+            if first_error.is_none() {
+                first_error = Some(err_str);
+            }
+            failures += 1;
         }
+    }
+    if failures > 0 {
+        return Err(format!(
+            "table backfill: {failures}/{total} inserts failed (first error: {})",
+            first_error.as_deref().unwrap_or("<unknown>")
+        ));
     }
     Ok(())
 }
@@ -2147,6 +2287,9 @@ async fn backfill_figure_media(
     // `ON CONFLICT (document_id, chunk_index) DO UPDATE` makes the backfill
     // idempotent across PDF reprocess runs — a re-extracted figure with the
     // same (page, order_index) overwrites the previous row's bytes/caption.
+    let total = figures.len();
+    let mut failures: usize = 0;
+    let mut first_error: Option<String> = None;
     for fig in figures {
         let chunk_index: i32 = 1_000_000
             + (fig.page as i32).saturating_mul(1_000)
@@ -2186,15 +2329,29 @@ async fn backfill_figure_media(
         .execute(&pool)
         .await;
         if let Err(e) = res {
+            let err_str = e.to_string();
             // Single-row failure shouldn't abort the rest of the batch — log
-            // and continue. The caller treats the whole call as best-effort.
+            // and keep going so subsequent figures still have a chance. The
+            // outer Err return below ensures the caller still sees the batch
+            // as failed (previously this loop returned Ok(()) even when every
+            // INSERT errored, which is how this whole bug went unnoticed).
             warn!(
                 figure_id = %fig.id,
                 document_id = %document_id,
-                error = %e,
+                error = %err_str,
                 "figure backfill: row insert failed"
             );
+            if first_error.is_none() {
+                first_error = Some(err_str);
+            }
+            failures += 1;
         }
+    }
+    if failures > 0 {
+        return Err(format!(
+            "figure backfill: {failures}/{total} inserts failed (first error: {})",
+            first_error.as_deref().unwrap_or("<unknown>")
+        ));
     }
     Ok(())
 }

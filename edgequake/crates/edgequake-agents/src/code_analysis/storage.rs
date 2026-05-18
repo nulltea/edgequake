@@ -53,6 +53,30 @@ pub trait CodeArtifactStorage: Send + Sync {
         status: ArtifactStatus,
     ) -> Result<bool, CodeStorageError>;
 
+    /// Hard-delete one code_artifact row. Returns `true` if a row was
+    /// removed. Callers are responsible for cleaning up the embedding
+    /// row + the graph edge/node — the trait stays storage-only and
+    /// doesn't know about either.
+    async fn delete_by_id(
+        &self,
+        id: Uuid,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+    ) -> Result<bool, CodeStorageError>;
+
+    /// Hard-delete every code_artifact row for a `(document_id, document_repo_id)`
+    /// pair. Used when re-running analysis so the new run starts from a
+    /// clean slate instead of merging into the previous results (which the
+    /// upsert path used to do, leaving stale rows whenever the new
+    /// analysis turned up fewer matches at different bboxes).
+    async fn delete_for_document_repo(
+        &self,
+        tenant_id: Uuid,
+        workspace_id: Uuid,
+        document_id: &str,
+        document_repo_id: Uuid,
+    ) -> Result<Vec<Uuid>, CodeStorageError>;
+
     async fn upsert_run(&self, run: &CodeReferenceRun) -> Result<(), CodeStorageError>;
 
     async fn mark_run_status(
@@ -320,6 +344,50 @@ mod postgres {
             .execute(&self.pool)
             .await?;
             Ok(res.rows_affected() > 0)
+        }
+
+        async fn delete_by_id(
+            &self,
+            id: Uuid,
+            tenant_id: Uuid,
+            workspace_id: Uuid,
+        ) -> Result<bool, CodeStorageError> {
+            let res = sqlx::query(
+                r#"DELETE FROM code_artifacts
+                   WHERE id = $1 AND tenant_id = $2 AND workspace_id = $3"#,
+            )
+            .bind(id)
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .execute(&self.pool)
+            .await?;
+            Ok(res.rows_affected() > 0)
+        }
+
+        async fn delete_for_document_repo(
+            &self,
+            tenant_id: Uuid,
+            workspace_id: Uuid,
+            document_id: &str,
+            document_repo_id: Uuid,
+        ) -> Result<Vec<Uuid>, CodeStorageError> {
+            // RETURNING id lets the caller fan out cleanup to the graph
+            // store and embedding table without a second SELECT.
+            let rows: Vec<(Uuid,)> = sqlx::query_as(
+                r#"DELETE FROM code_artifacts
+                   WHERE tenant_id = $1
+                     AND workspace_id = $2
+                     AND document_id = $3
+                     AND document_repo_id = $4
+                   RETURNING id"#,
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(document_id)
+            .bind(document_repo_id)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(rows.into_iter().map(|(id,)| id).collect())
         }
 
         async fn upsert_run(&self, run: &CodeReferenceRun) -> Result<(), CodeStorageError> {

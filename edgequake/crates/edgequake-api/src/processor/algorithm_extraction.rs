@@ -654,7 +654,17 @@ impl DocumentTaskProcessor {
     ///
     /// Called from PDF processing when VLM-OCR detects algorithm blocks during
     /// conversion. Skips Pass 1 (already done via layout detection).
-    /// Returns the number of algorithms stored.
+    /// Returns `(unique_algorithms_written, pass2_block_failures)`:
+    /// - `unique_algorithms_written` is the count of rows stored in the
+    ///   `algorithms` table after dedup. May legitimately be smaller than
+    ///   `blocks.len()` (LLM returned no algorithms for a block, or two
+    ///   blocks deduped to one canonical algorithm).
+    /// - `pass2_block_failures` is the count of blocks where the Pass 2 LLM
+    ///   call itself errored. Non-zero values mean we *lost* information
+    ///   compared to what the layout detector saw — the caller is expected
+    ///   to mark the document `partial_failure` rather than `completed`.
+    ///   Earlier this was logged-and-swallowed, producing the silent
+    ///   "2 blocks detected, 1 algorithm in DB" failure mode.
     /// `finalize_status`: when true (standalone extraction task), the
     /// nested algorithm-embedding step stamps `status=completed` at exit.
     /// When false (called inline during PDF ingestion), the surrounding
@@ -667,7 +677,7 @@ impl DocumentTaskProcessor {
         blocks: &[edgequake_pdf::AlgorithmBlock],
         task: &mut Task,
         finalize_status: bool,
-    ) -> TaskResult<usize> {
+    ) -> TaskResult<(usize, usize)> {
         use futures::stream::{self, StreamExt};
 
         let (analysis_provider, extraction_provider) = self
@@ -744,6 +754,7 @@ impl DocumentTaskProcessor {
 
         let mut all_extracted: Vec<edgequake_algorithms::ExtractedAlgorithm> = Vec::new();
         let mut completed: usize = 0;
+        let mut pass2_failures: usize = 0;
         while let Some((idx, result)) = pass2_stream.next().await {
             completed += 1;
             let stage_progress = completed as f64 / block_count.max(1) as f64;
@@ -759,11 +770,12 @@ impl DocumentTaskProcessor {
             match result {
                 Ok(ext) => all_extracted.extend(ext.algorithms),
                 Err(e) => {
+                    pass2_failures += 1;
                     warn!(
                         document_id = %document_id,
                         block = idx,
                         error = %e,
-                        "Auto algo Pass 2 failed for block (skipping)"
+                        "Auto algo Pass 2 failed for block — counted against partial_failure"
                     );
                 }
             }
@@ -796,7 +808,11 @@ impl DocumentTaskProcessor {
         );
 
         if extraction.algorithms.is_empty() {
-            return Ok(0);
+            // No surviving algorithms. If at least one block failed Pass 2,
+            // that's a loss vs. the layout detector and should surface.
+            // Empty + zero failures means the LLM judged every block as
+            // "not an algorithm" — acceptable, no flag.
+            return Ok((0, pass2_failures));
         }
 
         // === Pass 3: Verification ===
@@ -938,6 +954,6 @@ impl DocumentTaskProcessor {
             }
         }
 
-        Ok(count)
+        Ok((count, pass2_failures))
     }
 }

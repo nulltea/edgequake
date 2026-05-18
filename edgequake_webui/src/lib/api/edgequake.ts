@@ -2396,6 +2396,30 @@ export async function analyzeCodeReference(
   >(`/code-reference/analyze/${documentRepoId}`, {});
 }
 
+/** Hard-delete a single code-match candidate. */
+export async function deleteCodeArtifact(
+  codeArtifactId: string,
+): Promise<{ id: string; deleted: boolean }> {
+  return api.delete<{ id: string; deleted: boolean }>(
+    `/code-reference/${codeArtifactId}`,
+  );
+}
+
+/** Flip every pending code-match for a document to approved. */
+export async function approveAllCodeReferences(
+  documentId: string,
+): Promise<{
+  document_id: string;
+  approved_count: number;
+  sync_failures: number;
+}> {
+  return api.post<{
+    document_id: string;
+    approved_count: number;
+    sync_failures: number;
+  }>(`/code-reference/by-document/${documentId}/approve-all`, {});
+}
+
 export interface CodeReferenceSubmitResponse {
   document_id: string;
   approved_count: number;
@@ -2624,6 +2648,8 @@ export const edgequakeApi = {
   reviewCodeArtifact,
   analyzeCodeReference,
   submitCodeReferences,
+  deleteCodeArtifact,
+  approveAllCodeReferences,
 
   // Reference codebase RAG (Phase 2)
   createReferenceCodebaseIndex,

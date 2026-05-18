@@ -124,6 +124,26 @@ pub struct CodeArtifactReviewResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct DeleteCodeArtifactResponse {
+    pub id: Uuid,
+    pub deleted: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApproveAllCodeReferencesResponse {
+    pub document_id: String,
+    /// Number of rows that were pending before this call and are now
+    /// approved. Zero is a valid response (everything was already
+    /// reviewed) and is not an error.
+    pub approved_count: usize,
+    /// Per-artifact graph-sync / embedding-sync failures encountered
+    /// while flipping. The flip itself still succeeds; this field lets
+    /// the UI surface a partial-failure toast instead of silently
+    /// dropping the warnings on the server log.
+    pub sync_failures: usize,
+}
+
+#[derive(Debug, Serialize)]
 pub struct AnalyzeCodeReferenceResponse {
     pub document_id: String,
     pub document_repo_id: Uuid,

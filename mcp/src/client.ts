@@ -19,10 +19,18 @@ export async function getClient(): Promise<EdgeQuake> {
   if (!_initialized) {
     _config = resolveConfig();
 
+    // SDK default is 30s — bumped to 60s because the `query` tool runs
+    // an LLM keyword-extraction pass + vector retrieval + reranker
+    // server-side. With other workspace LLM slots busy (e.g. background
+    // entity extraction), the keyword pass can queue and exceed 30s
+    // even when the underlying data is healthy.
+    const REQUEST_TIMEOUT_MS = 60_000;
+
     // Create a bootstrap client to discover tenant/workspace if needed
     const bootstrap = new EdgeQuake({
       baseUrl: _config.baseUrl,
       apiKey: _config.apiKey,
+      timeout: REQUEST_TIMEOUT_MS,
     });
 
     // Auto-discover tenant
@@ -76,6 +84,7 @@ export async function getClient(): Promise<EdgeQuake> {
       apiKey: _config.apiKey,
       tenantId: _config.defaultTenant,
       workspaceId: _config.defaultWorkspace,
+      timeout: REQUEST_TIMEOUT_MS,
     });
 
     _initialized = true;

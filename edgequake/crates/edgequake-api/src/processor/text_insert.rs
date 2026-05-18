@@ -337,9 +337,40 @@ impl DocumentTaskProcessor {
         // expensive LLM extraction. This saves minutes of processing when
         // a server crashed after extraction but before storage completed.
 
-        // ── CANCELLATION GATE: before LLM extraction (most expensive stage) ──
+        // ── CANCELLATION GATE: before any pipeline work ──
         self.check_cancelled(&cancel_token, "pre-extraction", &document_id)
             .await?;
+
+        // Resolve scoping + workspace vector storage UP FRONT.
+        // Both phase 1 (chunk vector flush) and phase 2 (graph vector flush)
+        // need them, and a misconfigured workspace should abort *before*
+        // any LLM work runs — not after, when the user has already paid
+        // for minutes of extraction with no way to persist the result.
+        let tenant_id = data
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("tenant_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let workspace_id_meta = data
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("workspace_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| data.workspace_id.clone());
+        let workspace_vector_storage = self
+            .get_workspace_vector_storage_strict(&workspace_id_meta)
+            .await
+            .map_err(|e| {
+                let error_msg = format!(
+                    "CRITICAL: Cannot obtain workspace vector storage for '{}': {}. \
+                         Document ingestion aborted to prevent data isolation violation.",
+                    workspace_id_meta, e
+                );
+                error!("{}", error_msg);
+                edgequake_tasks::TaskError::Process(error_msg)
+            })?;
 
         let checkpoint_result = super::pipeline_checkpoint::load_pipeline_checkpoint(
             &self.kv_storage,
@@ -351,6 +382,12 @@ impl DocumentTaskProcessor {
         )
         .await;
 
+        // Tracks whether the fresh (two-phase) path already flushed chunks +
+        // chunk embeddings to storage before LLM extraction started. When
+        // true, the existing post-binding persistence blocks become noops —
+        // the writes have already happened and the document is queryable.
+        let mut chunks_already_persisted = false;
+
         let (result, resumed_from_checkpoint) = if let Some(checkpointed) = checkpoint_result {
             info!(
                 document_id = %document_id,
@@ -360,11 +397,202 @@ impl DocumentTaskProcessor {
             );
             (checkpointed, true)
         } else {
-            // No valid checkpoint — run the full pipeline
-            let fresh_result = match pipeline
-                .process_with_resilience_cancellable(
+            // ── PHASE 1: chunk + embed chunks ──
+            // Chunks land in storage BEFORE the slow LLM extraction so the
+            // document becomes queryable as soon as vectors exist, instead
+            // of waiting for entity/relationship extraction to drain.
+            // Hybrid query reads chunks from the workspace vector store
+            // without depending on graph rows, so the document is
+            // searchable from the moment phase 1 finishes flushing.
+            self.update_document_status(&document_id, "embedding", None)
+                .await?;
+            if is_pdf_source {
+                self.pipeline_state
+                    .complete_pdf_phase(&track_id, PipelinePhase::Chunking)
+                    .await;
+                self.pipeline_state
+                    .start_pdf_phase(
+                        &track_id,
+                        PipelinePhase::Embedding,
+                        std::cmp::max(1, processed_text.len() / 2000),
+                    )
+                    .await;
+            }
+
+            let (chunks_p1, stats_p1) = match pipeline
+                .chunk_and_embed_chunks(
                     &document_id,
                     &processed_text,
+                    Some(cancel_token.clone()),
+                )
+                .await
+            {
+                Ok(out) => out,
+                Err(e) => {
+                    let error_msg = format!("Chunk + embed phase failed: {}", e);
+                    error!(
+                        document_id = %document_id,
+                        workspace_id = ?workspace_id,
+                        tenant_id = ?tenant_id,
+                        error = %e,
+                        "CRITICAL: chunk+embed failed - document marked as failed"
+                    );
+                    self.update_document_status(&document_id, "failed", Some(&error_msg))
+                        .await?;
+                    self.pipeline_state
+                        .document_failed(&document_id, &error_msg)
+                        .await;
+                    return Err(edgequake_tasks::TaskError::Process(error_msg));
+                }
+            };
+
+            // === EARLY PERSISTENCE: chunks + chunk vectors land NOW ===
+            // Both writes are required for hybrid query to find the doc:
+            // KV holds the chunk content (for retrieval-time hydration),
+            // the workspace vector store holds the embedding (for ANN).
+            // A failure here aborts before LLM cost is incurred.
+            let chunks_kv: Vec<(String, serde_json::Value)> = chunks_p1
+                .iter()
+                .map(|c| {
+                    (
+                        c.id.clone(),
+                        json!({
+                            "content": c.content,
+                            "document_id": document_id,
+                            "index": c.index,
+                            "start_line": c.start_line,
+                            "end_line": c.end_line,
+                            "start_offset": c.start_offset,
+                            "end_offset": c.end_offset,
+                            "token_count": c.token_count,
+                            "heading_path": c.heading_path,
+                        }),
+                    )
+                })
+                .collect();
+            let chunks_kv_count = chunks_kv.len();
+            if let Err(e) = self.kv_storage.upsert(&chunks_kv).await {
+                let error_msg = format!("Failed to store chunks (phase 1): {e}");
+                error!(
+                    document_id = %document_id,
+                    chunks = chunks_kv_count,
+                    "{error_msg}"
+                );
+                self.update_document_status(&document_id, "failed", Some(&error_msg))
+                    .await?;
+                return Err(edgequake_tasks::TaskError::Storage(error_msg));
+            }
+
+            // Chunk-vector flush. Count expected vs. written so a silent
+            // partial flush surfaces here, not weeks later as missing
+            // search hits.
+            let mut chunk_vec_expected = 0usize;
+            let mut chunk_vec_stored = 0usize;
+            let mut chunk_vec_first_err: Option<String> = None;
+            for chunk in &chunks_p1 {
+                let Some(embedding) = chunk.embedding.as_ref() else {
+                    continue;
+                };
+                chunk_vec_expected += 1;
+                let mut metadata = json!({
+                    "type": "chunk",
+                    "document_id": document_id,
+                    "index": chunk.index,
+                    "content": chunk.content,
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "start_offset": chunk.start_offset,
+                    "end_offset": chunk.end_offset,
+                    "token_count": chunk.token_count,
+                });
+                match chunk.kind {
+                    edgequake_pipeline::chunker::ChunkKind::Figure => {
+                        metadata["kind"] = json!("figure");
+                        if let Some(ref fid) = chunk.figure_id {
+                            metadata["figure_id"] = json!(fid);
+                        }
+                    }
+                    edgequake_pipeline::chunker::ChunkKind::Table => {
+                        metadata["kind"] = json!("table");
+                        if let Some(ref tid) = chunk.table_id {
+                            metadata["table_id"] = json!(tid);
+                        }
+                    }
+                    edgequake_pipeline::chunker::ChunkKind::Text => {
+                        metadata["kind"] = json!("text");
+                    }
+                }
+                if let Some(ref tid) = tenant_id {
+                    metadata["tenant_id"] = json!(tid);
+                }
+                metadata["workspace_id"] = json!(&workspace_id_meta);
+
+                match workspace_vector_storage
+                    .upsert(&[(chunk.id.clone(), embedding.clone(), metadata)])
+                    .await
+                {
+                    Ok(_) => chunk_vec_stored += 1,
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        warn!(
+                            document_id = %document_id,
+                            chunk_id = %chunk.id,
+                            error = %err_str,
+                            "chunk vector upsert failed (phase 1)"
+                        );
+                        if chunk_vec_first_err.is_none() {
+                            chunk_vec_first_err = Some(err_str);
+                        }
+                    }
+                }
+            }
+            if chunk_vec_stored < chunk_vec_expected {
+                let error_msg = format!(
+                    "Chunk-vector flush incomplete (phase 1): wrote {chunk_vec_stored}/{chunk_vec_expected} (first error: {})",
+                    chunk_vec_first_err.as_deref().unwrap_or("<unknown>")
+                );
+                error!(document_id = %document_id, "{error_msg}");
+                self.update_document_status(&document_id, "failed", Some(&error_msg))
+                    .await?;
+                return Err(edgequake_tasks::TaskError::Storage(error_msg));
+            }
+            chunks_already_persisted = true;
+
+            info!(
+                document_id = %document_id,
+                chunks = chunks_kv_count,
+                chunk_vectors = chunk_vec_stored,
+                "PHASE-1: chunks + chunk vectors persisted — document is now queryable via hybrid mode"
+            );
+
+            // Document is queryable from this moment on. Flip the status so
+            // downstream observers (UI, MCP, query API) treat it that way.
+            self.update_document_status(&document_id, "extracting", None)
+                .await?;
+            if is_pdf_source {
+                self.pipeline_state
+                    .complete_pdf_phase(&track_id, PipelinePhase::Embedding)
+                    .await;
+                let estimated_entities = chunks_p1.len() * 3;
+                self.pipeline_state
+                    .start_pdf_phase(
+                        &track_id,
+                        PipelinePhase::Extraction,
+                        estimated_entities,
+                    )
+                    .await;
+            }
+
+            // ── CANCELLATION GATE: chunks are durable, fail fast before LLM ──
+            self.check_cancelled(&cancel_token, "pre-llm", &document_id)
+                .await?;
+
+            // ── PHASE 2: extract entities + relationships + their embeddings ──
+            let fresh_result = match pipeline
+                .extract_and_embed_graph(
+                    &document_id,
+                    chunks_p1,
+                    stats_p1,
                     Some(chunk_progress_callback),
                     Some(cancel_token.clone()),
                 )
@@ -400,14 +628,14 @@ impl DocumentTaskProcessor {
                 }
                 Err(e) => {
                     // FIX-3: Comprehensive error logging with context
-                    let error_msg = format!("Pipeline processing failed: {}", e);
+                    let error_msg = format!("Pipeline extract phase failed: {}", e);
                     error!(
                         document_id = %document_id,
                         workspace_id = ?workspace_id,
                         tenant_id = ?tenant_id,
                         content_length = data.text.len(),
                         error = %e,
-                        "CRITICAL: Pipeline processing failed - document marked as failed"
+                        "CRITICAL: extract+embed-graph failed - document marked as failed (chunks remain queryable)"
                     );
 
                     // Update document status to failed with detailed error
@@ -423,7 +651,9 @@ impl DocumentTaskProcessor {
             };
 
             // CHECKPOINT-SAVE: Persist pipeline results so a crash during
-            // storage won't force re-running the expensive LLM extraction.
+            // graph storage won't force re-running the expensive LLM
+            // extraction. Chunks are already in storage at this point —
+            // the checkpoint only saves the extract+embed-graph result.
             if let Err(e) = super::pipeline_checkpoint::save_pipeline_checkpoint(
                 &self.kv_storage,
                 &document_id,
@@ -468,100 +698,82 @@ impl DocumentTaskProcessor {
             ))
             .await;
 
-        // OODA-02: Update status to "extracting" - LLM entity extraction in progress
-        // WHY: This is often the longest stage, users need visibility
-        self.update_document_status(&document_id, "extracting", None)
-            .await?;
-
-        // OODA-17: Update PDF phase progress - chunking complete, start extraction
-        if is_pdf_source {
-            self.pipeline_state
-                .complete_pdf_phase(&track_id, PipelinePhase::Chunking)
-                .await;
-            // Extraction phase: estimate entity count from chunk count
-            let estimated_entities = result.chunks.len() * 3; // ~3 entities per chunk heuristic
-            self.pipeline_state
-                .start_pdf_phase(&track_id, PipelinePhase::Extraction, estimated_entities)
-                .await;
-        }
-
-        // Store chunks in KV storage
-        // OODA-05: Include position metadata and token count for lineage traceability
-        // WHY: Each chunk must carry its exact position in the source document so that
-        // lineage queries can map entity → chunk → source location without extra lookups.
-        let chunks: Vec<(String, serde_json::Value)> = result
-            .chunks
-            .iter()
-            .map(|c| {
-                (
-                    c.id.clone(),
-                    json!({
-                        "content": c.content,
-                        "document_id": document_id,
-                        "index": c.index,
-                        "start_line": c.start_line,
-                        "end_line": c.end_line,
-                        "start_offset": c.start_offset,
-                        "end_offset": c.end_offset,
-                        "token_count": c.token_count,
-                        // Heading hierarchy active at this chunk's location,
-                        // shallow-to-deep (populated by ContextAwareChunking,
-                        // empty otherwise). Available for retrieval filtering.
-                        "heading_path": c.heading_path,
-                    }),
-                )
-            })
-            .collect();
-
-        if let Err(e) = self.kv_storage.upsert(&chunks).await {
-            let error_msg = format!("Failed to store chunks: {}", e);
-            error!("{}", error_msg);
-
-            self.update_document_status(&document_id, "failed", Some(&error_msg))
+        // The status / PDF-phase advances below only make sense for the
+        // checkpoint-resume path. The fresh two-phase path already advanced
+        // status to "extracting" and started the Extraction PDF phase inline
+        // (between phase 1 and phase 2), so re-setting them here would flip
+        // the UI backwards.
+        if !chunks_already_persisted {
+            // OODA-02: Update status to "extracting" - LLM entity extraction in progress
+            // WHY: This is often the longest stage, users need visibility
+            self.update_document_status(&document_id, "extracting", None)
                 .await?;
 
-            return Err(edgequake_tasks::TaskError::Storage(error_msg));
+            // OODA-17: Update PDF phase progress - chunking complete, start extraction
+            if is_pdf_source {
+                self.pipeline_state
+                    .complete_pdf_phase(&track_id, PipelinePhase::Chunking)
+                    .await;
+                // Extraction phase: estimate entity count from chunk count
+                let estimated_entities = result.chunks.len() * 3; // ~3 entities per chunk heuristic
+                self.pipeline_state
+                    .start_pdf_phase(&track_id, PipelinePhase::Extraction, estimated_entities)
+                    .await;
+            }
         }
 
-        // Extract tenant_id and workspace_id from metadata for scoping
-        let tenant_id = data
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("tenant_id"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let workspace_id_meta = data
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("workspace_id"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| data.workspace_id.clone());
+        // Chunk persistence (KV + vector store).
+        //
+        // The fresh-path (two-phase) flow above already wrote chunks +
+        // chunk vectors before LLM extraction started — `chunks_already_persisted`
+        // signals that. This block is the canonical write for the
+        // checkpoint-resume path, where chunks come from the loaded
+        // ProcessingResult and haven't reached storage yet on this run.
+        if !chunks_already_persisted {
+            let chunks: Vec<(String, serde_json::Value)> = result
+                .chunks
+                .iter()
+                .map(|c| {
+                    (
+                        c.id.clone(),
+                        json!({
+                            "content": c.content,
+                            "document_id": document_id,
+                            "index": c.index,
+                            "start_line": c.start_line,
+                            "end_line": c.end_line,
+                            "start_offset": c.start_offset,
+                            "end_offset": c.end_offset,
+                            "token_count": c.token_count,
+                            "heading_path": c.heading_path,
+                        }),
+                    )
+                })
+                .collect();
 
-        // Get workspace-specific vector storage using the registry
-        // WHY: Different workspaces may have different embedding dimensions
-        // WHY-OODA223: STRICT mode - fail loudly if workspace storage unavailable
-        // to prevent embeddings from being stored in the wrong (global) table
-        let workspace_vector_storage = self
-            .get_workspace_vector_storage_strict(&workspace_id_meta)
-            .await
-            .map_err(|e| {
-                let error_msg = format!(
-                    "CRITICAL: Cannot obtain workspace vector storage for '{}': {}. \
-                         Document ingestion aborted to prevent data isolation violation.",
-                    workspace_id_meta, e
-                );
+            if let Err(e) = self.kv_storage.upsert(&chunks).await {
+                let error_msg = format!("Failed to store chunks: {}", e);
                 error!("{}", error_msg);
-                edgequake_tasks::TaskError::Process(error_msg)
-            })?;
 
-        // OODA-02: Update status to "embedding" - generating vector embeddings
-        // WHY: Shows user that extraction is complete, now vectorizing
-        self.update_document_status(&document_id, "embedding", None)
-            .await?;
+                self.update_document_status(&document_id, "failed", Some(&error_msg))
+                    .await?;
+
+                return Err(edgequake_tasks::TaskError::Storage(error_msg));
+            }
+        }
+
+        // Same gate as the "extracting" flip above: the fresh path has
+        // already moved past the embedding stage, so don't replay it for
+        // those documents.
+        if !chunks_already_persisted {
+            // OODA-02: Update status to "embedding" - generating vector embeddings
+            // WHY: Shows user that extraction is complete, now vectorizing
+            self.update_document_status(&document_id, "embedding", None)
+                .await?;
+        }
 
         // OODA-17: Update PDF phase progress - extraction complete, start embedding
-        if is_pdf_source {
+        if !chunks_already_persisted && is_pdf_source {
             self.pipeline_state
                 .complete_pdf_phase(&track_id, PipelinePhase::Extraction)
                 .await;
@@ -571,64 +783,63 @@ impl DocumentTaskProcessor {
                 .await;
         }
 
-        // Store chunk embeddings in vector storage for semantic search
-        // OODA-05: Include position metadata for lineage-aware retrieval
-        // WHY: Semantic search results should carry source position so callers
-        // can display "found in lines 42-58" without extra KV lookups.
-        let mut chunk_embeddings_stored = 0;
-        for chunk in &result.chunks {
-            if let Some(embedding) = &chunk.embedding {
-                let mut metadata = json!({
-                    "type": "chunk",
-                    "document_id": document_id,
-                    "index": chunk.index,
-                    "content": chunk.content,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "start_offset": chunk.start_offset,
-                    "end_offset": chunk.end_offset,
-                    "token_count": chunk.token_count,
-                });
-                // VLM-OCR figure chunks: mark them so the query layer can
-                // surface them as figures and the media-fetch endpoint can
-                // be reached by id from a hit.
-                match chunk.kind {
-                    edgequake_pipeline::chunker::ChunkKind::Figure => {
-                        metadata["kind"] = json!("figure");
-                        if let Some(ref fid) = chunk.figure_id {
-                            metadata["figure_id"] = json!(fid);
+        // Chunk-vector storage (workspace-specific).
+        //
+        // Like the KV block above, this is the canonical write path for
+        // the checkpoint-resume case. The fresh path's phase 1 already
+        // flushed and verified these, so skip when `chunks_already_persisted`.
+        if !chunks_already_persisted {
+            let mut chunk_embeddings_stored = 0;
+            for chunk in &result.chunks {
+                if let Some(embedding) = &chunk.embedding {
+                    let mut metadata = json!({
+                        "type": "chunk",
+                        "document_id": document_id,
+                        "index": chunk.index,
+                        "content": chunk.content,
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "start_offset": chunk.start_offset,
+                        "end_offset": chunk.end_offset,
+                        "token_count": chunk.token_count,
+                    });
+                    match chunk.kind {
+                        edgequake_pipeline::chunker::ChunkKind::Figure => {
+                            metadata["kind"] = json!("figure");
+                            if let Some(ref fid) = chunk.figure_id {
+                                metadata["figure_id"] = json!(fid);
+                            }
+                        }
+                        edgequake_pipeline::chunker::ChunkKind::Table => {
+                            metadata["kind"] = json!("table");
+                            if let Some(ref tid) = chunk.table_id {
+                                metadata["table_id"] = json!(tid);
+                            }
+                        }
+                        edgequake_pipeline::chunker::ChunkKind::Text => {
+                            metadata["kind"] = json!("text");
                         }
                     }
-                    edgequake_pipeline::chunker::ChunkKind::Table => {
-                        metadata["kind"] = json!("table");
-                        if let Some(ref tid) = chunk.table_id {
-                            metadata["table_id"] = json!(tid);
-                        }
-                    }
-                    edgequake_pipeline::chunker::ChunkKind::Text => {
-                        metadata["kind"] = json!("text");
-                    }
-                }
 
-                // Add tenant and workspace IDs if present
-                if let Some(ref tid) = tenant_id {
-                    metadata["tenant_id"] = json!(tid);
-                }
-                metadata["workspace_id"] = json!(&workspace_id_meta);
+                    if let Some(ref tid) = tenant_id {
+                        metadata["tenant_id"] = json!(tid);
+                    }
+                    metadata["workspace_id"] = json!(&workspace_id_meta);
 
-                if workspace_vector_storage
-                    .upsert(&[(chunk.id.clone(), embedding.clone(), metadata)])
-                    .await
-                    .is_ok()
-                {
-                    chunk_embeddings_stored += 1;
+                    if workspace_vector_storage
+                        .upsert(&[(chunk.id.clone(), embedding.clone(), metadata)])
+                        .await
+                        .is_ok()
+                    {
+                        chunk_embeddings_stored += 1;
+                    }
                 }
             }
+            info!(
+                "Stored {} chunk embeddings in vector storage for document {} (checkpoint-resume path)",
+                chunk_embeddings_stored, document_id
+            );
         }
-        info!(
-            "Stored {} chunk embeddings in vector storage for document {}",
-            chunk_embeddings_stored, document_id
-        );
 
         // Update task progress - extraction
         task.update_progress("extraction".to_string(), 4, 60);

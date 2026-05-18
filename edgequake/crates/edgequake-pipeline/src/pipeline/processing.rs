@@ -11,10 +11,11 @@
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::chunker::TextChunk;
 use crate::error::Result;
 
 use super::helpers::{aggregate_extraction_stats, link_extractions_to_chunks};
-use super::{ChunkErrorInfo, ChunkProgressCallback, Pipeline, ProcessingResult};
+use super::{ChunkErrorInfo, ChunkProgressCallback, Pipeline, ProcessingResult, ProcessingStats};
 
 impl Pipeline {
     /// Process a document through the pipeline.
@@ -164,13 +165,74 @@ impl Pipeline {
         progress_callback: Option<ChunkProgressCallback>,
         cancel_token: Option<CancellationToken>,
     ) -> Result<ProcessingResult> {
-        let start = std::time::Instant::now();
+        // Two-phase form (new): orchestrators that want chunks queryable
+        // before extraction finishes call `chunk_and_embed_chunks` and
+        // `extract_and_embed_graph` directly with a storage flush in
+        // between. This shim keeps the old monolithic surface alive for
+        // callers (and the resume-from-checkpoint path) that don't need
+        // mid-pipeline persistence.
+        let (chunks, stats) = self
+            .chunk_and_embed_chunks(document_id, content, cancel_token.clone())
+            .await?;
+        self.extract_and_embed_graph(
+            document_id,
+            chunks,
+            stats,
+            progress_callback,
+            cancel_token,
+        )
+        .await
+    }
 
+    /// Phase 1 of the resilient pipeline: chunk the document and generate
+    /// chunk embeddings. Returns the chunks (with `embedding` populated for
+    /// Text-kind entries) and the in-progress `ProcessingStats` so the
+    /// caller can persist both to its KV / vector store before extraction
+    /// runs.
+    ///
+    /// Validates that at least one chunk was produced — empty documents
+    /// fail loudly here instead of silently completing with zero rows.
+    pub async fn chunk_and_embed_chunks(
+        &self,
+        document_id: &str,
+        content: &str,
+        _cancel_token: Option<CancellationToken>,
+    ) -> Result<(Vec<TextChunk>, ProcessingStats)> {
         // Step 1: Chunk the document
         let mut chunks = self.chunker.chunk(content, document_id)?;
         let mut stats = self.init_chunk_stats(&chunks);
 
-        // Step 2: Extract entities and relationships WITH RESILIENCE
+        if stats.chunk_count == 0 {
+            return Err(crate::error::PipelineError::ChunkingError(
+                "Document chunking produced 0 chunks - content may be empty or malformed"
+                    .to_string(),
+            ));
+        }
+
+        // Step 2: Embed chunk text immediately so the orchestrator can flip
+        // the document to a queryable state before LLM extraction begins.
+        self.embed_chunks_only(&mut chunks, &mut stats).await?;
+
+        Ok((chunks, stats))
+    }
+
+    /// Phase 2 of the resilient pipeline: extract entities + relationships
+    /// from already-embedded chunks, embed the extractions, build lineage.
+    ///
+    /// Takes ownership of `chunks` and `stats` from phase 1. `stats` is
+    /// updated in place with extraction + graph-embedding contributions
+    /// (cost, counts, timing) before being returned in `ProcessingResult`.
+    pub async fn extract_and_embed_graph(
+        &self,
+        document_id: &str,
+        chunks: Vec<TextChunk>,
+        mut stats: ProcessingStats,
+        progress_callback: Option<ChunkProgressCallback>,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<ProcessingResult> {
+        let start = std::time::Instant::now();
+
+        // Step 3: Extract entities and relationships WITH RESILIENCE
         let mut extractions = Vec::new();
         if self.config.enable_entity_extraction || self.config.enable_relationship_extraction {
             if let Some(extractor) = &self.extractor {
@@ -240,26 +302,22 @@ impl Pipeline {
             }
         }
 
-        // Step 3: Generate embeddings
-        self.generate_all_embeddings(&mut chunks, &mut extractions, &mut stats)
+        // Step 4: Embed entities + relationships only (chunks already
+        // embedded in phase 1).
+        self.embed_extractions_only(&mut extractions, &mut stats)
             .await?;
 
-        stats.processing_time_ms = start.elapsed().as_millis() as u64;
+        // Accumulate extract+embed-graph time on top of phase 1's
+        // chunk+embed time so the reported total stays meaningful when
+        // the two phases run with a storage flush between them.
+        stats.processing_time_ms = stats
+            .processing_time_ms
+            .saturating_add(start.elapsed().as_millis() as u64);
 
-        // Step 4: Build lineage if enabled
+        // Step 5: Build lineage if enabled
         let lineage = self.build_lineage(document_id, &chunks, &extractions, &stats);
 
-        // ── Validation ──
-        // FIX-2: Validate processing results before returning Ok
-        if stats.chunk_count == 0 {
-            return Err(crate::error::PipelineError::ChunkingError(
-                "Document chunking produced 0 chunks - content may be empty or malformed"
-                    .to_string(),
-            ));
-        }
-
-        // FIX-RELIABILITY: Changed from hard error to warning.
-        // WHY: 0 entities is NOT always a failure:
+        // FIX-RELIABILITY: 0 entities is NOT always a failure:
         //   1. Pipeline may have no extractor (test/mock mode)
         //   2. Document content may have no named entities
         //   3. Chunks are still valuable for semantic search via embeddings
