@@ -443,6 +443,11 @@ fn api_v1_routes() -> Router<AppState> {
             "/graph/entities/{entity_name}/neighborhood",
             get(handlers::get_entity_neighborhood),
         )
+        // Plan-4 body attachment (lattice + other BYO-entity clients).
+        .route(
+            "/graph/entities/{entity_name}/body",
+            post(handlers::set_entity_body),
+        )
         // Relationships (Phase 2)
         .route(
             "/graph/relationships",

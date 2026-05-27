@@ -36,9 +36,12 @@
 //! - Merging duplicate entities
 //! - Curating the knowledge graph
 
+mod embed;
+mod entity_body;
 mod entity_crud;
 mod entity_ops;
 
+pub use entity_body::*;
 pub use entity_crud::*;
 pub use entity_ops::*;
 

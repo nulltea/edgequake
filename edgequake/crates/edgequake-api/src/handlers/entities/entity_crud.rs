@@ -18,6 +18,7 @@ use crate::handlers::isolation::filter_nodes_by_tenant_context;
 use crate::middleware::TenantContext;
 use crate::state::AppState;
 
+use super::embed::{default_embedding_text, embed_entity_and_store};
 use super::{node_to_entity_response, normalize_entity_name};
 pub use crate::handlers::entities_types::{
     ChangesSummary, CreateEntityRequest, CreateEntityResponse, DeleteEntityQuery,
@@ -185,6 +186,32 @@ pub async fn create_entity(
         .upsert_node(&entity_name, properties.clone())
         .await?;
 
+    // Plan 4: optionally embed the entity into the workspace's vector store
+    // so it becomes discoverable via `POST /query`. Without this, entities
+    // created via the graph API are invisible to semantic search because the
+    // document-ingestion pipeline (which the upload path uses) is bypassed.
+    //
+    // Backwards-compatible: clients that don't set `embed` (omit or false)
+    // see the original behavior (no embedding generated).
+    if req.embed.unwrap_or(false) {
+        let text = req
+            .embedding_text
+            .clone()
+            .unwrap_or_else(|| default_embedding_text(&entity_name, &req.description));
+        // Best-effort: errors are logged inside the helper but should also
+        // surface to the client so a partial write isn't silent.
+        embed_entity_and_store(
+            &state,
+            &tenant_ctx,
+            &entity_name,
+            &req.entity_type,
+            &req.description,
+            &req.source_id,
+            &text,
+        )
+        .await?;
+    }
+
     // Reconstruct node for response
     let node = GraphNode {
         id: entity_name.clone(),
@@ -298,6 +325,7 @@ pub async fn get_entity(
 )]
 pub async fn update_entity(
     State(state): State<AppState>,
+    tenant_ctx: TenantContext,
     Path(entity_name): Path<String>,
     Json(req): Json<UpdateEntityRequest>,
 ) -> ApiResult<Json<UpdateEntityResponse>> {
@@ -345,6 +373,44 @@ pub async fn update_entity(
         .graph_storage
         .upsert_node(&entity_name, node.properties.clone())
         .await?;
+
+    // Plan 4: optionally re-embed after update. Lattice sets `embed: true`
+    // only when its locally-tracked embedding_text hash changes, so most
+    // PUTs don't pay the embedding cost.
+    if req.embed.unwrap_or(false) {
+        let entity_type = node
+            .properties
+            .get("entity_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let description = node
+            .properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let source_id = node
+            .properties
+            .get("source_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let text = req
+            .embedding_text
+            .clone()
+            .unwrap_or_else(|| default_embedding_text(&entity_name, &description));
+        embed_entity_and_store(
+            &state,
+            &tenant_ctx,
+            &entity_name,
+            &entity_type,
+            &description,
+            &source_id,
+            &text,
+        )
+        .await?;
+    }
 
     let degree = state.graph_storage.node_degree(&entity_name).await?;
     let entity = node_to_entity_response(node, degree);

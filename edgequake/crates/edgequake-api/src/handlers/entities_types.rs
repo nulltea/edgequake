@@ -42,6 +42,21 @@ pub struct CreateEntityRequest {
     /// Additional metadata.
     #[serde(default)]
     pub metadata: serde_json::Value,
+
+    /// If true, server generates an embedding for the entity using the
+    /// workspace's configured embedding provider, upserts it to the
+    /// workspace vector storage, and invalidates the workspace stats cache.
+    /// Defaults to false for backwards compatibility — existing clients that
+    /// don't set this field keep today's behavior (no embedding generated).
+    #[serde(default)]
+    pub embed: Option<bool>,
+
+    /// Text to feed the embedding model when `embed = true`. If absent, the
+    /// server falls back to `entity_name + " " + description`. Lattice and
+    /// other clients that compose richer per-type embedding text (with
+    /// breadcrumb context, language tags, etc.) should pass it explicitly.
+    #[serde(default)]
+    pub embedding_text: Option<String>,
 }
 
 /// Update entity request.
@@ -55,6 +70,48 @@ pub struct UpdateEntityRequest {
 
     /// Updated metadata.
     pub metadata: Option<serde_json::Value>,
+
+    /// If true, regenerate the entity's embedding vector. See
+    /// [`CreateEntityRequest::embed`] for semantics.
+    #[serde(default)]
+    pub embed: Option<bool>,
+
+    /// Optional override for the text fed to the embedding model when
+    /// `embed = true`. Fallback: `entity_name + " " + description`.
+    #[serde(default)]
+    pub embedding_text: Option<String>,
+}
+
+/// Set-entity-body request (Plan 4 new endpoint).
+///
+/// Attaches a body text blob to an existing entity (Document, Heading,
+/// Table, CodeBlock, Quote, etc.). Idempotent overwrite.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SetEntityBodyRequest {
+    /// The body text to store. Replaces any prior body for this entity.
+    pub body: String,
+
+    /// If true, regenerate the entity's embedding vector after attaching
+    /// the body. Useful when the body itself is meaningful for retrieval
+    /// (e.g. a Document's markdown or a CodeBlock's source). Default false.
+    #[serde(default)]
+    pub embed: Option<bool>,
+
+    /// Optional text fed to the embedding model when `embed = true`.
+    /// If absent, the server falls back to
+    /// `entity_name + " " + description + " " + body`.
+    #[serde(default)]
+    pub embedding_text: Option<String>,
+}
+
+/// Set-entity-body response.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SetEntityBodyResponse {
+    pub status: String,
+    pub message: String,
+    pub entity_name: String,
+    pub body_length: usize,
+    pub embedded: bool,
 }
 
 /// Merge entities request.
