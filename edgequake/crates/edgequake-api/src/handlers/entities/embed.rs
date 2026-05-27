@@ -27,6 +27,33 @@ pub(super) fn entity_vector_id(entity_name: &str) -> String {
     format!("entity:{}", entity_name)
 }
 
+/// Embed a single text via the workspace's configured provider.
+///
+/// Returns:
+///   - `Ok(Some(vector))` — workspace has a provider and embedding succeeded
+///   - `Ok(None)` — workspace has no embedding provider configured (skip)
+///   - `Err(ApiError)` — provider call failed
+///
+/// Exposed to sibling handlers (notably `documents/lattice.rs`) that need
+/// to embed non-entity content (e.g. chunks) without invoking the entity-
+/// specific upsert dance.
+pub async fn embed_text_via_workspace(
+    state: &AppState,
+    workspace_id: &str,
+    text: &str,
+) -> ApiResult<Option<Vec<f32>>> {
+    let provider: Option<Arc<dyn edgequake_query::EmbeddingProvider>> =
+        get_workspace_embedding_provider(state, workspace_id).await?;
+    let provider = match provider {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let vector = provider.embed_one(text).await.map_err(|e| {
+        ApiError::Internal(format!("Failed to embed text via workspace provider: {}", e))
+    })?;
+    Ok(Some(vector))
+}
+
 /// Embed `text` using the workspace's configured embedding provider and
 /// upsert the result into the workspace's vector storage. Returns Ok(true)
 /// if a vector was actually stored, Ok(false) if the operation was skipped

@@ -233,6 +233,12 @@ fn api_v1_routes() -> Router<AppState> {
         .route("/documents", post(handlers::upload_document))
         .route("/documents", get(handlers::list_documents))
         .route("/documents", delete(handlers::delete_all_documents))
+        // Plan-6 lattice fast-path — MUST come before /documents/{document_id}
+        .route("/documents/raw", post(handlers::create_raw_document))
+        .route(
+            "/documents/{document_id}/chunks",
+            post(handlers::create_chunks),
+        )
         // Track Status (Phase 2) - MUST come before /documents/{document_id}
         .route(
             "/documents/track/{track_id}",
@@ -357,6 +363,10 @@ fn api_v1_routes() -> Router<AppState> {
         )
         // Document by ID - comes last because {document_id} matches any path segment
         .route("/documents/{document_id}", get(handlers::get_document))
+        .route(
+            "/documents/{document_id}",
+            patch(handlers::patch_document),
+        )
         .route(
             "/documents/{document_id}",
             delete(handlers::delete_document),

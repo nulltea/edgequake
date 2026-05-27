@@ -25,21 +25,33 @@
 /// Normalize entity name to consistent format.
 ///
 /// Applies the following transformations:
-/// - Trims whitespace
+/// - Trims and collapses whitespace
 /// - Removes common prefixes (The, A, An)
 /// - Removes possessive suffixes ('s)
-/// - Converts to title case
-/// - Replaces spaces with underscores
-/// - Converts to uppercase
+/// - Per-word: **preserves verbatim** when the word contains any uppercase
+///   letter past position 0 (acronyms like `FFN`, `TMFA`; CamelCase /
+///   Pascal-with-acronym-prefix like `ISA-HiddenState`, `iPhone`,
+///   `GraphQL`, `IPv6`). Otherwise title-cases (`john` → `John`).
+/// - Joins words with a **single space** (not underscore) so names stay
+///   readable.
+///
+/// This keeps acronyms intact while still merging case variants of plain
+/// words (`john doe`, `John Doe` → `John Doe`). Words the model writes
+/// deliberately ALL-CAPS or in `mCdonald`-style mixed case are taken at
+/// face value — they're rare in well-formed Claude output and preserving
+/// them is the right call for proper-noun fidelity.
 ///
 /// # Examples
 ///
 /// ```rust
 /// use edgequake_pipeline::prompts::normalize_entity_name;
 ///
-/// assert_eq!(normalize_entity_name("John Doe"), "JOHN_DOE");
-/// assert_eq!(normalize_entity_name("the company"), "COMPANY");
-/// assert_eq!(normalize_entity_name("  Sarah  Chen  "), "SARAH_CHEN");
+/// assert_eq!(normalize_entity_name("FFN"), "FFN");
+/// assert_eq!(normalize_entity_name("TMFA"), "TMFA");
+/// assert_eq!(normalize_entity_name("ISA-HiddenState"), "ISA-HiddenState");
+/// assert_eq!(normalize_entity_name("john doe"), "John Doe");
+/// assert_eq!(normalize_entity_name("the company"), "Company");
+/// assert_eq!(normalize_entity_name("  Sarah  Chen  "), "Sarah Chen");
 /// ```
 pub fn normalize_entity_name(raw_name: &str) -> String {
     let trimmed = raw_name.trim();
@@ -54,25 +66,35 @@ pub fn normalize_entity_name(raw_name: &str) -> String {
         .or_else(|| trimmed.strip_prefix("an "))
         .unwrap_or(trimmed);
 
-    // Split by whitespace, normalize each word (removing possessives), and rejoin
+    // Split by whitespace, normalize each word (removing possessives),
+    // and rejoin with a single space.
     without_prefix
         .split_whitespace()
         .filter(|w| !w.is_empty())
         .map(|word| {
-            // Remove possessive suffix from each word
+            // Remove possessive suffix
             let without_possessive = word
                 .strip_suffix("'s")
                 .or_else(|| word.strip_suffix("'s"))
                 .unwrap_or(word);
-            to_title_case(without_possessive)
+            preserve_or_title_case(without_possessive)
         })
         .collect::<Vec<_>>()
-        .join("_")
-        .to_uppercase()
+        .join(" ")
 }
 
-/// Convert a word to title case (first letter uppercase, rest lowercase).
-fn to_title_case(word: &str) -> String {
+/// Per-word casing rule.
+///
+/// Preserve the word verbatim when **any** character past position 0 is
+/// uppercase — this catches all-caps acronyms (`FFN`, `TMFA`, `AI`) AND
+/// internal-cap words (`iPhone`, `GraphQL`, `ISA-HiddenState`,
+/// `mCdonald`). Otherwise apply title case (first letter upper, rest
+/// lower).
+fn preserve_or_title_case(word: &str) -> String {
+    let has_internal_upper = word.chars().skip(1).any(|c| c.is_uppercase());
+    if has_internal_upper {
+        return word.to_string();
+    }
     let mut chars = word.chars();
     match chars.next() {
         None => String::new(),
@@ -105,39 +127,69 @@ mod tests {
 
     #[test]
     fn test_basic_normalization() {
-        assert_eq!(normalize_entity_name("John Doe"), "JOHN_DOE");
-        assert_eq!(normalize_entity_name("john doe"), "JOHN_DOE");
-        assert_eq!(normalize_entity_name("JOHN DOE"), "JOHN_DOE");
+        // Plain lowercase or mixed → title-cased, joined by space.
+        assert_eq!(normalize_entity_name("John Doe"), "John Doe");
+        assert_eq!(normalize_entity_name("john doe"), "John Doe");
+    }
+
+    #[test]
+    fn test_acronyms_preserved_verbatim() {
+        // Any uppercase past position 0 → preserve verbatim.
+        assert_eq!(normalize_entity_name("FFN"), "FFN");
+        assert_eq!(normalize_entity_name("TMFA"), "TMFA");
+        assert_eq!(normalize_entity_name("AI"), "AI");
+        assert_eq!(normalize_entity_name("ML"), "ML");
+        assert_eq!(normalize_entity_name("JOHN DOE"), "JOHN DOE");
+    }
+
+    #[test]
+    fn test_camelcase_and_internal_caps_preserved() {
+        assert_eq!(normalize_entity_name("ISA-HiddenState"), "ISA-HiddenState");
+        assert_eq!(normalize_entity_name("iPhone"), "iPhone");
+        assert_eq!(normalize_entity_name("eBay"), "eBay");
+        assert_eq!(normalize_entity_name("GraphQL"), "GraphQL");
+        assert_eq!(normalize_entity_name("OAuth"), "OAuth");
+        assert_eq!(normalize_entity_name("IPv6"), "IPv6");
     }
 
     #[test]
     fn test_whitespace_handling() {
-        assert_eq!(normalize_entity_name("  John  Doe  "), "JOHN_DOE");
-        assert_eq!(normalize_entity_name("\tJohn\nDoe\r"), "JOHN_DOE");
-        assert_eq!(normalize_entity_name("John   Doe"), "JOHN_DOE");
+        // Collapse whitespace to single space.
+        assert_eq!(normalize_entity_name("  John  Doe  "), "John Doe");
+        assert_eq!(normalize_entity_name("\tJohn\nDoe\r"), "John Doe");
+        assert_eq!(normalize_entity_name("John   Doe"), "John Doe");
     }
 
     #[test]
     fn test_prefix_removal() {
-        assert_eq!(normalize_entity_name("The Company"), "COMPANY");
-        assert_eq!(normalize_entity_name("the company"), "COMPANY");
-        assert_eq!(normalize_entity_name("A Person"), "PERSON");
-        assert_eq!(normalize_entity_name("An Event"), "EVENT");
+        assert_eq!(normalize_entity_name("The Company"), "Company");
+        assert_eq!(normalize_entity_name("the company"), "Company");
+        assert_eq!(normalize_entity_name("A Person"), "Person");
+        assert_eq!(normalize_entity_name("An Event"), "Event");
+        // Acronym kept after prefix strip.
+        assert_eq!(normalize_entity_name("The FFN"), "FFN");
     }
 
     #[test]
     fn test_possessive_removal() {
-        assert_eq!(normalize_entity_name("John's"), "JOHN");
+        assert_eq!(normalize_entity_name("John's"), "John");
         assert_eq!(
             normalize_entity_name("Company's Products"),
-            "COMPANY_PRODUCTS"
+            "Company Products"
         );
     }
 
     #[test]
-    fn test_title_case_conversion() {
-        assert_eq!(normalize_entity_name("jOHN dOE"), "JOHN_DOE");
-        assert_eq!(normalize_entity_name("mCdonald"), "MCDONALD");
+    fn test_mixed_examples_from_real_docs() {
+        // User-reported regressions from lattice extractions.
+        assert_eq!(
+            normalize_entity_name("Vocab Memorization"),
+            "Vocab Memorization"
+        );
+        assert_eq!(
+            normalize_entity_name("Wire-side Leakage"),
+            "Wire-side Leakage"
+        );
     }
 
     #[test]
@@ -164,8 +216,13 @@ mod tests {
 
     #[test]
     fn test_special_characters_preserved() {
-        // Hyphens and other meaningful characters should be preserved
-        assert_eq!(normalize_entity_name("New-York"), "NEW-YORK");
+        // Hyphens are NOT word separators; "New-York" is one whitespace token.
+        // The "Y" at position 4 is uppercase past position 0, so the word is
+        // treated as internal-cap and preserved verbatim.
+        assert_eq!(normalize_entity_name("New-York"), "New-York");
+        // All-lowercase hyphenated word stays one token, gets first-letter
+        // title-cased only.
+        assert_eq!(normalize_entity_name("new-york"), "New-york");
         assert_eq!(normalize_entity_name("C++"), "C++");
     }
 }

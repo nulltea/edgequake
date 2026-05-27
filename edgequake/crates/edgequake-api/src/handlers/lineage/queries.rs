@@ -28,8 +28,9 @@ pub async fn get_entity_lineage(
     tenant_ctx: TenantContext,
     Path(entity_name): Path<String>,
 ) -> ApiResult<Json<EntityLineageResponse>> {
-    // WHY: Same normalization rule as get_entity_provenance — see comment there.
-    let normalized_name = entity_name.to_uppercase().replace(' ', "_");
+    // Use the same normalization as entity writes (pipeline normalizer:
+    // title-case per word + underscore join, no forced uppercase).
+    let normalized_name = edgequake_pipeline::prompts::normalize_entity_name(&entity_name);
 
     // Look up entity in graph storage
     let node = state

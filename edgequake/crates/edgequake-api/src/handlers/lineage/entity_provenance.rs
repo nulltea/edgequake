@@ -36,10 +36,10 @@ pub async fn get_entity_provenance(
     tenant_ctx: TenantContext,
     Path(entity_id): Path<String>,
 ) -> ApiResult<Json<EntityProvenanceResponse>> {
-    // WHY: Entity names are normalized to UPPERCASE_WITH_UNDERSCORES during
-    // extraction (see entity_extraction.rs). We must apply the same normalization
-    // here so lookups match stored graph nodes regardless of user input casing.
-    let normalized_id = entity_id.to_uppercase().replace(' ', "_");
+    // Use the same normalization as entity writes (pipeline normalizer:
+    // title-case per word + underscore join, no forced uppercase) so
+    // lookups match stored graph nodes regardless of user input casing.
+    let normalized_id = edgequake_pipeline::prompts::normalize_entity_name(&entity_id);
 
     // Look up entity
     let node = state

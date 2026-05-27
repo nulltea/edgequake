@@ -5,6 +5,7 @@
 
 mod defaults;
 mod detail;
+mod lattice;
 mod listing;
 mod mutation;
 mod recovery;
@@ -13,6 +14,7 @@ mod upload;
 
 pub use defaults::*;
 pub use detail::*;
+pub use lattice::*;
 pub use listing::*;
 pub use mutation::*;
 pub use recovery::*;

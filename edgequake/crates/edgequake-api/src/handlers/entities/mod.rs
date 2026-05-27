@@ -36,7 +36,7 @@
 //! - Merging duplicate entities
 //! - Curating the knowledge graph
 
-mod embed;
+pub mod embed;
 mod entity_body;
 mod entity_crud;
 mod entity_ops;
@@ -54,19 +54,18 @@ use edgequake_storage::GraphNode;
 // Shared Helper Functions
 // ============================================================================
 
-/// Normalize entity name to UPPERCASE with underscores.
+/// Normalize entity name to the same form the pipeline uses.
 ///
-/// # Enforces
+/// Title-cases each word and joins with underscores (e.g.
+/// `"John Smith"` → `"John_Smith"`, `"john smith"` → `"John_Smith"`).
+/// Case is **not** forced uppercase — the result stays readable in
+/// UIs while still merging case variants ("john doe", "JOHN DOE",
+/// "John Doe" all map to the same key).
 ///
-/// - **BR0008**: Entity names are normalized to UPPERCASE_WITH_UNDERSCORES
-///
-/// # WHY: Deduplication Key
-///
-/// Entity names serve as primary keys in the graph. Normalization ensures:
-/// - "John Smith" and "john smith" map to same entity
-/// - Case variations don't create duplicate nodes
+/// Delegates to `edgequake_pipeline::prompts::normalize_entity_name` so
+/// API writes and pipeline writes produce identical entity IDs.
 pub(super) fn normalize_entity_name(name: &str) -> String {
-    name.to_uppercase().replace(' ', "_")
+    edgequake_pipeline::prompts::normalize_entity_name(name)
 }
 
 /// Convert GraphNode to EntityResponse.
@@ -115,30 +114,42 @@ mod tests {
 
     #[test]
     fn test_normalize_entity_name() {
+        // Delegates to pipeline normalizer — case-preserving for acronyms /
+        // CamelCase, title-cased otherwise, joined with single space.
         assert_eq!(
             normalize_entity_name("quantum computing"),
-            "QUANTUM_COMPUTING"
+            "Quantum Computing"
         );
+        // AI has uppercase past position 0 → preserved verbatim.
         assert_eq!(normalize_entity_name("AI"), "AI");
         assert_eq!(
             normalize_entity_name("Machine Learning"),
-            "MACHINE_LEARNING"
+            "Machine Learning"
         );
     }
 
     #[test]
     fn test_normalize_entity_name_edge_cases() {
-        // Single space replaced with underscore
-        assert_eq!(normalize_entity_name("hello world"), "HELLO_WORLD");
-        // Multiple spaces become multiple underscores (current behavior)
-        assert_eq!(normalize_entity_name("hello  world"), "HELLO__WORLD");
+        // Words joined with single space.
+        assert_eq!(normalize_entity_name("hello world"), "Hello World");
+        // Multiple spaces collapse.
+        assert_eq!(normalize_entity_name("hello  world"), "Hello World");
         // Empty string
         assert_eq!(normalize_entity_name(""), "");
-        // Already uppercase
+        // All-caps → preserved verbatim (acronym treatment).
         assert_eq!(
             normalize_entity_name("ALREADY UPPERCASE"),
-            "ALREADY_UPPERCASE"
+            "ALREADY UPPERCASE"
         );
+    }
+
+    #[test]
+    fn test_normalize_preserves_acronyms_and_camelcase() {
+        assert_eq!(normalize_entity_name("FFN"), "FFN");
+        assert_eq!(normalize_entity_name("TMFA"), "TMFA");
+        assert_eq!(normalize_entity_name("ISA-HiddenState"), "ISA-HiddenState");
+        assert_eq!(normalize_entity_name("iPhone"), "iPhone");
+        assert_eq!(normalize_entity_name("GraphQL"), "GraphQL");
     }
 
     #[test]

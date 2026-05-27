@@ -6,9 +6,10 @@ use edgequake_storage::GraphEdge;
 
 use crate::handlers::relationships_types::RelationshipResponse;
 
-/// Normalize entity name to UPPERCASE with underscores.
+/// Normalize entity name (delegates to the pipeline normalizer — title-cased
+/// per word + underscore join, no forced uppercase).
 pub(super) fn normalize_entity_name(name: &str) -> String {
-    name.to_uppercase().replace(' ', "_")
+    edgequake_pipeline::prompts::normalize_entity_name(name)
 }
 
 /// Extract relation type from keywords.

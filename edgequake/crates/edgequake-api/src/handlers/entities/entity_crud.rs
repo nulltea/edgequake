@@ -172,6 +172,21 @@ pub async fn create_entity(
     properties.insert("is_manual".to_string(), true.into());
     properties.insert("metadata".to_string(), req.metadata.clone());
 
+    // Lift `source_ids` (and adjacent filter-affecting fields) out of the
+    // free-form `metadata` envelope and onto top-level node properties.
+    // The pipeline path writes them at top-level directly (see
+    // `processor/text_insert.rs::984`); the frontend's
+    // `properties_match_document` and `extract_source_docs` only look at
+    // top-level — without the lift, graph filter-by-document silently
+    // misses every entity written through this API.
+    if let Some(obj) = req.metadata.as_object() {
+        for key in ["source_ids", "source_documents", "source_chunk_ids"] {
+            if let Some(v) = obj.get(key) {
+                properties.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+
     // WHY: Add tenant context to isolate entity to the current tenant/workspace
     if let Some(ref tenant_id) = tenant_ctx.tenant_id {
         properties.insert("tenant_id".to_string(), tenant_id.clone().into());
@@ -360,6 +375,18 @@ pub async fn update_entity(
     }
 
     if let Some(metadata) = req.metadata {
+        // Lift filter-affecting fields to top-level node properties so the
+        // frontend's graph filter-by-document sees them (mirrors
+        // `create_entity`). Without this, source_ids on an entity
+        // updated via PUT would only live nested under
+        // `properties.metadata`, invisible to `extract_source_docs`.
+        if let Some(obj) = metadata.as_object() {
+            for key in ["source_ids", "source_documents", "source_chunk_ids"] {
+                if let Some(v) = obj.get(key) {
+                    node.properties.insert(key.to_string(), v.clone());
+                }
+            }
+        }
         node.properties.insert("metadata".to_string(), metadata);
         fields_updated.push("metadata".to_string());
     }
