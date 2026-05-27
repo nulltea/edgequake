@@ -14,6 +14,8 @@
 //! Companion module [`crate::repos`] filters the raw extraction down to
 //! a ranked list of candidate reference repos.
 
+use std::borrow::Cow;
+
 use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -98,9 +100,67 @@ fn refs_heading_regex() -> &'static regex::Regex {
     })
 }
 
-/// Truncate `markdown` at the first References / Bibliography / Works Cited
-/// heading line. Returns the markdown up to (but not including) the heading;
-/// returns the input verbatim when no heading is found.
+/// Regex matching the start of a *non-references* section that follows the
+/// bibliography — used to detect where the References section ends so we
+/// can preserve the appendix (which usually follows References in academic
+/// papers). Two arms:
+///
+/// 1. `Appendix` / `Supplementary` / `Supplement` at the start of the
+///    line. First letter must be capital `A`/`S` (so lowercase
+///    `appendix` mid-paragraph doesn't false-match); the rest is
+///    case-insensitive (`Appendix`, `APPENDIX`, `Supplement`,
+///    `SUPPLEMENTARY`).
+/// 2. A letter-headed section: `A Notation`, `A. Notation`, `A) Proofs`,
+///    `D.1 IMA inverter`, `D.1. IMA inverter`. The trailing body is
+///    restricted to letters/digits/hyphens/spaces (no commas, no
+///    parentheses) so that bibliography author-list entries like
+///    `A. Smith, J. Doe (2024). Title.` cannot match.
+//
+// Note: the pattern is kept on one line. Splitting it into a `(?x)`
+// free-spacing form mis-compiles with the current `regex` crate version
+// (escape sequences interact oddly with the alternation across lines and
+// the `\.\d+\.?` arm silently fails to match).
+fn non_refs_section_heading_regex() -> &'static regex::Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::RegexBuilder::new(
+            r"^[AS](?i:ppendix|upplement(?:ary)?)\b|^[A-Z](?:\.\d+\.?|[.)])?\s+[A-Z][A-Za-z\d\- ]{0,120}$",
+        )
+        .build()
+        .expect("static regex compiles")
+    })
+}
+
+/// True when `line` opens a new (non-references) section after the
+/// bibliography. We treat any markdown heading at the same or higher
+/// importance level (i.e. with the same or fewer `#` markers) as the
+/// References heading as a section break — unless the heading itself is
+/// another `References` heading (rare duplicated heading from VLM-OCR),
+/// in which case we keep scanning. Bare-heading lines fall through to
+/// [`non_refs_section_heading_regex`].
+fn is_section_start_after_refs(line: &str, refs_hash_level: usize) -> bool {
+    let trimmed_left = line.trim_start();
+    let hash_count = trimmed_left.chars().take_while(|&c| c == '#').count();
+    let cleaned = trimmed_left.trim_start_matches('#').trim();
+    if cleaned.is_empty() {
+        return false;
+    }
+    if refs_heading_regex().is_match(cleaned) {
+        return false; // Duplicate references heading — keep scanning.
+    }
+    if hash_count > 0 {
+        // Markdown heading. Treat as section break when it is at the same
+        // or higher importance than the references heading. When the refs
+        // heading itself was bare (level 0), any `#`-marked heading after
+        // it must be a new section.
+        return refs_hash_level == 0 || hash_count <= refs_hash_level;
+    }
+    non_refs_section_heading_regex().is_match(cleaned)
+}
+
+/// Strip the References / Bibliography section from `markdown` while
+/// preserving any sections that follow it (Appendix, Supplementary, etc.).
 ///
 /// Why this exists: the bibliography of an academic paper is dense with
 /// author names, journal titles, and URLs that all behave as noise during
@@ -112,37 +172,75 @@ fn refs_heading_regex() -> &'static regex::Regex {
 /// tab (which renders from `pdf_documents.markdown_content`, not from
 /// chunks).
 ///
-/// Markdown heading markers (`#`, `##`, …) are tolerated: each line's
-/// leading `#`s and whitespace are stripped before matching, so both
-/// `## References` and bare `References` are detected. The regex is
-/// case-insensitive and anchored to the whole line, so `References and
-/// notes` mid-paragraph won't accidentally trip it.
-pub fn strip_references_section(markdown: &str) -> &str {
+/// However, academic papers almost always place the Appendix (notation
+/// tables, proofs, additional experiments, reproducibility details) *after*
+/// References. The previous version of this function truncated at the
+/// first References heading and silently dropped the appendix, making
+/// appendix-only content unretrievable. We now find both the start of the
+/// References section and the start of the next non-references section
+/// (Appendix / Supplementary / `A Notation`-style heading) and splice out
+/// just the References block.
+///
+/// When no References heading is found, returns the input verbatim. When
+/// References is found but no subsequent section is detected, falls back
+/// to truncate-at-References (the conservative pre-fix behaviour).
+///
+/// Markdown heading markers (`#`, `##`, …) are tolerated and the matching
+/// is anchored to whole lines, so `References and notes` mid-paragraph
+/// won't trip the strip.
+pub fn strip_references_section(markdown: &str) -> Cow<'_, str> {
     let re = refs_heading_regex();
+
+    // Locate the first line that is purely a references heading.
     let mut cursor: usize = 0;
-    while cursor < markdown.len() {
-        // Find the end of the current line (exclusive of '\n').
+    let (refs_start, refs_hash_level) = loop {
+        if cursor >= markdown.len() {
+            return Cow::Borrowed(markdown);
+        }
         let line_end = markdown[cursor..]
             .find('\n')
             .map(|p| cursor + p)
             .unwrap_or(markdown.len());
         let line = &markdown[cursor..line_end];
-        // Strip leading whitespace, then any `#` heading markers, then
-        // trailing whitespace, so the regex only sees the heading text.
-        let cleaned = line
-            .trim_start()
-            .trim_start_matches('#')
-            .trim();
+        let trimmed_left = line.trim_start();
+        let hash_count = trimmed_left.chars().take_while(|&c| c == '#').count();
+        let cleaned = trimmed_left.trim_start_matches('#').trim();
         if re.is_match(cleaned) {
-            return &markdown[..cursor];
+            break (cursor, hash_count);
         }
         // Slicing at line_end is safe — '\n' is single-byte ASCII so
-        // line_end is always a UTF-8 boundary. line_end + 1 likewise lands
-        // on the start of the next line (or one past the end on the final
-        // line without a trailing newline, harmlessly terminating the loop).
+        // line_end is always a UTF-8 boundary. line_end + 1 lands on the
+        // start of the next line (or one past the end on the final line
+        // without a trailing newline, harmlessly terminating the loop).
         cursor = line_end + 1;
+    };
+
+    // Skip past the references-heading line itself, then scan forward for
+    // the next section that should survive the strip.
+    let after_refs_line = markdown[refs_start..]
+        .find('\n')
+        .map(|p| refs_start + p + 1)
+        .unwrap_or(markdown.len());
+
+    let mut scan = after_refs_line;
+    while scan < markdown.len() {
+        let line_end = markdown[scan..]
+            .find('\n')
+            .map(|p| scan + p)
+            .unwrap_or(markdown.len());
+        let line = &markdown[scan..line_end];
+        if is_section_start_after_refs(line, refs_hash_level) {
+            // Splice: keep prefix, drop References block, keep suffix.
+            let mut out = String::with_capacity(refs_start + (markdown.len() - scan));
+            out.push_str(&markdown[..refs_start]);
+            out.push_str(&markdown[scan..]);
+            return Cow::Owned(out);
+        }
+        scan = line_end + 1;
     }
-    markdown
+
+    // Bibliography runs to EOF — fall back to truncating.
+    Cow::Borrowed(&markdown[..refs_start])
 }
 
 /// Extract all URI link annotations from `pdf_bytes` and locate the
@@ -341,10 +439,80 @@ mod tests {
     #[test]
     fn strip_references_drops_at_first_heading_only() {
         // If "References" appears twice (rare — duplicated heading in
-        // converted PDF), strip at the first one. Everything after the
-        // first heading is dropped regardless of what's in there.
+        // converted PDF) and nothing else follows, strip to EOF. A
+        // duplicated `References` heading does not count as the next
+        // section; we keep scanning.
         let md = "Body.\n\n## References\n[1] A\n## References\n[2] B\n";
         let out = strip_references_section(md);
         assert_eq!(out, "Body.\n\n");
+    }
+
+    #[test]
+    fn strip_references_preserves_appendix_with_markdown_heading() {
+        // The canonical case: a paper with References between §7 and the
+        // Appendix. We must keep the appendix in chunks/embeddings.
+        let md = "## Conclusion\n\nWe conclude X.\n\n## References\n\n[1] Alice, A. (2024). Title.\n[2] Bob, B. (2025). Other.\n\n## Appendix A: Notation\n\nLet $f$ denote the inversion model.\n";
+        let out = strip_references_section(&md);
+        assert!(out.contains("Conclusion"), "out: {out:?}");
+        assert!(out.contains("## Appendix A"), "appendix should survive");
+        assert!(out.contains("inversion model"), "appendix body should survive");
+        assert!(!out.contains("Alice"), "bibliography must be gone");
+        assert!(!out.contains("Bob, B."), "bibliography must be gone");
+        // The References heading itself is gone.
+        assert!(!out.contains("## References"));
+    }
+
+    #[test]
+    fn strip_references_preserves_letter_appendix_when_refs_is_bare() {
+        // Bare-heading variant from VLM-OCR output: no `#` markers anywhere.
+        // Appendix uses single-letter prefix ("A Notation").
+        let md = "Body.\n\nReferences\n\n[1] Alice et al, 2024.\n\nA Notation\n\nLet $f$ denote the inverter.\n";
+        let out = strip_references_section(&md);
+        assert!(out.contains("Body."));
+        assert!(out.contains("A Notation"));
+        assert!(out.contains("inverter"));
+        assert!(!out.contains("Alice"));
+    }
+
+    #[test]
+    fn strip_references_preserves_dotted_letter_appendix() {
+        let md = "## References\n[1] X.\n\nD.1 IMA inverter architecture\n\nWe use a 2-layer MLP.\n";
+        let out = strip_references_section(&md);
+        assert!(out.contains("D.1 IMA inverter architecture"), "out: {out:?}");
+        assert!(out.contains("2-layer MLP"));
+        assert!(!out.contains("[1] X."));
+    }
+
+    #[test]
+    fn strip_references_preserves_appendix_when_refs_is_numbered() {
+        let md = "Body.\n\n6. References\n\n[1] Alice.\n[2] Bob.\n\nAppendix\n\nDetails.\n";
+        let out = strip_references_section(&md);
+        assert!(out.contains("Body."));
+        assert!(out.contains("Appendix"));
+        assert!(out.contains("Details."));
+        assert!(!out.contains("Alice"));
+    }
+
+    #[test]
+    fn strip_references_treats_sub_headings_inside_refs_as_part_of_refs() {
+        // `### Primary Sources` inside the References block (level 3) is
+        // deeper than `## References` (level 2) → should NOT count as a
+        // new section. The actual appendix is at the same level (`##`).
+        let md = "## References\n\n### Primary Sources\n\n[1] Alice.\n\n### Secondary Sources\n\n[2] Bob.\n\n## Appendix A\n\nAppendix prose.\n";
+        let out = strip_references_section(&md);
+        assert!(out.contains("## Appendix A"));
+        assert!(out.contains("Appendix prose"));
+        assert!(!out.contains("Primary Sources"));
+        assert!(!out.contains("Alice"));
+    }
+
+    #[test]
+    fn strip_references_does_not_pickup_bibliography_entry_as_section_start() {
+        // `A. Smith, J. Doe (2024). Title.` looks letter-prefixed but has
+        // commas + parens — must NOT trigger the section-start detector.
+        let md = "## References\n\nA. Smith, J. Doe (2024). Title of work.\nB. Lee (2023). Another paper.\n";
+        let out = strip_references_section(&md);
+        // No surviving section → strip to EOF.
+        assert_eq!(out, "");
     }
 }

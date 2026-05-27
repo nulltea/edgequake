@@ -339,8 +339,11 @@ export interface PdfStatusResponse extends PdfInfo {
 
 export interface PdfContentResponse {
   pdf_id: string;
-  markdown: string;
-  page_count: number;
+  filename: string;
+  file_size_bytes: number;
+  content_type: string;
+  markdown_content?: string;
+  is_processed: boolean;
 }
 
 export interface PdfProgressResponse {

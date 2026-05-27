@@ -401,9 +401,10 @@ export function registerDocumentTools(server: McpServer): void {
 
         if (pdfId) {
           const pdfContent = await client.documents.pdf.getContent(pdfId);
-          if (pdfContent.markdown.trim().length > 0) {
+          const pdfMarkdown = pdfContent.markdown_content;
+          if (typeof pdfMarkdown === "string" && pdfMarkdown.trim().length > 0) {
             return {
-              content: [{ type: "text" as const, text: pdfContent.markdown }],
+              content: [{ type: "text" as const, text: pdfMarkdown }],
             };
           }
         }
