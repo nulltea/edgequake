@@ -63,8 +63,14 @@ present in the full MD but absent from the hybrid-query result:
 | RemoteRAG `82e9a235` | "Ubuntu 22.04 server … two 28-core **Intel Xeon Gold 5420+** … two **Nvidia A40 48GB GPUs**" (§5.1) |
 | Compass `7b372edb` | "Google Cloud … **n2-standard-8** client (8 vCPU/32 GB) … **n2-highmem-64** server (64 vCPU/512 GB)"; tc-simulated 3 Gbps/1 ms ↔ 400 Mbps/80 ms (§6.1) |
 | SGT (Stained Glass) `0a63e015` | "trained on a **single Nvidia A100 80GB** for roughly six hours"; large models "up to **64 nodes of 8 Nvidia A100 80GB**, up to 2 days, FSDP2 × Tensor-Parallelism" |
+| TwinShield `d5e3c42a` | "a server powered by an **Intel Xeon Gold 6342 CPU @2.8GHz**, **512GB DRAM**, **NVIDIA A40 48GB GPU**; SGX" (also Xilinx Alveo U280 FPGA, Google TPU v3-8) — query had returned only generic "SGX + GPU" |
 
-**5 of 8** query-grounded docs checked are confirmed query false-negatives. The other 3
+**6 of ~15** query-grounded docs re-checked are confirmed hardware false-negatives (the hardware
+is in a prose §Experimental-Setup / §System-Setup line that hybrid query did not return).
+A related but distinct ingestion bug — **tables (which hold communication cost and per-component
+latency) are dropped to `![tbl_…]` placeholders during PDF→MD conversion** — is filed separately
+in `2026-06-02-md-conversion-drops-table-content.md`; that one is unrecoverable via either
+`query` or `document_get_md`. The other 3
 (OSNIP `2d50f87d`, SPARSE `e2e3fd43`, DP-KSA `253897c2`) genuinely do **not** report compute
 hardware anywhere in the full MD — correct negatives. (SCX `c82a73e5` checked separately: full
 MD has only related-work GPU mentions, no own testbed machine — correct negative / thin.)
