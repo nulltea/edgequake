@@ -100,6 +100,10 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
   const colorMode = useGraphStore((s) => s.colorMode);
   const streamingProgress = useGraphStore((s) => s.streamingProgress);
   const useStreaming = useGraphStore((s) => s.useStreaming);
+  // SPEC-006 P3 — IDs that arrived as the deep-link starting set.
+  // Read into a ref so the Sigma nodeReducer always sees the latest
+  // value without forcing Sigma re-creation.
+  const startingSetIds = useGraphStore((s) => s.startingSetIds);
   const { graphSettings } = useSettingsStore();
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -133,6 +137,7 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
   const onNodeClickRef = useRef(onNodeClick);
   const onNodeHoverRef = useRef(onNodeHover);
   const onNodeRightClickRef = useRef(onNodeRightClick);
+  const startingSetIdsRef = useRef<Set<string>>(startingSetIds);
   
   // Check if currently streaming
   const isActivelyStreaming = useStreaming && 
@@ -141,6 +146,13 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
   useEffect(() => {
     selectedNodeIdRef.current = selectedNodeId;
   }, [selectedNodeId]);
+
+  useEffect(() => {
+    startingSetIdsRef.current = startingSetIds;
+    // SPEC-006: nudge Sigma to repaint so the new starting set is
+    // styled immediately when a deep-link mounts the canvas mid-life.
+    sigmaRef.current?.refresh();
+  }, [startingSetIds]);
 
   useEffect(() => {
     showLabelsRef.current = showLabels;
@@ -444,13 +456,18 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
         hoverState.edgeId !== null &&
         graph.hasEdge(hoverState.edgeId) &&
         (graph.source(hoverState.edgeId) === node || graph.target(hoverState.edgeId) === node);
+      // SPEC-006 P3 — nodes from the deep-link starting set get
+      // emphasised regardless of hover/selection so the user keeps a
+      // visual anchor to "what they searched for" while exploring.
+      const isStartingSet = startingSetIdsRef.current.has(node);
 
       if (
         highlightNeighborsRef.current &&
         hoverState.nodeId !== null &&
         !isSelected &&
         !isHoveredNode &&
-        !isNeighbor
+        !isNeighbor &&
+        !isStartingSet
       ) {
         return {
           ...attrs,
@@ -458,7 +475,7 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
         };
       }
 
-      if (!isSelected && !isHoveredNode && !isNeighbor && !isEdgeEndpoint) {
+      if (!isSelected && !isHoveredNode && !isNeighbor && !isEdgeEndpoint && !isStartingSet) {
         return attrs;
       }
 
@@ -469,6 +486,17 @@ export function GraphRenderer({ nodes, edges, onNodeClick, onNodeHover, onNodeRi
         next.borderSize = 3.5;
         next.borderColor = isDark ? '#60a5fa' : '#2563eb';
         next.zIndex = 999;
+        return next;
+      }
+
+      if (isStartingSet && !isHoveredNode && !isNeighbor && !isEdgeEndpoint) {
+        // Starting-set node not currently being hovered: render
+        // larger with a coloured outline so the seeds stand out from
+        // their traversal neighbours.
+        next.size = (typeof attrs.size === 'number' ? attrs.size : nodeSizeRef.current) * 1.5;
+        next.borderSize = 2.5;
+        next.borderColor = isDark ? '#f59e0b' : '#d97706';
+        next.zIndex = 100;
         return next;
       }
 

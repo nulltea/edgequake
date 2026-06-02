@@ -8,7 +8,9 @@
 'use client';
 
 import { GraphLoadingOverlay } from '@/components/graph/graph-loading-overlay';
+import { getSubgraph } from '@/lib/api/edgequake';
 import { useGraphStore } from '@/stores/use-graph-store';
+import { useTenantStore } from '@/stores/use-tenant-store';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { useEffect } from 'react';
@@ -53,10 +55,129 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export default function GraphPage() {
   const searchParams = useSearchParams();
-  const { setSearchQuery, setStartNode, setDocumentId, nodes } = useGraphStore();
+  const {
+    setSearchQuery,
+    setStartNode,
+    setDocumentId,
+    nodes,
+    setGraph,
+    setStartingSet,
+    setQueryText,
+    setLoading,
+    setError,
+  } = useGraphStore();
+
+  // SPEC-006 P3 — handle `?start_nodes=A,B,C&depth=1&q=…` deep-links
+  // from chat surfaces (OpenWebUI tool, future Claude integrations).
+  // When present, this short-circuits the normal "load the global
+  // graph" path: we POST `/graph/subgraph` with the parsed starting
+  // set and inject the response directly. The starting-set IDs are
+  // recorded in the store so the renderer can style them distinctly.
+  useEffect(() => {
+    const startNodesParam = searchParams.get('start_nodes');
+    if (!startNodesParam) return;
+
+    const ids = startNodesParam
+      .split(',')
+      .map((s) => {
+        try {
+          return decodeURIComponent(s);
+        } catch {
+          return s; // best-effort fallback if the segment was already decoded
+        }
+      })
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return;
+
+    const depthRaw = searchParams.get('depth');
+    // SPEC-006 P3 — default to depth=0 (seeds-only) so the user lands
+    // on a clean, focused canvas showing just what they searched for.
+    // Inter-seed edges still render (the backend's
+    // get_edges_for_node_set fills them in). Further exploration is
+    // explicit via right-click → "Expand Neighborhood" on a node.
+    const depth = depthRaw ? Math.max(0, Math.min(2, parseInt(depthRaw, 10))) : 0;
+    const q = searchParams.get('q');
+
+    // Workspace propagation. Chat-surface deep-links carry the
+    // tenant/workspace the entities came from so the canvas resolves
+    // to the SAME workspace — otherwise the user's currently-selected
+    // workspace wins, every seed fails the tenant filter, and the
+    // canvas renders empty. We switch the tenant store synchronously
+    // before the fetch so the API client picks up the override on the
+    // very next call.
+    const urlWorkspaceId = searchParams.get('workspace_id');
+    const urlTenantId = searchParams.get('tenant_id');
+    if (urlWorkspaceId) {
+      const tenantStore = useTenantStore.getState();
+      if (urlTenantId && tenantStore.selectedTenantId !== urlTenantId) {
+        tenantStore.selectTenant(urlTenantId);
+      }
+      tenantStore.selectWorkspace(urlWorkspaceId);
+    }
+
+    setQueryText(q);
+    setStartingSet(ids);
+    setLoading(true);
+    setError(null);
+
+    let cancelled = false;
+    getSubgraph({ start_nodes: ids, depth, max_nodes: 60 })
+      .then((resp) => {
+        if (cancelled) return;
+        // Derive entity_types / relationship_types from the returned
+        // nodes/edges so legend + filter pills work without an extra
+        // round-trip. `/graph/subgraph` doesn't emit metadata directly
+        // — the response is intentionally lean.
+        const entityTypes = Array.from(
+          new Set(resp.nodes.map((n) => n.node_type).filter(Boolean)),
+        );
+        const relationshipTypes = Array.from(
+          new Set(resp.edges.map((e) => e.relationship_type).filter(Boolean)),
+        );
+        setGraph({
+          nodes: resp.nodes,
+          edges: resp.edges,
+          metadata: {
+            node_count: resp.stats.total_nodes,
+            edge_count: resp.stats.total_edges,
+            entity_types: entityTypes,
+            relationship_types: relationshipTypes,
+          },
+          is_truncated: resp.stats.truncated,
+          total_nodes: resp.stats.total_nodes,
+          total_edges: resp.stats.total_edges,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to load subgraph for deep-link',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // We only want to react to URL changes — `setGraph` et al. are
+    // store actions and stable across renders, so listing them would
+    // just add noise.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   // Handle URL parameters for deep linking from query results
   useEffect(() => {
+    // SPEC-006: skip the legacy URL-param flow when we are entering
+    // via the new `start_nodes` deep-link — the dedicated effect above
+    // already populated the canvas, and the legacy handler would
+    // clobber it by setting a single startNode / search query.
+    if (searchParams.get('start_nodes')) return;
+
     const entities = searchParams.get('entities');
     const focus = searchParams.get('focus');
     const entity = searchParams.get('entity');

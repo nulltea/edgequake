@@ -450,6 +450,8 @@ fn api_v1_routes() -> Router<AppState> {
         .route("/graph/labels/search", get(handlers::search_labels))
         .route("/graph/labels/popular", get(handlers::get_popular_labels))
         .route("/graph/degrees/batch", post(handlers::get_degrees_batch))
+        // SPEC-006 P3: multi-source subgraph for search→render
+        .route("/graph/subgraph", post(handlers::get_subgraph))
         // Entities (Phase 2)
         .route(
             "/graph/entities",

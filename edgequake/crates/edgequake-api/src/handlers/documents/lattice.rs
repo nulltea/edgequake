@@ -64,7 +64,10 @@ pub async fn create_raw_document(
         .unwrap_or_else(|| "default".to_string());
     let tenant_id = tenant_ctx.tenant_id.clone();
 
-    let status = req.status.unwrap_or_else(|| "processing".to_string());
+    let status = req
+        .status
+        .clone()
+        .unwrap_or_else(|| "processing".to_string());
     let now = Utc::now().to_rfc3339();
     let content_length = req.content.len();
     let content_summary = crate::validation::generate_content_summary(&req.content);
@@ -87,7 +90,13 @@ pub async fn create_raw_document(
         "tenant_id": tenant_id,
         "workspace_id": workspace_id,
         "source_type": "markdown",
-        "current_stage": "lattice_managed",
+        // current_stage must be one of the frontend's known states
+        // (pending|processing|chunking|extracting|embedding|indexing|
+        // completed|indexed|failed) — the documents-page status badge
+        // reads current_stage in preference to `status`, and falls
+        // through to "pending" for any value it doesn't recognise.
+        // Mirror the initial `status` here so the badge agrees.
+        "current_stage": status,
         "stage_progress": 0.0,
         "stage_message": "Document body stored; extraction handled by lattice client",
     });
@@ -105,6 +114,25 @@ pub async fn create_raw_document(
             ),
         ])
         .await?;
+
+    // Also insert a row into the relational `documents` table so the
+    // `chunks.document_id` FK can be satisfied when create_chunks
+    // mirrors table-kind chunks. Pipeline writes do this implicitly via
+    // text_upload.rs; the lattice fast-path bypasses that path, so we
+    // mirror the minimum schema here. Best-effort: a failure here
+    // doesn't fail the kv write (older deployments without the table
+    // would otherwise lose all lattice docs).
+    #[cfg(feature = "postgres")]
+    if let Err(e) =
+        upsert_document_row(&state, &document_id, &req, &workspace_id, &tenant_id, &status, &content_hash)
+            .await
+    {
+        warn!(
+            document_id = %document_id,
+            error = %e,
+            "Failed to upsert documents row (chunks FK mirror will skip)"
+        );
+    }
 
     if let Ok(ws_uuid) = Uuid::parse_str(&workspace_id) {
         invalidate_workspace_stats_cache(ws_uuid).await;
@@ -298,7 +326,7 @@ pub async fn patch_document(
             .as_object_mut()
             .ok_or_else(|| ApiError::Internal("Doc metadata is not an object".into()))?;
 
-        if let Some(status) = req.status {
+        if let Some(ref status) = req.status {
             // Auto-set stage_progress to 1.0 on terminal-success states so
             // the UI's progress-based "pending" / "in-progress" gating
             // doesn't keep showing the doc as unfinished after lattice
@@ -306,12 +334,20 @@ pub async fn patch_document(
             if status == "completed" {
                 obj.insert("stage_progress".to_string(), serde_json::json!(1.0));
             }
-            obj.insert("status".to_string(), serde_json::json!(&status));
+            obj.insert("status".to_string(), serde_json::json!(status));
+            // Mirror status → current_stage when the caller didn't send an
+            // explicit current_stage. The documents page's status badge
+            // reads current_stage in preference to status; if we leave
+            // current_stage at its initial value, the badge never flips
+            // to "completed" even after extraction succeeds.
+            if req.current_stage.is_none() {
+                obj.insert("current_stage".to_string(), serde_json::json!(status));
+            }
         }
-        if let Some(stage) = req.current_stage {
+        if let Some(ref stage) = req.current_stage {
             obj.insert("current_stage".to_string(), serde_json::json!(stage));
         }
-        if let Some(msg) = req.stage_message {
+        if let Some(ref msg) = req.stage_message {
             obj.insert("stage_message".to_string(), serde_json::json!(msg));
         }
         if let Some(n) = req.entity_count {
@@ -336,10 +372,10 @@ pub async fn patch_document(
         if let Some(v) = req.cost_usd {
             obj.insert("cost_usd".to_string(), serde_json::json!(v));
         }
-        if let Some(s) = req.llm_model {
+        if let Some(ref s) = req.llm_model {
             obj.insert("llm_model".to_string(), serde_json::json!(s));
         }
-        if let Some(s) = req.embedding_model {
+        if let Some(ref s) = req.embedding_model {
             obj.insert("embedding_model".to_string(), serde_json::json!(s));
         }
         if let Some(ms) = req.processing_duration_ms {
@@ -370,6 +406,23 @@ pub async fn patch_document(
         .upsert(&[(metadata_key, metadata)])
         .await?;
 
+    // Mirror status (+ counts + cost telemetry) into the SQL `documents`
+    // row so the frontend, which reads `documents.status` for the
+    // /documents page, sees the same state as kv_storage. Without this,
+    // lattice docs sit on "processing" forever in the UI even though
+    // kv-side patches landed and downstream extraction finished.
+    //
+    // Best-effort: a failure to update the SQL row doesn't fail the
+    // PATCH (kv stays canonical). Logged at warn so it's visible.
+    #[cfg(feature = "postgres")]
+    if let Err(e) = update_documents_row_from_patch(&state, &doc_id, &req).await {
+        warn!(
+            document_id = %doc_id,
+            error = %e,
+            "Failed to mirror PATCH fields to documents SQL row"
+        );
+    }
+
     if let Some(ws_id) = workspace_id {
         if let Ok(ws_uuid) = Uuid::parse_str(&ws_id) {
             invalidate_workspace_stats_cache(ws_uuid).await;
@@ -380,6 +433,144 @@ pub async fn patch_document(
         document_id: doc_id,
         status: resulting_status,
     }))
+}
+
+/// Mirror the patch fields onto the relational `documents` row.
+///
+/// The frontend's /documents page reads `status`, `entity_count`, and
+/// `relationship_count` from `documents`, not from kv_storage. When the
+/// lattice fast-path PATCHes status to "completed", kv is updated but the
+/// SQL row remains "processing" — UI then shows the doc as pending forever.
+///
+/// We update only the columns the PATCH actually carries (status, counts).
+/// Cost/token/model fields don't have corresponding SQL columns yet —
+/// they stay in kv only.
+#[cfg(feature = "postgres")]
+async fn update_documents_row_from_patch(
+    state: &AppState,
+    document_id: &str,
+    req: &UpdateDocumentRequest,
+) -> Result<(), String> {
+    // Nothing to mirror? Skip the round-trip.
+    if req.status.is_none()
+        && req.entity_count.is_none()
+        && req.relationship_count.is_none()
+    {
+        return Ok(());
+    }
+
+    let Some(pool) = state.pg_pool.as_ref() else {
+        return Err("Postgres pool not configured".to_string());
+    };
+    let doc_uuid = Uuid::parse_str(document_id).map_err(|e| format!("invalid doc_id: {e}"))?;
+
+    let res = sqlx::query(
+        r#"
+        UPDATE documents
+        SET
+            status             = COALESCE($2, status),
+            entity_count       = COALESCE($3, entity_count),
+            relationship_count = COALESCE($4, relationship_count),
+            updated_at         = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(doc_uuid)
+    .bind(req.status.as_deref())
+    .bind(req.entity_count.map(|n| n as i32))
+    .bind(req.relationship_count.map(|n| n as i32))
+    .execute(pool)
+    .await
+    .map_err(|e| format!("UPDATE documents failed: {e}"))?;
+
+    if res.rows_affected() == 0 {
+        // Row not present (e.g. an older lattice doc created before
+        // upsert_document_row landed). Not an error — kv is still
+        // canonical.
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// Insert/upsert a row into the relational `documents` table so the
+/// `chunks.document_id` FK can be satisfied by `persist_table_chunks`.
+///
+/// The pipeline-side upload writes here implicitly via text_upload.rs;
+/// the lattice fast-path bypasses that and writes only to `kv_storage`,
+/// which leaves `documents` empty and breaks any feature that resolves
+/// docs through the relational layer (chunks FK, the /documents/{id}
+/// detail page's `chunks` lookups, future SQL-side searches).
+///
+/// Only the schema-required columns are populated:
+/// - `id`           the UUID we generated
+/// - `tenant_id`    + `workspace_id` (from the request context)
+/// - `title`        from req.title, fallback to source_id, fallback to a
+///                  generated label
+/// - `content`      the raw markdown body
+/// - `content_hash` SHA-256 of content
+/// - `status`       lattice's initial status
+/// - `file_path`    req.source_id (relative path)
+/// - `metadata`     `{ "source_type": "markdown", "managed_by": "lattice" }`
+#[cfg(feature = "postgres")]
+async fn upsert_document_row(
+    state: &AppState,
+    document_id: &str,
+    req: &crate::handlers::documents_types::RawDocumentRequest,
+    workspace_id: &str,
+    tenant_id: &Option<String>,
+    status: &str,
+    content_hash: &str,
+) -> Result<(), String> {
+    let Some(pool) = state.pg_pool.as_ref() else {
+        return Err("Postgres pool not configured".to_string());
+    };
+    let doc_uuid = Uuid::parse_str(document_id).map_err(|e| format!("invalid doc_id: {e}"))?;
+    let workspace_uuid =
+        Uuid::parse_str(workspace_id).map_err(|e| format!("invalid workspace_id: {e}"))?;
+    let tenant_uuid = tenant_id
+        .as_ref()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| "tenant_id is not a UUID".to_string())?;
+    let title = req
+        .title
+        .clone()
+        .or_else(|| req.source_id.clone())
+        .unwrap_or_else(|| format!("doc-{}", document_id));
+    let metadata = serde_json::json!({
+        "source_type": "markdown",
+        "managed_by": "lattice",
+    });
+
+    sqlx::query(
+        r#"
+        INSERT INTO documents (
+            id, tenant_id, workspace_id, title, content, content_hash,
+            status, file_path, metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+            title         = EXCLUDED.title,
+            content       = EXCLUDED.content,
+            content_hash  = EXCLUDED.content_hash,
+            status        = EXCLUDED.status,
+            file_path     = EXCLUDED.file_path,
+            metadata      = EXCLUDED.metadata,
+            updated_at    = now()
+        "#,
+    )
+    .bind(doc_uuid)
+    .bind(tenant_uuid)
+    .bind(workspace_uuid)
+    .bind(&title)
+    .bind(&req.content)
+    .bind(content_hash)
+    .bind(status)
+    .bind(&req.source_id)
+    .bind(&metadata)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Mirror table-kind chunks into the `chunks` SQL table so they appear on
@@ -441,20 +632,35 @@ async fn persist_table_chunks(
         let table_id = c.id.clone();
         let (table_html, table_rows) = markdown_table_to_html_and_rows(&c.content);
 
-        // Page is irrelevant for markdown — pipeline's table-list query
-        // pulls it from metadata; we set page=1, order_index=chunk_index
-        // so the gallery sorts deterministically.
+        // The Figures-tab list endpoint reads `chunks.content` and surfaces
+        // it as `caption`. If lattice supplied a generated caption in the
+        // chunk's metadata, store that in `content`; the raw markdown lives
+        // on in `table_html` + `table_rows` for the detail view. Without a
+        // caption (PR1 heuristic miss, PR2 LLM not yet run), fall back to
+        // the raw markdown so the column still has something readable.
+        let caption = c
+            .metadata
+            .get("caption")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        let content_for_chunks_row: &str = caption.unwrap_or(c.content.as_str());
+
         let order_index = c
             .metadata
             .get("chunk_index")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
+        let table_number = c.metadata.get("table_number").and_then(|v| v.as_i64());
         let table_metadata = serde_json::json!({
             "kind": "table",
             "table_id": &table_id,
             "page": 1,
             "order_index": order_index,
             "source": "lattice",
+            "caption": caption,
+            "table_number": table_number,
+            "raw_md": &c.content,
         });
 
         let res = sqlx::query(
@@ -477,7 +683,7 @@ async fn persist_table_chunks(
         .bind(doc_uuid)
         .bind(tenant_uuid)
         .bind(workspace_uuid)
-        .bind(&c.content)
+        .bind(content_for_chunks_row)
         .bind(chunk_index)
         .bind(&table_id)
         .bind(&table_html)

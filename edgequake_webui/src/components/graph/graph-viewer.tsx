@@ -40,7 +40,7 @@ import { useGraphStore } from '@/stores/use-graph-store';
 import { useTenantStore } from '@/stores/use-tenant-store';
 import type { GraphNode } from '@/types';
 import { useQuery } from '@tanstack/react-query';
-import { AlertCircle, ChevronLeft, ChevronRight, FileText, Filter, Loader2, Maximize2, Menu, Network, PanelRightClose, RefreshCw, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertCircle, ChevronLeft, ChevronRight, FileText, Filter, Loader2, Maximize2, Menu, Network, PanelRightClose, RefreshCw, Search, Upload, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -95,7 +95,18 @@ export function GraphViewer() {
     visibleEntityTypes,
     visibleRelationshipTypes,
     searchQuery,
+    // SPEC-006 P3 — natural-language query that produced the deep-link
+    // starting set; rendered as a chip in the header so users keep
+    // sight of "what they searched for".
+    queryText,
+    // Non-empty when the page was entered via `?start_nodes=...`. We
+    // use it as a sentinel to suppress the global graph fetchers
+    // (useQuery + streaming) — otherwise they race against the
+    // page-level subgraph injection and clobber the small focused
+    // canvas with the full workspace graph (hundreds of nodes).
+    startingSetIds,
   } = useGraphStore();
+  const isDeepLinkMode = startingSetIds.size > 0;
 
   // Get tenant context for query key
   const { selectedTenantId, selectedWorkspaceId } = useTenantStore();
@@ -245,7 +256,10 @@ export function GraphViewer() {
     }),
     staleTime: 5 * 60 * 1000, // 5 minutes - longer cache for better perf
     refetchOnWindowFocus: false, // Disable auto-refetch for better performance
-    enabled: !useStreaming, // Disable when streaming is enabled
+    // Disable when streaming is enabled OR when we're in SPEC-006 P3
+    // deep-link mode (the page-level effect is the source of truth
+    // for the canvas in that case).
+    enabled: !useStreaming && !isDeepLinkMode,
   });
 
   // Combined loading state
@@ -308,7 +322,14 @@ export function GraphViewer() {
       streamingInitializedRef.current = false;
       return;
     }
-    
+    // SPEC-006 P3 deep-link mode owns the canvas via the page-level
+    // /graph/subgraph fetch; the workspace-wide stream would otherwise
+    // race and clobber the focused starting set with the full graph.
+    if (isDeepLinkMode) {
+      streamingInitializedRef.current = false;
+      return;
+    }
+
     // WHY: Create param key to detect if we need to restart stream
     const paramKey = `${selectedTenantId}-${selectedWorkspaceId}-${maxNodes}-${startNode || ""}-${documentId || ""}`;
     
@@ -339,7 +360,7 @@ export function GraphViewer() {
     };
     // Only re-run when these key params change
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [useStreaming, selectedTenantId, selectedWorkspaceId, maxNodes, startNode, documentId]);
+  }, [useStreaming, selectedTenantId, selectedWorkspaceId, maxNodes, startNode, documentId, isDeepLinkMode]);
 
   // Handle refetch for both modes
   const handleRefetch = useCallback(() => {
@@ -533,6 +554,18 @@ export function GraphViewer() {
                 >
                   <X className="h-3 w-3" />
                 </button>
+              </span>
+            )}
+            {/* SPEC-006 P3 — show the original query when the user
+                arrived via a chat deep-link. Distinct colour from the
+                document chip so the two never get confused. */}
+            {queryText && (
+              <span
+                className="hidden sm:flex items-center gap-1 text-xs bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-md max-w-[28ch] truncate"
+                title={`Results for query: ${queryText}`}
+              >
+                <Search className="h-3 w-3 shrink-0" />
+                <span className="truncate">{queryText}</span>
               </span>
             )}
           </div>

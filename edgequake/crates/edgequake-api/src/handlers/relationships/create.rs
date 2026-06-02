@@ -66,6 +66,19 @@ pub async fn create_relationship(
     properties.insert("weight".to_string(), req.weight.into());
     properties.insert("description".to_string(), req.description.clone().into());
     properties.insert("source_id".to_string(), req.source_id.clone().into());
+    // Name-collision workaround: the postgres `upsert_edge` adapter unconditionally
+    // overwrites the top-level `source_id` property with the src node identifier
+    // (see adapters/postgres/graph/mod.rs::upsert_edge), so the document-tracking
+    // value we just set in `source_id` will be clobbered. Mirror it into
+    // `source_ids` (plural array) — which the adapter does NOT touch — so
+    // `extract_source_docs` (which prefers the array form) finds it and the
+    // graph-by-document filter (`properties_match_document`) matches edges.
+    // Without this, every client that passes a doc reference via `source_id`
+    // ends up with broken doc filtering on relationships.
+    properties.insert(
+        "source_ids".to_string(),
+        serde_json::Value::Array(vec![req.source_id.clone().into()]),
+    );
     properties.insert("created_at".to_string(), now.clone().into());
     properties.insert("updated_at".to_string(), now.clone().into());
     properties.insert("is_manual".to_string(), true.into());

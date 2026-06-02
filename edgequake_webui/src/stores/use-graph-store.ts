@@ -144,6 +144,18 @@ interface GraphState {
   totalNodesInStorage: number;
   totalEdgesInStorage: number;
 
+  // SPEC-006 P3 — search → render entry point.
+  //
+  // `startingSetIds` is populated when the user arrives via a deep-link
+  // (e.g. from the OpenWebUI chat tool with `?start_nodes=A,B,C`).
+  // Nodes whose ID is in this set are visually emphasised by the
+  // renderer (larger radius, outline ring, ordinal badge). `queryText`
+  // is the original natural-language query the link carries, rendered
+  // as a header above the canvas/side panel so the user sees what
+  // surfaced these entities.
+  startingSetIds: Set<string>;
+  queryText: string | null;
+
   // Streaming state for progressive loading
   useStreaming: boolean;
   streamingProgress: StreamingProgress;
@@ -225,6 +237,10 @@ interface GraphActions {
   setStreamingProgress: (progress: Partial<StreamingProgress>) => void;
   resetStreamingProgress: () => void;
   clearGraphForStreaming: () => void;
+
+  // SPEC-006 P3 — search → render
+  setStartingSet: (ids: string[]) => void;
+  setQueryText: (text: string | null) => void;
 }
 
 type GraphStore = GraphState & GraphActions;
@@ -269,6 +285,10 @@ const initialState: GraphState = {
   isTruncated: false,
   totalNodesInStorage: 0,
   totalEdgesInStorage: 0,
+  // SPEC-006 P3 — empty starting set means "no deep-link entry"; the
+  // existing global graph view continues to render unchanged.
+  startingSetIds: new Set(),
+  queryText: null,
   // Streaming enabled - backend SSE verified working
   useStreaming: true,
   streamingProgress: {
@@ -977,6 +997,10 @@ export const useGraphStore = create<GraphStore>()((set, get) => ({
       totalEdgesInStorage: 0,
     });
   },
+
+  // SPEC-006 P3 — search → render
+  setStartingSet: (ids: string[]) => set({ startingSetIds: new Set(ids) }),
+  setQueryText: (text: string | null) => set({ queryText: text }),
 }));
 
 // Selectors - these return new arrays on each call, so use with useMemo in components

@@ -41,6 +41,7 @@ import {
     Copy,
     Edit,
     ExternalLink,
+    FileText,
     GitMerge,
     Hash,
     Info,
@@ -67,6 +68,35 @@ const TYPE_COLORS: Record<string, string> = {
   DOCUMENT: '#6366f1',
   DEFAULT: '#64748b',
 };
+
+// SPEC-006 P3 — read provenance documents from an entity's properties.
+//
+// Lattice writes `properties.source_ids` as a JSON array mixing the
+// document UUID with chunk keys (`<doc-uuid>-chunk-<n>`); some legacy
+// rows still carry `source_id` as a pipe-separated string. We canonical-
+// ise to a deduplicated list of *document* IDs by stripping the chunk
+// suffix. The result lights up the "Appears in" block in the side panel.
+function extractSourceDocuments(
+  properties: Record<string, unknown> | undefined | null,
+): string[] {
+  if (!properties) return [];
+  const out = new Set<string>();
+  const addStripped = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const chunkIdx = trimmed.indexOf('-chunk-');
+    out.add(chunkIdx >= 0 ? trimmed.slice(0, chunkIdx) : trimmed);
+  };
+  const rawIds = properties['source_ids'];
+  if (Array.isArray(rawIds)) {
+    for (const v of rawIds) if (typeof v === 'string') addStripped(v);
+  } else if (typeof properties['source_id'] === 'string') {
+    for (const part of (properties['source_id'] as string).split('|')) {
+      addStripped(part);
+    }
+  }
+  return Array.from(out);
+}
 
 // Expandable Property Value Component
 function PropertyValue({ 
@@ -225,6 +255,42 @@ export function NodeDetails({ node }: NodeDetailsProps) {
                 <p className="text-xs leading-relaxed text-foreground/90 break-words">{node.description}</p>
               </div>
             )}
+
+            {/* SPEC-006 P3 — Source-document provenance. Shows which
+                documents this entity was extracted from, so users
+                arriving via a search deep-link know where to dig in
+                next. Hidden when the entity has no source_ids
+                (e.g. unsynced or older rows). */}
+            {(() => {
+              const docs = extractSourceDocuments(
+                node.properties as Record<string, unknown> | undefined,
+              );
+              if (docs.length === 0) return null;
+              return (
+                <div>
+                  <div className="flex items-center gap-1 mb-1.5">
+                    <FileText className="h-3 w-3 text-muted-foreground" />
+                    <h5 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                      Appears in
+                    </h5>
+                    <span className="text-[10px] text-muted-foreground/70">
+                      ({docs.length})
+                    </span>
+                  </div>
+                  <div className="bg-muted/20 rounded-md p-2 space-y-0.5 border border-border/20">
+                    {docs.map((d) => (
+                      <p
+                        key={d}
+                        className="font-mono text-[10px] text-foreground/80 break-all leading-snug"
+                        title={d}
+                      >
+                        {d}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Properties */}
             {node.properties && Object.keys(node.properties).length > 0 && (

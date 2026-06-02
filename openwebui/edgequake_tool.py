@@ -8,9 +8,16 @@ description: Query the EdgeQuake knowledge graph, upload documents, and explore 
 import json
 import os
 from typing import Optional
+from urllib.parse import quote
 
 import requests
 from pydantic import BaseModel, Field
+
+# SPEC-006 P3 — cap on `start_nodes` carried in the WebUI deep-link URL.
+# Mirrors `MAX_SUBGRAPH_START_NODES` in
+# edgequake-api/src/handlers/graph_types.rs; kept tight to keep URLs
+# under ~2 KB and the initial render readable.
+_GRAPH_LINK_START_NODES_MAX = 20
 
 
 class Tools:
@@ -26,8 +33,21 @@ class Tools:
                 "(e.g. https://edgequake.tail59ea6b.ts.net). The URL must be reachable "
                 "from the END USER'S browser, not the OpenWebUI container — so this is "
                 "typically the Tailscale / public proxy URL, NOT host.docker.internal. "
-                "If empty, falls back to edgequake_base_url which usually only resolves "
-                "inside the Docker network."
+                "This points at the **API** (port 8080) — used for /api/v1/documents/... "
+                "figure image URLs. For the WebUI graph deep-links, set webui_base_url "
+                "below. If empty, falls back to edgequake_base_url which usually only "
+                "resolves inside the Docker network."
+            ),
+        )
+        webui_base_url: str = Field(
+            default="",
+            description=(
+                "Public base URL for the EdgeQuake WebUI (port 3000), used by SPEC-006 "
+                "graph deep-links — *separate* from public_base_url because the WebUI "
+                "and the API are different services on different ports. Example: "
+                "https://edgequake-ui.tail59ea6b.ts.net or http://localhost:3000. "
+                "If empty, falls back to public_base_url (which usually points at the "
+                "API and will 404 on /graph)."
             ),
         )
         workspace_id: str = Field(
@@ -106,6 +126,16 @@ class Tools:
         paraphrase, or replace them with text. The image renders inline
         for the user.
 
+        When the response contains a **Graph view** line at the end —
+        a markdown link `[open interactive →](https://…/graph?…)` — you
+        MUST include that exact link verbatim at the end of your answer
+        (or inline where you reference the graph). Do not paraphrase it,
+        do not drop the URL, do not replace it with text like "view the
+        graph" or "see the diagram". The link is the user's only path
+        from the chat to the visual subgraph for the entities you just
+        retrieved; omitting it breaks the feature. Treat it with the
+        same verbatim-passthrough rule as the figure image links.
+
         :param query: Natural-language question with concrete terms
             preserved from the user's phrasing.
         :param mode: One of: naive, local, global, hybrid, mix. Empty for
@@ -133,6 +163,7 @@ class Tools:
         chunks = []
         figures = []
         entities = []
+        entity_ids: list[str] = []
         relationships = []
         seen_docs = set()
         # WHY public_base_url: image URLs go into the chat response and are
@@ -173,6 +204,8 @@ class Tools:
                 name = src.get("id", "")
                 desc = src.get("snippet", "")
                 entities.append(f"- {name}: {desc}")
+                if name and name not in entity_ids:
+                    entity_ids.append(name)
             elif stype == "relationship":
                 desc = src.get("snippet", "")
                 relationships.append(f"- {desc}")
@@ -193,6 +226,26 @@ class Tools:
                 "NOT strip, paraphrase, or replace these image lines with "
                 "text descriptions."
             )
+        if entity_ids:
+            # SPEC-006 P3 — same problem, different shape: GPT-5/Claude
+            # often *summarise away* the trailing "Graph view" link block
+            # rather than passing it through. Front-load an imperative
+            # rule like the figures one above so the link survives the
+            # model's summarisation pass. The actual `[label](url)` is
+            # composed at the bottom of this function so the model sees
+            # it both as a rule (here) and as the literal link (later).
+            parts.append(
+                "**RENDERING RULE — important:** the **Graph view** "
+                "section at the end of this tool result contains a "
+                "markdown link `[open interactive →](https://…)` to the "
+                "knowledge-graph canvas for the entities just retrieved. "
+                "You MUST include that exact markdown link verbatim at "
+                "the end of your answer (or inline where you reference "
+                "the graph). Do NOT paraphrase it, do NOT drop the URL, "
+                "do NOT replace it with prose like \"you can view the "
+                "graph\". The link is the user's only path from chat to "
+                "the visual subgraph; omitting it breaks the feature."
+            )
         if chunks:
             parts.append("**Text chunks:**\n" + "\n\n".join(chunks[:10]))
         if figures:
@@ -209,6 +262,43 @@ class Tools:
             parts.append(_render_reference_code(reference_code))
         if seen_docs:
             parts.append("**Source documents:** " + ", ".join(seen_docs))
+
+        # SPEC-006 P3 — when the query surfaced entities, append a
+        # WebUI deep-link so the user can jump from chat prose to an
+        # interactive subgraph rendered around those entities. We do
+        # NOT pre-fetch /graph/subgraph here — the WebUI fetches lazily
+        # when the link is opened, keeping the chat path zero-latency
+        # for text-only readers.
+        if entity_ids:
+            seeds = entity_ids[:_GRAPH_LINK_START_NODES_MAX]
+            encoded = ",".join(quote(eid, safe="") for eid in seeds)
+            q = quote(query, safe="")
+            # Propagate the tool's tenant/workspace into the URL so the
+            # WebUI renders the canvas against the SAME workspace the
+            # entities came from. Without this the WebUI uses the user's
+            # currently-selected workspace, which is often a different
+            # one — every seed then fails the tenant filter and the
+            # canvas renders empty (or 404s).
+            ws = quote(self.valves.workspace_id, safe="")
+            tn = quote(self.valves.tenant_id, safe="")
+            # The graph link must hit the WebUI (port 3000), NOT the API
+            # (port 8080). public_base_url is for API image URLs and will
+            # 404 on /graph. Use webui_base_url when set; otherwise warn
+            # by labelling the link explicitly.
+            webui_base = (
+                self.valves.webui_base_url or self.valves.public_base_url
+                or self.valves.edgequake_base_url
+            ).rstrip("/")
+            # depth=0 = seeds only on initial render. Backend fills in
+            # inter-seed edges via get_edges_for_node_set, and the user
+            # explicitly expands a node via right-click when they want
+            # to see its neighbours. Keeps the initial canvas focused.
+            link = (
+                f"{webui_base}/graph?start_nodes={encoded}"
+                f"&depth=0&q={q}&workspace_id={ws}&tenant_id={tn}"
+            )
+            label = f"{len(seeds)} entit{'y' if len(seeds) == 1 else 'ies'}"
+            parts.append(f"**Graph view** ([open interactive →]({link})) — {label}")
 
         return "\n\n".join(parts)
 

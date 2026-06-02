@@ -226,6 +226,100 @@ pub fn default_popular_limit() -> usize {
     50
 }
 
+// ============================================================================
+// Subgraph DTOs (SPEC-006 P3: search → render)
+// ============================================================================
+
+/// Request body for `POST /api/v1/graph/subgraph`.
+///
+/// Caller supplies a starting set of node IDs (typically extracted from
+/// `/api/v1/query` `sources[].source_type=="entity"`). The endpoint
+/// performs BFS up to `depth` from each start node and returns the
+/// merged subgraph, BFS-truncated at `max_nodes`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct SubgraphRequest {
+    /// Starting node IDs (1..=20).
+    pub start_nodes: Vec<String>,
+
+    /// Traversal depth (default 1, clamped to [0, 2] in v1).
+    #[serde(default = "default_subgraph_depth")]
+    pub depth: usize,
+
+    /// Hard cap on returned nodes (default 60, clamped to [1, 200]).
+    #[serde(default = "default_subgraph_max_nodes")]
+    pub max_nodes: usize,
+}
+
+/// Per-request statistics on the returned subgraph.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SubgraphStats {
+    /// Number of nodes returned.
+    pub total_nodes: usize,
+    /// Number of edges returned.
+    pub total_edges: usize,
+    /// True when BFS would have produced more nodes than `max_nodes`.
+    pub truncated: bool,
+    /// `depth` from the request, echoed for client convenience.
+    pub requested_depth: usize,
+    /// Depth actually reached. In v1 this equals `requested_depth`.
+    pub effective_depth: usize,
+}
+
+/// Response body for `POST /api/v1/graph/subgraph`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct SubgraphResponse {
+    /// Returned nodes.
+    pub nodes: Vec<GraphNodeResponse>,
+    /// Edges among the returned nodes (edges referencing dropped nodes
+    /// are omitted).
+    pub edges: Vec<GraphEdgeResponse>,
+    /// Per-request statistics.
+    pub stats: SubgraphStats,
+}
+
+/// Maximum start nodes per request — keeps URL deep-links readable.
+pub const MAX_SUBGRAPH_START_NODES: usize = 20;
+/// Maximum depth for v1. Beyond 2 hops the result is rarely readable
+/// without LOD/zoom; deeper exploration belongs to explicit "+ expand".
+pub const MAX_SUBGRAPH_DEPTH: usize = 2;
+/// Maximum nodes returned per request. Lower than `MAX_GRAPH_NODES`
+/// because search-driven entry is typically focused and benefits from
+/// a tighter ceiling.
+pub const MAX_SUBGRAPH_NODES: usize = 200;
+
+/// Default subgraph traversal depth (1-hop neighbourhood).
+pub fn default_subgraph_depth() -> usize {
+    1
+}
+
+/// Default subgraph node cap — chosen for a readable canvas without
+/// LOD support.
+pub fn default_subgraph_max_nodes() -> usize {
+    60
+}
+
+impl SubgraphRequest {
+    /// Clamp parameters to the v1 walking-skeleton bounds and reject
+    /// empty / over-sized starting sets with `BadRequest`.
+    pub fn validated(self) -> Result<Self, String> {
+        if self.start_nodes.is_empty() {
+            return Err("start_nodes must not be empty".to_string());
+        }
+        if self.start_nodes.len() > MAX_SUBGRAPH_START_NODES {
+            return Err(format!(
+                "start_nodes length {} exceeds cap of {}",
+                self.start_nodes.len(),
+                MAX_SUBGRAPH_START_NODES
+            ));
+        }
+        Ok(Self {
+            start_nodes: self.start_nodes,
+            depth: self.depth.min(MAX_SUBGRAPH_DEPTH),
+            max_nodes: self.max_nodes.clamp(1, MAX_SUBGRAPH_NODES),
+        })
+    }
+}
+
 /// Popular label with metadata.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PopularLabel {

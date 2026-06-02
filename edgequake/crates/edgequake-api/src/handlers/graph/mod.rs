@@ -64,7 +64,7 @@ pub(crate) fn properties_match_document(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::extract::{Path, Query, State};
+    use axum::extract::{Json, Path, Query, State};
 
     use crate::middleware::TenantContext;
     use crate::state::AppState;
@@ -137,5 +137,105 @@ mod tests {
 
         let result = get_popular_labels(State(state), Query(params)).await;
         assert!(result.is_ok());
+    }
+
+    // SPEC-006 P3 — POST /api/v1/graph/subgraph
+
+    #[test]
+    fn test_subgraph_request_validated_rejects_empty() {
+        let req = SubgraphRequest {
+            start_nodes: vec![],
+            depth: 1,
+            max_nodes: 60,
+        };
+        assert!(req.validated().is_err());
+    }
+
+    #[test]
+    fn test_subgraph_request_validated_rejects_oversized() {
+        let req = SubgraphRequest {
+            start_nodes: (0..MAX_SUBGRAPH_START_NODES + 1)
+                .map(|i| format!("N{}", i))
+                .collect(),
+            depth: 1,
+            max_nodes: 60,
+        };
+        assert!(req.validated().is_err());
+    }
+
+    #[test]
+    fn test_subgraph_request_validated_clamps_depth() {
+        let req = SubgraphRequest {
+            start_nodes: vec!["A".into()],
+            depth: 99,
+            max_nodes: 60,
+        };
+        let v = req.validated().unwrap();
+        assert_eq!(v.depth, MAX_SUBGRAPH_DEPTH);
+    }
+
+    #[test]
+    fn test_subgraph_request_validated_clamps_max_nodes() {
+        let req = SubgraphRequest {
+            start_nodes: vec!["A".into()],
+            depth: 1,
+            max_nodes: 9_999,
+        };
+        let v = req.validated().unwrap();
+        assert_eq!(v.max_nodes, MAX_SUBGRAPH_NODES);
+    }
+
+    #[test]
+    fn test_subgraph_request_validated_clamps_zero_max_nodes() {
+        let req = SubgraphRequest {
+            start_nodes: vec!["A".into()],
+            depth: 1,
+            max_nodes: 0,
+        };
+        let v = req.validated().unwrap();
+        assert_eq!(v.max_nodes, 1);
+    }
+
+    #[test]
+    fn test_subgraph_request_defaults() {
+        let json = r#"{"start_nodes": ["A"]}"#;
+        let req: SubgraphRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.depth, 1);
+        assert_eq!(req.max_nodes, 60);
+    }
+
+    #[tokio::test]
+    async fn test_subgraph_missing_tenant_returns_empty() {
+        // Per SPEC-006: tenant-context absent ⇒ short-circuit to an
+        // empty 200 response rather than leak across workspaces.
+        let state = AppState::test_state();
+        let tenant_ctx = TenantContext::default();
+        let req = SubgraphRequest {
+            start_nodes: vec!["UNKNOWN_NODE".into()],
+            depth: 1,
+            max_nodes: 60,
+        };
+
+        let result = get_subgraph(State(state), tenant_ctx, Json(req)).await;
+        let resp = result.unwrap().0;
+        assert!(resp.nodes.is_empty());
+        assert!(resp.edges.is_empty());
+        assert_eq!(resp.stats.total_nodes, 0);
+        assert!(!resp.stats.truncated);
+        assert_eq!(resp.stats.requested_depth, 1);
+    }
+
+    #[tokio::test]
+    async fn test_subgraph_empty_start_nodes_is_bad_request() {
+        let state = AppState::test_state();
+        let tenant_ctx = TenantContext::default();
+        let req = SubgraphRequest {
+            start_nodes: vec![],
+            depth: 1,
+            max_nodes: 60,
+        };
+
+        let result = get_subgraph(State(state), tenant_ctx, Json(req)).await;
+        assert!(result.is_err());
     }
 }

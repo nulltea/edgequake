@@ -1336,6 +1336,47 @@ export async function getGraphLabels(): Promise<{
   );
 }
 
+// SPEC-006 P3 — multi-source subgraph (search → render).
+//
+// Caller supplies a starting set of node IDs (typically extracted
+// from a `/query` response's `sources[].source_type === "entity"`),
+// and gets back a BFS subgraph around them for direct rendering.
+
+export interface SubgraphRequest {
+  start_nodes: string[];
+  depth?: number;
+  max_nodes?: number;
+}
+
+export interface SubgraphStats {
+  total_nodes: number;
+  total_edges: number;
+  truncated: boolean;
+  requested_depth: number;
+  effective_depth: number;
+}
+
+export interface SubgraphResponse {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  stats: SubgraphStats;
+}
+
+export async function getSubgraph(
+  req: SubgraphRequest,
+): Promise<SubgraphResponse> {
+  const resp = await api.post<SubgraphResponse>("/graph/subgraph", req);
+  // Normalise edge field names — same legacy mapping as getGraph().
+  if (resp.edges) {
+    resp.edges = resp.edges.map((e) => ({
+      ...e,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      relationship_type: e.relationship_type || (e as any).edge_type || "",
+    }));
+  }
+  return resp;
+}
+
 export async function getGraphStats(): Promise<{
   node_count: number;
   edge_count: number;
@@ -2638,6 +2679,7 @@ export const edgequakeApi = {
   getGraph,
   getGraphLabels,
   getGraphStats,
+  getSubgraph,
   searchLabels,
   searchNodes,
   getPopularLabels,
