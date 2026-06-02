@@ -209,4 +209,18 @@ pub struct DocumentSummary {
     /// When the document was archived (RFC 3339). `None` for active documents.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+
+    /// True when the document was uploaded with `skip_extraction` and the
+    /// heavy LLM stages (entities/relationships/algorithms/repo detection/
+    /// table classification) have not been run. Drives the per-doc "Run
+    /// extraction" action and the workspace-wide "Extract pending" banner
+    /// in the UI; cleared once a trigger-extraction call is made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction_skipped: Option<bool>,
+
+    /// User-assigned short label (e.g. a method codename). Rendered next
+    /// to the title in the documents list (`"Title.pdf (Nexus)"`). `None`
+    /// when no label is set. Updated via `PUT /documents/{id}/label`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }

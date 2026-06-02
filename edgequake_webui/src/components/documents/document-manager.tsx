@@ -64,6 +64,7 @@ import { DocumentPreviewRightPanel } from './document-preview-right-panel';
 import { DocumentTableSection } from './document-table-section';
 import { DocumentToolbarSection } from './document-toolbar-section';
 import { DuplicateUploadDialog } from './duplicate-upload-dialog';
+import { SetLabelDialog } from './set-label-dialog';
 import { isProcessingStatus } from './status-badge';
 
 export function DocumentManager() {
@@ -167,6 +168,9 @@ export function DocumentManager() {
   // embeddings, KG contributions, indexed code) so we want an explicit confirm.
   const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null);
 
+  // Dialog state for assigning / editing a document's free-form label.
+  const [labelTargetDoc, setLabelTargetDoc] = useState<Document | null>(null);
+
   // Navigate to document's algorithms tab
   const handleViewAlgorithms = (doc: Document) => {
     router.push(`/documents/${doc.id}?tab=algorithms`);
@@ -179,7 +183,9 @@ export function DocumentManager() {
   const handleUrlUpload = async (url: string) => {
     setStatusFilter('all');
     try {
-      const resp = await uploadPdfFromUrl(url);
+      const resp = await uploadPdfFromUrl(url, {
+        skip_extraction: skipExtraction,
+      });
       if (resp.status === 'duplicate') {
         sonnerToast.info('PDF already in workspace', {
           description: 'Existing document preserved.',
@@ -460,6 +466,7 @@ export function DocumentManager() {
         onArchive={(id) => setArchiveTargetId(id)}
         onExtractAlgorithms={handleExtractAlgorithms}
         onTriggerExtraction={handleTriggerExtraction}
+        onSetLabel={(doc) => setLabelTargetDoc(doc)}
         onViewAlgorithms={handleViewAlgorithms}
         docsWithAlgorithms={docsWithAlgorithms}
         onViewCodeArtifacts={handleViewCodeArtifacts}
@@ -538,6 +545,13 @@ export function DocumentManager() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Label assign / edit dialog. Free text, max 80 chars, empty clears. */}
+      <SetLabelDialog
+        doc={labelTargetDoc}
+        open={labelTargetDoc !== null}
+        onClose={() => setLabelTargetDoc(null)}
+      />
     </div>
   );
 }

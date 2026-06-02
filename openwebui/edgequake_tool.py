@@ -385,6 +385,7 @@ class Tools:
         self,
         url: str,
         title: Optional[str] = None,
+        skip_extraction: bool = False,
         __user__: dict = {},
     ) -> str:
         """
@@ -401,10 +402,18 @@ class Tools:
         :param url: Direct http(s) URL to a PDF.
         :param title: Optional initial filename override (the post-OCR
             rename still runs; use this only when auto-rename is unwanted).
+        :param skip_extraction: Skip the heavy LLM stages (entities,
+            relationships, algorithms, repo detection, table classification).
+            The PDF is still OCR'd, chunked, and embedded — queryable via
+            chunk search — and lands in status `partial` with
+            `extraction_skipped: true`. Trigger extraction later via the
+            per-document /extract endpoint or the workspace bulk action.
         """
         body: dict = {"url": url}
         if title:
             body["title"] = title
+        if skip_extraction:
+            body["skip_extraction"] = True
         try:
             resp = self._api("POST", "/documents/pdf/from-url", json=body)
         except requests.HTTPError as e:

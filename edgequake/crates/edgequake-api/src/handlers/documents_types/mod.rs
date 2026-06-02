@@ -138,6 +138,8 @@ mod tests {
             stage_message: None,
             pdf_id: None,
             archived_at: None,
+            extraction_skipped: None,
+            label: None,
         };
 
         let json = serde_json::to_string(&summary).unwrap();
@@ -173,6 +175,8 @@ mod tests {
                 stage_message: None,
                 pdf_id: None,
                 archived_at: None,
+                extraction_skipped: None,
+                label: None,
             }],
             total: 1,
             page: 1,
@@ -223,6 +227,7 @@ mod tests {
             lineage: None,
             metadata: None,
             pdf_id: None,
+            label: None,
         };
 
         let json = serde_json::to_string(&response).unwrap();
@@ -286,6 +291,8 @@ mod tests {
                 stage_message: None,
                 pdf_id: None,
                 archived_at: None,
+                extraction_skipped: None,
+                label: None,
             }],
             total_count: 1,
             status_summary: StatusCounts {

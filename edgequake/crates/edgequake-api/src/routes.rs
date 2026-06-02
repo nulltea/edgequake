@@ -310,6 +310,12 @@ fn api_v1_routes() -> Router<AppState> {
             "/documents/{document_id}/extract",
             post(handlers::trigger_extraction),
         )
+        // Set / clear a document's user-assigned label.
+        // MUST come before /documents/{document_id}
+        .route(
+            "/documents/{document_id}/label",
+            put(handlers::set_document_label),
+        )
         // Figure media — streams PNG bytes for figures captured during VLM-OCR.
         // MUST come before /documents/{document_id} to avoid being shadowed by
         // the catch-all detail route.

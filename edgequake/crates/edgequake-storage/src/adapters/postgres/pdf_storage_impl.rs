@@ -529,6 +529,35 @@ impl PdfDocumentStorage for PostgresPdfStorage {
         Ok(())
     }
 
+    async fn set_document_label(
+        &self,
+        document_id: &Uuid,
+        label: Option<&str>,
+    ) -> Result<()> {
+        let result = sqlx::query(
+            r#"
+            UPDATE documents
+               SET label = $2,
+                   updated_at = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(document_id)
+        .bind(label)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(format!("Failed to set document label: {}", e)))?;
+
+        debug!(
+            "Set document label: id={}, has_label={}, rows_affected={}",
+            document_id,
+            label.is_some(),
+            result.rows_affected()
+        );
+
+        Ok(())
+    }
+
     async fn delete_chunks_for_document(&self, document_id: &Uuid) -> Result<u64> {
         let result = sqlx::query(
             r#"

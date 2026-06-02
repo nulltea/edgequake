@@ -91,6 +91,7 @@ export class PdfResource extends Resource {
       title?: string;
       track_id?: string;
       force_reindex?: boolean;
+      skip_extraction?: boolean;
     },
   ): Promise<PdfUploadResponse> {
     return this._post("/api/v1/documents/pdf/from-url", {
@@ -98,6 +99,7 @@ export class PdfResource extends Resource {
       title: options?.title,
       track_id: options?.track_id,
       force_reindex: options?.force_reindex,
+      skip_extraction: options?.skip_extraction,
     });
   }
 

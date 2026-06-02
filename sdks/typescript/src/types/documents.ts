@@ -163,6 +163,12 @@ export interface DocumentSummary {
   stage_message?: string;
   /** Linked PDF document ID (only if source_type is "pdf"). */
   pdf_id?: string;
+  /** True when the document was uploaded with `skip_extraction` and the
+   *  heavy LLM stages have not been run. */
+  extraction_skipped?: boolean;
+  /** User-assigned short label (e.g. a method codename). Rendered next to
+   *  the title in listings (`"Title.pdf (Nexus)"`). */
+  label?: string;
 }
 
 /** Document detail response with full content. */
@@ -193,6 +199,9 @@ export interface DocumentDetail {
   stage_message?: string;
   pdf_id?: string;
   metadata?: Record<string, unknown>;
+  /** User-assigned short label (e.g. a method codename). Updated via
+   *  `PUT /documents/{id}/label`. */
+  label?: string;
 }
 
 // ── Legacy aliases ────────────────────────────────────────────

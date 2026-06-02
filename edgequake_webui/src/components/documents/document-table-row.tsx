@@ -137,6 +137,9 @@ export interface DocumentTableRowProps {
   onExtractAlgorithms?: (docId: string) => void;
   /** Called when Run Extraction (chunks-only) action is triggered */
   onTriggerExtraction?: (docId: string) => void;
+  /** Called when "Set label" action is triggered. Receives the full doc so
+   *  the dialog can pre-fill the current label. */
+  onSetLabel?: (doc: Document) => void;
   /** Called when View Algorithms action is triggered */
   onViewAlgorithms?: (doc: Document) => void;
   /** True when this doc has at least one extracted algorithm. Gates the
@@ -175,6 +178,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onArchive,
   onExtractAlgorithms,
   onTriggerExtraction,
+  onSetLabel,
   onViewAlgorithms,
   hasAlgorithms = false,
   onViewCodeArtifacts,
@@ -200,8 +204,9 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   );
 
   const { icon: FileIcon, color } = getFileTypeIcon(doc.file_name);
-  const displayTitle =
+  const baseTitle =
     doc.title || doc.file_name || `Document ${doc.id.slice(0, 8)}`;
+  const displayTitle = doc.label ? `${baseTitle} (${doc.label})` : baseTitle;
 
   // OODA-34: "New" indicator for documents created within 1 hour
   const isNew =
@@ -275,6 +280,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
             onArchive={onArchive}
             onExtractAlgorithms={onExtractAlgorithms}
             onTriggerExtraction={onTriggerExtraction}
+            onSetLabel={onSetLabel}
             isCancelling={isCancelling}
           />
         </QuickActionButtons>

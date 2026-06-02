@@ -99,6 +99,11 @@ pub struct DocumentDetailResponse {
     /// @implements SPEC-002
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pdf_id: Option<String>,
+
+    /// User-assigned short label (e.g. a method codename). `None` when no
+    /// label is set. Updated via `PUT /documents/{id}/label`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Get document by ID request.

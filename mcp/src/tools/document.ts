@@ -237,6 +237,12 @@ export function registerDocumentTools(server: McpServer): void {
         .describe(
           "Re-process an already-ingested PDF (clears prior graph/vector data).",
         ),
+      skip_extraction: z
+        .boolean()
+        .optional()
+        .describe(
+          "Skip heavy LLM extraction (entities, relationships, algorithms, repo detection, table classification). The PDF is still OCR'd, chunked, and embedded — queryable via chunk search — and lands in status 'partial' with extraction_skipped: true. Extraction can be triggered later via document_extract or the workspace 'Extract pending' flow.",
+        ),
     },
     async (params) => {
       try {
@@ -244,6 +250,7 @@ export function registerDocumentTools(server: McpServer): void {
         const result = await client.documents.pdf.uploadFromUrl(params.url, {
           title: params.title,
           force_reindex: params.force_reindex,
+          skip_extraction: params.skip_extraction,
         });
         const resultExtras = result as typeof result & {
           task_id?: string;
@@ -316,6 +323,7 @@ export function registerDocumentTools(server: McpServer): void {
                   documents: result.documents.map((d) => ({
                     id: d.id,
                     title: d.title,
+                    label: d.label,
                     status: d.status,
                     chunk_count: d.chunk_count,
                     entity_count: d.entity_count,
@@ -360,6 +368,7 @@ export function registerDocumentTools(server: McpServer): void {
                 {
                   id: doc.id,
                   title: doc.title,
+                  label: doc.label,
                   content: doc.content,
                   status: doc.status,
                   chunk_count: doc.chunk_count,

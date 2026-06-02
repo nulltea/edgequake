@@ -125,6 +125,8 @@ pub async fn list_documents(
         stage_message: Option<String>,
         pdf_id: Option<String>,
         archived_at: Option<String>,
+        extraction_skipped: Option<bool>,
+        label: Option<String>,
     }
 
     let mut doc_metadata: std::collections::HashMap<String, DocMetadata> =
@@ -283,6 +285,19 @@ pub async fn list_documents(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
+                // Chunks-only flag — drives the per-doc "Run extraction"
+                // action and the workspace-wide "Extract pending" banner.
+                meta.extraction_skipped = obj
+                    .get("extraction_skipped")
+                    .and_then(|v| v.as_bool());
+
+                // User-assigned label — surfaced next to the title in the
+                // documents list (e.g. "Title.pdf (Nexus)").
+                meta.label = obj
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
                 doc_metadata.insert(id.to_string(), meta);
             }
         }
@@ -337,6 +352,8 @@ pub async fn list_documents(
                 stage_message: meta.stage_message,
                 pdf_id: meta.pdf_id,
                 archived_at: meta.archived_at,
+                extraction_skipped: meta.extraction_skipped,
+                label: meta.label,
             })
         })
         .collect();
@@ -373,6 +390,8 @@ pub async fn list_documents(
             stage_message: meta.stage_message,
             pdf_id: meta.pdf_id,
             archived_at: meta.archived_at,
+            extraction_skipped: meta.extraction_skipped,
+            label: meta.label,
         });
     }
 

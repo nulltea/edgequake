@@ -669,6 +669,12 @@ export interface UploadPdfFromUrlOptions {
   /** Opt-in to re-process an already-ingested PDF via the shared dedup
    *  path. */
   force_reindex?: boolean;
+  /** Skip the heavy LLM extraction stages (entities, relationships,
+   *  algorithms, repo detection, table classification). The document is
+   *  still OCR'd, chunked, and embedded — queryable via chunk search —
+   *  and lands in status `partial` with `extraction_skipped: true` so
+   *  extraction can be triggered later. */
+  skip_extraction?: boolean;
 }
 
 /**
@@ -687,6 +693,7 @@ export async function uploadPdfFromUrl(
     title: options?.title,
     track_id: options?.track_id,
     force_reindex: options?.force_reindex,
+    skip_extraction: options?.skip_extraction,
   });
 }
 
@@ -733,6 +740,28 @@ export async function extractPendingDocuments(
   return api.post<ExtractPendingResponse>(
     `/workspaces/${workspaceId}/extract-pending`,
     {},
+  );
+}
+
+/** Response shape for {@link setDocumentLabel}. */
+export interface SetDocumentLabelResponse {
+  document_id: string;
+  /** Canonical label after server-side normalisation (trim, empty → null). */
+  label: string | null;
+}
+
+/**
+ * Set or clear a document's user-assigned label. Pass `null` (or an
+ * empty/whitespace-only string) to clear. Max length 80 chars; the server
+ * trims whitespace and returns the canonical value.
+ */
+export async function setDocumentLabel(
+  documentId: string,
+  label: string | null,
+): Promise<SetDocumentLabelResponse> {
+  return api.put<SetDocumentLabelResponse>(
+    `/documents/${documentId}/label`,
+    { label },
   );
 }
 

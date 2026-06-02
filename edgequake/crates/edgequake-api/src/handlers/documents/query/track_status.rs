@@ -146,6 +146,13 @@ pub async fn get_track_status(
                         .get("archived_at")
                         .and_then(|v| v.as_str())
                         .map(String::from),
+                    extraction_skipped: obj
+                        .get("extraction_skipped")
+                        .and_then(|v| v.as_bool()),
+                    label: obj
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
                 });
             }
         }

@@ -200,6 +200,13 @@ export interface Document {
    * workspace-level rebuilds.
    */
   archived_at?: string | null;
+
+  /**
+   * User-assigned short label (e.g. a method codename). Rendered next to
+   * the title in the documents list (`"Title.pdf (Nexus)"`). Updated via
+   * `PUT /documents/{id}/label`; null/undefined when no label is set.
+   */
+  label?: string | null;
 }
 
 /** Extraction lineage information for a document. */

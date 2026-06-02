@@ -450,6 +450,16 @@ pub trait PdfDocumentStorage: Send + Sync {
     /// regenerate chunks / embeddings / KG / indexed code.
     async fn unarchive_document(&self, document_id: &Uuid) -> Result<()>;
 
+    /// Set (or clear, when `label` is `None`) a document's user-assigned
+    /// label. Persisted to `documents.label`; callers are responsible for
+    /// mirroring into the KV metadata so the list endpoint sees it without
+    /// touching postgres.
+    async fn set_document_label(
+        &self,
+        document_id: &Uuid,
+        label: Option<&str>,
+    ) -> Result<()>;
+
     /// Delete all chunks belonging to a document without removing the document row.
     ///
     /// Used by the archive flow: the document survives but its chunks (and the
