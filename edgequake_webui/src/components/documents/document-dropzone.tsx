@@ -1,7 +1,9 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
@@ -34,6 +36,10 @@ export interface DocumentDropzoneProps {
   onPdfParserBackendChange: (
     value: 'default' | 'vision' | 'edgeparse' | 'vlmocr',
   ) => void;
+  /** When true, uploads skip heavy LLM extraction (chunks-only indexing). */
+  skipExtraction: boolean;
+  /** Change handler for the skip-extraction checkbox. */
+  onSkipExtractionChange: (value: boolean) => void;
   /**
    * Handler for URL-based PDF uploads. When provided, the dropzone
    * surface shows an additional URL input row. Returning a promise lets
@@ -66,6 +72,8 @@ export function DocumentDropzone({
   openFileDialog,
   pdfParserBackend,
   onPdfParserBackendChange,
+  skipExtraction,
+  onSkipExtractionChange,
   onUrlSubmit,
 }: DocumentDropzoneProps) {
   const { t } = useTranslation();
@@ -190,6 +198,25 @@ export function DocumentDropzone({
               </SelectItem>
             </SelectContent>
           </Select>
+          <div className="flex items-center gap-2 pl-2 border-l">
+            <Checkbox
+              id="skip-extraction"
+              checked={skipExtraction}
+              onCheckedChange={(checked) =>
+                onSkipExtractionChange(checked === true)
+              }
+            />
+            <Label
+              htmlFor="skip-extraction"
+              className="text-xs text-muted-foreground whitespace-nowrap cursor-pointer"
+              title={t(
+                'documents.upload.skipExtractionHint',
+                'Index chunks for semantic search only. Skips entity, algorithm, reference and table extraction — you can run them later from the document menu.',
+              )}
+            >
+              {t('documents.upload.skipExtraction', 'Skip extraction')}
+            </Label>
+          </div>
         </div>
       </div>
 

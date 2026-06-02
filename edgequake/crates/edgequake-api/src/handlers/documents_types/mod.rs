@@ -36,6 +36,7 @@ mod tests {
             enable_gleaning: true,
             max_gleaning: 1,
             use_llm_summarization: true,
+            skip_extraction: false,
         };
 
         assert!(!request.content.is_empty());

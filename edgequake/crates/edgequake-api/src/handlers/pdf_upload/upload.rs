@@ -100,6 +100,7 @@ pub async fn upload_pdf_document(
         track_id: None,
         force_reindex: false,
         pdf_parser_backend: None,
+        skip_extraction: false,
     };
 
     while let Some(field) = multipart
@@ -160,6 +161,11 @@ pub async fn upload_pdf_document(
             Some("pdf_parser_backend") => {
                 if let Ok(text) = field.text().await {
                     options.pdf_parser_backend = PdfParserBackend::from_env_str(&text);
+                }
+            }
+            Some("skip_extraction") => {
+                if let Ok(text) = field.text().await {
+                    options.skip_extraction = text.parse().unwrap_or(false);
                 }
             }
             _ => {}
@@ -539,6 +545,9 @@ pub struct UploadPdfFromUrlRequest {
     /// correlate. Server auto-generates one if absent.
     #[serde(default)]
     pub track_id: Option<String>,
+    /// Skip heavy LLM extraction stages — index for chunk-level search only.
+    #[serde(default)]
+    pub skip_extraction: bool,
 }
 
 /// Upload a PDF identified by URL.
@@ -625,6 +634,7 @@ pub async fn upload_pdf_from_url(
         track_id: request.track_id,
         force_reindex: request.force_reindex,
         pdf_parser_backend: None,
+        skip_extraction: request.skip_extraction,
     };
 
     ingest_pdf_bytes(state, context, file_data, filename, options).await

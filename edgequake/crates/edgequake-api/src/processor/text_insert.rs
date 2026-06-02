@@ -80,6 +80,16 @@ impl DocumentTaskProcessor {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        // Chunks-only mode: chunk + embed (document becomes queryable) but skip
+        // the heavy LLM entity/relationship extraction. The flag travels in the
+        // task metadata for both the text-upload and PDF-pipeline callers.
+        let skip_extraction = data
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("skip_extraction"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         // SPEC-002: Ensure document metadata includes source_type
         // This is needed for PDFs that bypass the upload handler
         // OODA-05: Pass tenant_id/workspace_id for multi-tenant context
@@ -564,6 +574,56 @@ impl DocumentTaskProcessor {
                 chunk_vectors = chunk_vec_stored,
                 "PHASE-1: chunks + chunk vectors persisted — document is now queryable via hybrid mode"
             );
+
+            // ── SKIP-EXTRACTION: stop after phase 1 ──
+            // Chunks + embeddings are persisted and the document is queryable
+            // via hybrid search. In chunks-only mode the heavy LLM entity /
+            // relationship extraction is skipped entirely. For standalone text
+            // uploads (`finalize_status`) we write the terminal `partial` status
+            // and set the `extraction_skipped` flag here. The PDF caller passes
+            // `finalize_status=false` and writes its own final status after the
+            // figure/table media backfill that still runs in chunks-only mode.
+            if skip_extraction {
+                info!(
+                    document_id = %document_id,
+                    chunks = chunks_kv_count,
+                    "SKIP-EXTRACTION: chunks-only ingestion — skipping entity/relationship extraction"
+                );
+                if is_pdf_source {
+                    self.pipeline_state
+                        .complete_pdf_phase(&track_id, PipelinePhase::Embedding)
+                        .await;
+                }
+                if finalize_status {
+                    self.update_document_status(&document_id, "partial", None)
+                        .await?;
+                    self.set_extraction_skipped_flag(&document_id, true)
+                        .await
+                        .ok();
+                    super::pipeline_checkpoint::clear_pipeline_checkpoint(
+                        &self.kv_storage,
+                        &document_id,
+                    )
+                    .await;
+                    if let Some(workspace_id_str) = workspace_id {
+                        if let Ok(workspace_uuid) = uuid::Uuid::parse_str(workspace_id_str) {
+                            crate::handlers::workspaces::invalidate_workspace_stats_cache(
+                                workspace_uuid,
+                            )
+                            .await;
+                        }
+                    }
+                    task.update_progress("completed".to_string(), 10, 100);
+                }
+                return Ok(json!({
+                    "document_id": document_id,
+                    "chunk_count": chunks_kv_count,
+                    "entity_count": 0,
+                    "relationship_count": 0,
+                    "extraction_skipped": true,
+                    "final_status": "partial",
+                }));
+            }
 
             // Document is queryable from this moment on. Flip the status so
             // downstream observers (UI, MCP, query API) treat it that way.

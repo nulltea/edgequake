@@ -15,10 +15,12 @@
 //! - [`mark_document_pending`]: Document status update to "pending"
 //! - [`build_reprocess_task`]: SPEC-041 source-type routing (PDF vs text)
 
+mod extract_pending_documents;
 mod rebuild_embeddings;
 mod rebuild_knowledge_graph;
 mod reprocess_documents;
 
+pub use extract_pending_documents::extract_pending_documents;
 pub use rebuild_embeddings::rebuild_embeddings;
 pub use rebuild_knowledge_graph::rebuild_knowledge_graph;
 pub use reprocess_documents::reprocess_all_documents;
@@ -44,6 +46,9 @@ pub(super) struct DocumentInfo {
     pub source_type: Option<String>,
     pub pdf_id_str: Option<String>,
     pub status: Option<String>,
+    /// True when the document was ingested in chunks-only mode and the heavy
+    /// LLM stages haven't run yet. Source of truth for the "needs extraction" set.
+    pub extraction_skipped: bool,
 }
 
 // ============================================================================
@@ -133,6 +138,11 @@ pub(super) async fn collect_workspace_documents(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let extraction_skipped = obj
+            .get("extraction_skipped")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         docs.push(DocumentInfo {
             doc_id,
             title,
@@ -140,6 +150,7 @@ pub(super) async fn collect_workspace_documents(
             source_type,
             pdf_id_str,
             status,
+            extraction_skipped,
         });
     }
 
@@ -182,6 +193,8 @@ pub(super) fn build_pdf_task(
         pdf_parser_backend: workspace.resolved_pdf_parser_backend(),
         rename_after_parse: false,
         source_url: None,
+        // Reprocess always runs the full pipeline.
+        skip_extraction: false,
     }
 }
 

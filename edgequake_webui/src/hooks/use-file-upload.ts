@@ -35,6 +35,8 @@ export interface UseFileUploadOptions {
   onUploadStart?: () => void;
   /** Optional per-upload PDF parser backend override. */
   pdfParserBackend?: "vision" | "edgeparse" | "vlmocr";
+  /** When true, uploads skip heavy LLM extraction (chunks-only indexing). */
+  skipExtraction?: boolean;
 }
 
 export interface UseFileUploadReturn {
@@ -75,7 +77,7 @@ export function useFileUpload(
   options: UseFileUploadOptions = {},
 ): UseFileUploadReturn {
   const { tenantId, workspaceId, onUploadStart } = options;
-  const { pdfParserBackend } = options;
+  const { pdfParserBackend, skipExtraction } = options;
 
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -189,6 +191,7 @@ export function useFileUpload(
               enable_vision: true, // Enable vision extraction by default for PDFs
               track_id: trackId,
               pdf_parser_backend: pdfParserBackend,
+              skip_extraction: skipExtraction,
             });
 
             response = {
@@ -272,6 +275,7 @@ export function useFileUpload(
               title: file.name,
               async_processing: true,
               track_id: trackId,
+              skip_extraction: skipExtraction,
             });
 
             response = textResponse;
@@ -471,7 +475,7 @@ export function useFileUpload(
         setUploadingFiles([]);
       }, 3000);
     },
-    [isUploading, onUploadStart, pdfParserBackend, queryClient, router, t, tenantId, workspaceId],
+    [isUploading, onUploadStart, pdfParserBackend, skipExtraction, queryClient, router, t, tenantId, workspaceId],
   );
 
   /**
@@ -522,6 +526,7 @@ export function useFileUpload(
                 enable_vision: true,
                 track_id: trackId,
                 force_reindex: true,
+                skip_extraction: skipExtraction,
               });
               // Invalidate documents cache so list refreshes
               queryClient.invalidateQueries({ queryKey: ["documents"] });
@@ -550,7 +555,7 @@ export function useFileUpload(
 
       doReplaceAll();
     },
-    [pendingDuplicates, handleFilesUpload, queryClient],
+    [pendingDuplicates, handleFilesUpload, queryClient, skipExtraction],
   );
 
   /**

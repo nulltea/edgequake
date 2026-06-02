@@ -86,6 +86,7 @@ pub(super) async fn create_pdf_processing_task(
             .and_then(|m| m.get("source_url"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
+        skip_extraction: options.skip_extraction,
     };
 
     let track_id = format!("pdf-{}", Uuid::new_v4());

@@ -26,6 +26,11 @@ pub struct PdfUploadOptions {
     pub force_reindex: bool,
     /// Explicit parser backend override for this upload.
     pub pdf_parser_backend: Option<PdfParserBackend>,
+    /// Skip heavy LLM extraction stages (default: false). When true, the PDF
+    /// is converted to markdown, figures/tables are extracted and chunks are
+    /// embedded, but entity extraction, algorithm extraction, reference-repo
+    /// detection, figure-entity linking and table classification are skipped.
+    pub skip_extraction: bool,
 }
 
 impl PdfUploadOptions {

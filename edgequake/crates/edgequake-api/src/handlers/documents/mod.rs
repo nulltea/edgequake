@@ -53,6 +53,7 @@ pub use crate::handlers::documents_types::*;
 // Sub-modules: each owns a single responsibility
 mod archive;
 mod delete;
+pub(crate) mod extraction;
 mod lattice;
 mod query;
 mod recovery;
@@ -62,6 +63,7 @@ mod upload;
 // Re-export all public items (includes utoipa __path_* structs for OpenAPI)
 pub use archive::*;
 pub use delete::*;
+pub use extraction::*;
 pub use lattice::*;
 pub use query::*;
 pub use recovery::*;
@@ -83,6 +85,7 @@ mod tests {
             enable_gleaning: true,
             max_gleaning: 1,
             use_llm_summarization: true,
+            skip_extraction: false,
         };
 
         assert!(!request.content.is_empty());

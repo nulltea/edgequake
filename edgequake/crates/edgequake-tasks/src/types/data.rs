@@ -76,6 +76,17 @@ pub struct PdfProcessingData {
     /// publication year when the URL points to arxiv.
     #[serde(default)]
     pub source_url: Option<String>,
+
+    /// When `true`, the document is indexed for chunk-level (semantic) search
+    /// only: OCR conversion, figure/table extraction + media backfill, and
+    /// chunk embedding still run, but all heavy LLM stages are skipped
+    /// (entity/relationship extraction, algorithm Pass 2+3, reference-repo
+    /// detection, figure-entity linking, table classification). The document
+    /// is marked with status `partial` + `extraction_skipped: true` so the
+    /// heavy stages can be triggered later. Old queued tasks omit this field
+    /// and default to `false` (full pipeline).
+    #[serde(default)]
+    pub skip_extraction: bool,
 }
 
 /// Text insert task payload

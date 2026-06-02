@@ -85,6 +85,8 @@ export function DocumentManager() {
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [pdfParserBackend, setPdfParserBackend] = useState<'default' | 'vision' | 'edgeparse' | 'vlmocr'>('default');
+  // Chunks-only upload mode: skip heavy LLM extraction at upload time.
+  const [skipExtraction, setSkipExtraction] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -148,6 +150,7 @@ export function DocumentManager() {
     onUploadStart: () => setStatusFilter('all'),
     pdfParserBackend:
       pdfParserBackend === 'default' ? undefined : pdfParserBackend,
+    skipExtraction,
   });
 
   // OODA-14: Document mutations extracted to useDocumentMutations hook
@@ -251,6 +254,46 @@ export function DocumentManager() {
       toast.error('Failed to start algorithm extraction');
     }
   };
+
+  // Trigger the heavy LLM extraction stages for a single chunks-only document.
+  const handleTriggerExtraction = async (documentId: string) => {
+    try {
+      const { triggerExtraction } = await import('@/lib/api/edgequake');
+      const { toast } = await import('sonner');
+      const res = await triggerExtraction(documentId);
+      toast.success(`Extraction started (${res.queued.length} stage(s) queued)`);
+      refetch();
+    } catch {
+      const { toast } = await import('sonner');
+      toast.error('Failed to start extraction');
+    }
+  };
+
+  // Trigger extraction for every chunks-only document in the workspace.
+  const handleExtractPending = async () => {
+    if (!selectedWorkspaceId) return;
+    try {
+      const { extractPendingDocuments } = await import('@/lib/api/edgequake');
+      const { toast } = await import('sonner');
+      const res = await extractPendingDocuments(selectedWorkspaceId);
+      if (res.documents_queued > 0) {
+        toast.success(
+          `Extraction started for ${res.documents_queued} document(s)`,
+        );
+      } else {
+        toast.info('No documents are awaiting extraction');
+      }
+      refetch();
+    } catch {
+      const { toast } = await import('sonner');
+      toast.error('Failed to start extraction for pending documents');
+    }
+  };
+
+  // Count of documents awaiting extraction (chunks-only ingestion).
+  const pendingExtractionCount = (data?.items || []).filter(
+    (d) => d.extraction_skipped,
+  ).length;
 
   // OODA-04: Detect stuck documents using extracted hook
   useStuckDetection(data?.items, {
@@ -376,6 +419,10 @@ export function DocumentManager() {
             openFileDialog={openFileDialog}
             pdfParserBackend={pdfParserBackend}
             onPdfParserBackendChange={setPdfParserBackend}
+            skipExtraction={skipExtraction}
+            onSkipExtractionChange={setSkipExtraction}
+            onExtractPending={handleExtractPending}
+            pendingExtractionCount={pendingExtractionCount}
             onUrlSubmit={handleUrlUpload}
             selectedCount={selectedCount}
             onBulkReprocess={handleBulkReprocess}
@@ -412,6 +459,7 @@ export function DocumentManager() {
         onDelete={(id) => deleteMutation.mutate(id)}
         onArchive={(id) => setArchiveTargetId(id)}
         onExtractAlgorithms={handleExtractAlgorithms}
+        onTriggerExtraction={handleTriggerExtraction}
         onViewAlgorithms={handleViewAlgorithms}
         docsWithAlgorithms={docsWithAlgorithms}
         onViewCodeArtifacts={handleViewCodeArtifacts}

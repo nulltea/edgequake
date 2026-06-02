@@ -927,6 +927,9 @@ impl DocumentTaskProcessor {
                 "pdf_vision_model": vision_model,
                 "pdf_extraction_method": extraction_method.as_str(),
                 "pdf_extraction_warning": extraction_warning,
+                // Chunks-only mode: process_text_insert stops after phase 1
+                // (chunk + embed) and skips entity extraction.
+                "skip_extraction": data.skip_extraction,
             })),
         };
 
@@ -964,6 +967,10 @@ impl DocumentTaskProcessor {
         // the algorithm vectors into the workspace vector store — at
         // which point algorithms are queryable alongside the chunks
         // that landed in phase 1 above.
+        // Chunks-only mode: skip algorithm extraction (Pass 2+3) and
+        // reference-repo detection — both are heavy LLM stages. They can be
+        // triggered later via the extract endpoint.
+        if !data.skip_extraction {
         if let Some(ref sink) = algo_block_sink {
             let blocks = sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if !blocks.is_empty() {
@@ -1063,6 +1070,7 @@ impl DocumentTaskProcessor {
             );
             enrichment_persistence_failed = true;
         }
+        } // end: skip algorithm + repo detection in chunks-only mode
 
         // (enrichment_persistence_failed is declared up at the algorithm
         // extraction step so the pre-text_insert enrichment can set it.
@@ -1178,6 +1186,8 @@ impl DocumentTaskProcessor {
             //     in its source_chunk_ids array, so retrieval surfaces the
             //     figure when querying GPT-2).
             //     Best-effort: failures are logged and swallowed.
+            //     Skipped in chunks-only mode (heavy vision-LLM extraction).
+            if !data.skip_extraction {
             match self
                 .backfill_figure_entities(
                     &early_doc_id,
@@ -1212,6 +1222,7 @@ impl DocumentTaskProcessor {
                     );
                 }
             }
+            } // end: skip figure-entity backfill in chunks-only mode
         }
 
         // 6d. Table backfill + classification (VLM-OCR path only). Writes
@@ -1247,6 +1258,10 @@ impl DocumentTaskProcessor {
                 );
             }
 
+            // Table classification is a heavy per-row LLM call — skipped in
+            // chunks-only mode. The HTML/rows backfill above still runs so
+            // tables render; classification can be triggered later.
+            if !data.skip_extraction {
             if let Ok(doc_uuid) = uuid::Uuid::parse_str(&early_doc_id) {
                 // Surface the classifier sub-stage so the documents list
                 // and task tracker stop showing a misleading "completed"
@@ -1277,6 +1292,7 @@ impl DocumentTaskProcessor {
                     ),
                 }
             }
+            } // end: skip table classification in chunks-only mode
         }
 
         // == Progress: extraction complete, linking PDF ==
@@ -1358,6 +1374,13 @@ impl DocumentTaskProcessor {
         self.update_document_status(&early_doc_id, final_status, None)
             .await
             .ok();
+        // Chunks-only mode: mark the document as awaiting extraction so it
+        // appears in the "needs extraction" set and the UI shows the trigger.
+        if data.skip_extraction {
+            self.set_extraction_skipped_flag(&early_doc_id, true)
+                .await
+                .ok();
+        }
         task.update_progress("completed".to_string(), 7, 100);
 
         info!(

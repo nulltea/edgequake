@@ -1,7 +1,9 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
 import type { StatusCounts } from '@/hooks/use-document-filtering';
 import type { Document, PipelineStatus } from '@/types';
+import { Zap } from 'lucide-react';
 import { BatchActionsBar } from './batch-actions-bar';
 import { DocumentDropzone, type DocumentDropzoneProps } from './document-dropzone';
 import type { DocStatus, SortField } from './document-filters';
@@ -44,6 +46,13 @@ export interface DocumentToolbarSectionProps {
   openFileDialog: () => void;
   pdfParserBackend: 'default' | 'vision' | 'edgeparse' | 'vlmocr';
   onPdfParserBackendChange: (value: 'default' | 'vision' | 'edgeparse' | 'vlmocr') => void;
+  /** Whether uploads skip heavy LLM extraction (chunks-only indexing). */
+  skipExtraction: boolean;
+  onSkipExtractionChange: (value: boolean) => void;
+  /** Trigger extraction for all chunks-only documents in the workspace. */
+  onExtractPending: () => void;
+  /** Number of documents awaiting extraction (drives the Extract pending button). */
+  pendingExtractionCount: number;
   /** URL-upload handler exposed on the Dropzone (shows the URL input row). */
   onUrlSubmit?: (url: string) => Promise<void>;
 
@@ -80,6 +89,10 @@ export function DocumentToolbarSection({
   openFileDialog,
   pdfParserBackend,
   onPdfParserBackendChange,
+  skipExtraction,
+  onSkipExtractionChange,
+  onExtractPending,
+  pendingExtractionCount,
   onUrlSubmit,
   selectedCount,
   onBulkReprocess,
@@ -127,8 +140,25 @@ export function DocumentToolbarSection({
         openFileDialog={openFileDialog}
         pdfParserBackend={pdfParserBackend}
         onPdfParserBackendChange={onPdfParserBackendChange}
+        skipExtraction={skipExtraction}
+        onSkipExtractionChange={onSkipExtractionChange}
         onUrlSubmit={onUrlSubmit}
       />
+
+      {/* Workspace-wide trigger for documents ingested in chunks-only mode. */}
+      {pendingExtractionCount > 0 && (
+        <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/5">
+          <span className="text-sm text-muted-foreground">
+            {pendingExtractionCount} document
+            {pendingExtractionCount === 1 ? '' : 's'} indexed for chunk search
+            only — extraction not yet run.
+          </span>
+          <Button size="sm" variant="outline" onClick={onExtractPending}>
+            <Zap className="h-4 w-4 mr-2" />
+            Extract pending
+          </Button>
+        </div>
+      )}
 
       {/* Bulk Actions Bar */}
       <BatchActionsBar

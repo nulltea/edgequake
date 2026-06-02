@@ -75,6 +75,8 @@ export interface DocumentTableSectionProps {
   onArchive: (id: string) => void;
   /** Handler for extract algorithms action */
   onExtractAlgorithms?: (id: string) => void;
+  /** Handler for run-extraction (chunks-only) action */
+  onTriggerExtraction?: (id: string) => void;
   /** Handler for view algorithms action */
   onViewAlgorithms?: (doc: Document) => void;
   /** Set of document IDs that have at least one extracted algorithm. Used to
@@ -131,6 +133,7 @@ export const DocumentTableSection = memo(function DocumentTableSection({
   onDelete,
   onArchive,
   onExtractAlgorithms,
+  onTriggerExtraction,
   onViewAlgorithms,
   docsWithAlgorithms,
   onViewCodeArtifacts,
@@ -211,6 +214,7 @@ export const DocumentTableSection = memo(function DocumentTableSection({
                       onDelete={onDelete}
                       onArchive={onArchive}
                       onExtractAlgorithms={onExtractAlgorithms}
+                      onTriggerExtraction={onTriggerExtraction}
                       onViewAlgorithms={onViewAlgorithms}
                       hasAlgorithms={docsWithAlgorithms?.has(doc.id) ?? false}
                       onViewCodeArtifacts={onViewCodeArtifacts}

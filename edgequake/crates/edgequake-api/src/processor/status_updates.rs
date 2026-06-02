@@ -24,6 +24,9 @@ impl DocumentTaskProcessor {
             "indexing" => "storing",
             "completed" | "indexed" => "completed",
             "failed" => "failed",
+            // Chunks-only (extraction skipped): document is queryable via
+            // chunk embeddings but heavy LLM extraction hasn't run yet.
+            "partial" => "partial",
             // Algorithm extraction stages
             "algo_identifying" => "algo_identifying",
             "algo_extracting" => "algo_extracting",
@@ -42,6 +45,7 @@ impl DocumentTaskProcessor {
             "indexing" | "storing" => "Storing in knowledge graph...",
             "completed" | "indexed" => "Processing complete",
             "failed" => "Processing failed",
+            "partial" => "Indexed for chunk search; entity extraction not yet run",
             // Algorithm extraction stages
             "algo_identifying" => "Identifying algorithms...",
             "algo_extracting" => "Extracting algorithm definitions...",
@@ -103,6 +107,43 @@ impl DocumentTaskProcessor {
             .await
             .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
 
+        Ok(())
+    }
+
+    /// Set (or clear) the `extraction_skipped` flag on a document's metadata.
+    ///
+    /// This flag is the source of truth for the "needs extraction" set: it is
+    /// set to `true` when a document is ingested in chunks-only mode and
+    /// cleared (set to `false`) when extraction is triggered later. A no-op if
+    /// the metadata record doesn't exist.
+    pub(super) async fn set_extraction_skipped_flag(
+        &self,
+        document_id: &str,
+        skipped: bool,
+    ) -> TaskResult<()> {
+        let metadata_key = format!("{}-metadata", document_id);
+        let Some(existing) = self
+            .kv_storage
+            .get_by_id(&metadata_key)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return Ok(());
+        };
+        let Some(obj) = existing.as_object() else {
+            return Ok(());
+        };
+        let mut updated = obj.clone();
+        updated.insert("extraction_skipped".to_string(), json!(skipped));
+        updated.insert(
+            "updated_at".to_string(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
+        self.kv_storage
+            .upsert(&[(metadata_key, json!(updated))])
+            .await
+            .map_err(|e| edgequake_tasks::TaskError::Storage(e.to_string()))?;
         Ok(())
     }
 

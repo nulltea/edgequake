@@ -210,6 +210,11 @@ fn api_v1_routes() -> Router<AppState> {
             "/workspaces/{workspace_id}/reprocess-documents",
             post(handlers::reprocess_all_documents),
         )
+        // Trigger extraction for all chunks-only documents in a workspace.
+        .route(
+            "/workspaces/{workspace_id}/extract-pending",
+            post(handlers::extract_pending_documents),
+        )
         // SPEC-0002: Knowledge Injection
         .route(
             "/workspaces/{workspace_id}/injection",
@@ -298,6 +303,12 @@ fn api_v1_routes() -> Router<AppState> {
         .route(
             "/documents/{document_id}/deletion-impact",
             get(handlers::analyze_deletion_impact),
+        )
+        // Trigger heavy LLM extraction for a chunks-only document.
+        // MUST come before /documents/{document_id}
+        .route(
+            "/documents/{document_id}/extract",
+            post(handlers::trigger_extraction),
         )
         // Figure media — streams PNG bytes for figures captured during VLM-OCR.
         // MUST come before /documents/{document_id} to avoid being shadowed by

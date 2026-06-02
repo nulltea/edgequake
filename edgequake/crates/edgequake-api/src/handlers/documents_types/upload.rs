@@ -40,6 +40,13 @@ pub struct UploadDocumentRequest {
     /// Enable LLM-powered description summarization during merge.
     #[serde(default = "default_use_llm_summarization")]
     pub use_llm_summarization: bool,
+
+    /// Skip heavy LLM extraction stages — index for chunk-level (semantic)
+    /// search only. The document is chunked + embedded (queryable) but
+    /// entity/relationship extraction is skipped; status is set to `partial`
+    /// + `extraction_skipped: true` so extraction can be triggered later.
+    #[serde(default)]
+    pub skip_extraction: bool,
 }
 
 /// Document upload response.

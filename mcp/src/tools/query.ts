@@ -18,8 +18,9 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ApprovedAlgorithm, ReferenceCodeSnippet } from "edgequake-sdk";
+import { EdgeQuake } from "edgequake-sdk";
 import { z } from "zod";
-import { getClient } from "../client.js";
+import { getClient, getConfig } from "../client.js";
 import { formatError } from "../errors.js";
 
 function renderAlgorithms(algorithms: ApprovedAlgorithm[]): string {
@@ -75,11 +76,39 @@ export function registerQueryTools(server: McpServer): void {
         .describe(
           "Query mode: naive (vector-only), local (entity graph), global (community search), hybrid (local+global, default), mix (weighted blend)",
         ),
+      workspace: z
+        .string()
+        .optional()
+        .describe(
+          "Target workspace slug. If omitted, uses the default configured workspace.",
+        ),
     },
     async (params) => {
       try {
         const client = await getClient();
-        const result = await client.query.execute({
+
+        let queryClient = client;
+        if (params.workspace) {
+          const config = getConfig();
+          if (!config.defaultTenant) {
+            throw new Error(
+              "Cannot resolve workspace slug: no tenant configured",
+            );
+          }
+          const workspace = await client.tenants.getWorkspaceBySlug(
+            config.defaultTenant,
+            params.workspace,
+          );
+          queryClient = new EdgeQuake({
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            tenantId: config.defaultTenant,
+            workspaceId: workspace.id,
+            timeout: 60_000,
+          });
+        }
+
+        const result = await queryClient.query.execute({
           query: params.query,
           mode: params.mode,
           context_only: true,

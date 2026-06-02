@@ -10,7 +10,7 @@ import {
 import { getAlgorithms } from '@/lib/api/edgequake';
 import type { Document } from '@/types';
 import { useQuery } from '@tanstack/react-query';
-import { Archive, Brain, Copy, Eye, MoreVertical, RefreshCcw, RefreshCw, StopCircle, Trash2 } from 'lucide-react';
+import { Archive, Brain, Copy, Eye, MoreVertical, RefreshCcw, RefreshCw, StopCircle, Trash2, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ResetDocumentStatusButton } from './reset-document-status-button';
@@ -33,6 +33,8 @@ interface DocumentActionsMenuProps {
   onArchive: (id: string) => void;
   /** Callback to extract algorithms from document */
   onExtractAlgorithms?: (id: string) => void;
+  /** Callback to run all heavy LLM extraction stages for a chunks-only document */
+  onTriggerExtraction?: (id: string) => void;
   /** Whether a cancel operation is in progress */
   isCancelling?: boolean;
 }
@@ -61,6 +63,7 @@ export function DocumentActionsMenu({
   onDelete,
   onArchive,
   onExtractAlgorithms,
+  onTriggerExtraction,
   isCancelling = false,
 }: DocumentActionsMenuProps) {
   const { t } = useTranslation();
@@ -88,6 +91,9 @@ export function DocumentActionsMenu({
 
   const showViewPdf = doc.source_type === 'pdf' || doc.pdf_id;
   const showExtractAlgorithms = onExtractAlgorithms && isCompleted;
+  // Chunks-only documents (uploaded with "Skip extraction") expose a
+  // "Run extraction" action that kicks off all heavy LLM stages.
+  const showTriggerExtraction = onTriggerExtraction && doc.extraction_skipped;
   // WHY: Cancelled documents should also show the reset/reprocess option
   const showReset = doc.status === 'failed' || doc.status === 'partial_failure' || doc.status === 'cancelled';
 
@@ -110,6 +116,14 @@ export function DocumentActionsMenu({
           <DropdownMenuItem onClick={() => onViewPdf(doc)}>
             <Eye className="h-4 w-4 mr-2" />
             {t('documents.actions.viewPdf', 'View PDF')}
+          </DropdownMenuItem>
+        )}
+
+        {/* Run extraction for a chunks-only document */}
+        {showTriggerExtraction && (
+          <DropdownMenuItem onClick={() => onTriggerExtraction!(doc.id)}>
+            <Zap className="h-4 w-4 mr-2" />
+            {t('documents.actions.runExtraction', 'Run extraction')}
           </DropdownMenuItem>
         )}
 

@@ -167,6 +167,13 @@ export interface Document {
   current_stage?: string;
 
   /**
+   * True when the document was ingested in chunks-only mode (skip_extraction)
+   * and the heavy LLM stages haven't run yet. Drives the "Run extraction"
+   * action and the workspace "Extract pending" button. Status is `partial`.
+   */
+  extraction_skipped?: boolean;
+
+  /**
    * Progress within current stage (0.0 to 1.0).
    * @implements SPEC-002
    */
@@ -374,6 +381,8 @@ export interface UploadDocumentRequest {
   async_processing?: boolean;
   /** Optional track ID for batch grouping. If not provided, one will be generated. */
   track_id?: string;
+  /** Skip heavy LLM extraction — index for chunk-level search only (default: false). */
+  skip_extraction?: boolean;
 }
 
 export interface UploadDocumentResponse {
@@ -413,6 +422,8 @@ export interface PdfUploadOptions {
   force_reindex?: boolean;
   /** Per-upload PDF parser backend override. Omit to use workspace/server default. */
   pdf_parser_backend?: PdfParserBackend;
+  /** Skip heavy LLM extraction — index for chunk-level search only (default: false). */
+  skip_extraction?: boolean;
 }
 
 export interface PdfMetadata {

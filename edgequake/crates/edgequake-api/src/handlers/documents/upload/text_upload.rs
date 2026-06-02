@@ -233,6 +233,7 @@ pub async fn upload_document(
                 "title": request.title,
                 "tenant_id": tenant_id,
                 "workspace_id": workspace_id,
+                "skip_extraction": request.skip_extraction,
             })),
         };
 

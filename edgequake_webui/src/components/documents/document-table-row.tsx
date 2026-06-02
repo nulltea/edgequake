@@ -135,6 +135,8 @@ export interface DocumentTableRowProps {
   onArchive: (docId: string) => void;
   /** Called when Extract Algorithms action is triggered */
   onExtractAlgorithms?: (docId: string) => void;
+  /** Called when Run Extraction (chunks-only) action is triggered */
+  onTriggerExtraction?: (docId: string) => void;
   /** Called when View Algorithms action is triggered */
   onViewAlgorithms?: (doc: Document) => void;
   /** True when this doc has at least one extracted algorithm. Gates the
@@ -172,6 +174,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onDelete,
   onArchive,
   onExtractAlgorithms,
+  onTriggerExtraction,
   onViewAlgorithms,
   hasAlgorithms = false,
   onViewCodeArtifacts,
@@ -271,6 +274,7 @@ export const DocumentTableRow = memo(function DocumentTableRow({
             onDelete={onDelete}
             onArchive={onArchive}
             onExtractAlgorithms={onExtractAlgorithms}
+            onTriggerExtraction={onTriggerExtraction}
             isCancelling={isCancelling}
           />
         </QuickActionButtons>

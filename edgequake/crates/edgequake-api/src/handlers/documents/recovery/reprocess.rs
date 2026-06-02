@@ -246,6 +246,7 @@ pub async fn reprocess_failed(
                             // them manually.
                             rename_after_parse: false,
                             source_url: None,
+                            skip_extraction: false,
                         };
 
                         let task = Task::new(
@@ -439,6 +440,7 @@ pub async fn reprocess_failed(
                     pdf_parser_backend,
                     rename_after_parse: false,
                     source_url: None,
+                    skip_extraction: false,
                 };
 
                 let track_id = format!("pdf-{}", Uuid::new_v4());

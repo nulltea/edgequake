@@ -643,6 +643,9 @@ export async function uploadPdfDocument(
   if (options?.pdf_parser_backend) {
     formData.append("pdf_parser_backend", options.pdf_parser_backend);
   }
+  if (options?.skip_extraction !== undefined) {
+    formData.append("skip_extraction", String(options.skip_extraction));
+  }
 
   return api.post<PdfUploadResponse>("/documents/pdf", formData, {
     headers: {
@@ -685,6 +688,52 @@ export async function uploadPdfFromUrl(
     track_id: options?.track_id,
     force_reindex: options?.force_reindex,
   });
+}
+
+/** One heavy-stage task queued by a trigger-extraction call. */
+export interface QueuedStage {
+  stage: string;
+  track_id: string;
+}
+
+export interface TriggerExtractionResponse {
+  document_id: string;
+  status: string;
+  queued: QueuedStage[];
+}
+
+export interface ExtractPendingResponse {
+  workspace_id: string;
+  status: string;
+  documents_found: number;
+  documents_queued: number;
+  stages_queued: number;
+}
+
+/**
+ * Trigger the heavy LLM extraction stages for a single chunks-only document
+ * (one ingested with `skip_extraction`). Reuses the backend's standalone
+ * extraction tasks — no PDF re-OCR.
+ */
+export async function triggerExtraction(
+  documentId: string,
+): Promise<TriggerExtractionResponse> {
+  return api.post<TriggerExtractionResponse>(
+    `/documents/${documentId}/extract`,
+    {},
+  );
+}
+
+/**
+ * Trigger extraction for every chunks-only document in a workspace.
+ */
+export async function extractPendingDocuments(
+  workspaceId: string,
+): Promise<ExtractPendingResponse> {
+  return api.post<ExtractPendingResponse>(
+    `/workspaces/${workspaceId}/extract-pending`,
+    {},
+  );
 }
 
 // ============================================================================
