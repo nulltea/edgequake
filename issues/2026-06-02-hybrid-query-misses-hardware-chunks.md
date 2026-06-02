@@ -73,3 +73,43 @@ MD has only related-work GPU mentions, no own testbed machine — correct negati
 when the query intent could cover it; for completeness-sensitive extraction, `document_get_md`
 must be used. The 4 false-negatives all had the hardware in a §Experimental-Setup or §Appendix
 chunk that hybrid retrieval did not return.
+
+## Exact queries used (for reproduction)
+
+All run with `mode: hybrid` against the default workspace. Each returned good method/threat/
+results chunks but **no chunk containing the hardware** that exists in the doc.
+
+- **ObfuscaTune** (`4f7ce548`) — *strongest repro: the query explicitly asks for hardware and
+  still gets none back:*
+  > "ObfuscaTune threat model and design: is the server honest-but-curious or malicious, **what
+  > hardware is trusted (TEE/confidential VM)**, what fraction of computation runs inside the TEE
+  > versus the GPU, what is protected (proprietary model weights and the private data), the
+  > security basis, and the reported inference overhead (1.5x to 4.3x)?"
+  Returned: problem-statement / method / Table-1 chunks. Missed §5 "2 GPU devices, one simulates
+  the TEE" and Appendix A "middle-range GPUs, 1–8 GPU hours."
+
+- **SGT / Stained Glass** (`0a63e015`):
+  > "In the Stained Glass Transform (SGT) paper by Roberts et al., what is the threat model
+  > (honest-but-curious or malicious; what is trusted; what attacker knowledge is assumed), what
+  > exactly is protected and what leaks, what is the security basis (formal guarantee vs
+  > heuristic/DP), and what are the reported performance overhead and utility/quality numbers
+  > (latency, accuracy delta vs plaintext)?"
+  Returned: intro/method/utility chunks. Missed "trained on a single Nvidia A100 80GB … up to 64
+  nodes of 8 Nvidia A100 80GB GPUs."
+
+- **RemoteRAG** (`82e9a235`):
+  > "In RemoteRAG (Cheng et al., privacy-preserving LLM cloud RAG), what is the threat model,
+  > what is protected (query privacy) and what leaks, the security basis (DistanceDP plus PHE),
+  > the privacy parameters (n, epsilon), and reported latency (e.g. 0.67s) and retrieval-quality
+  > numbers vs plaintext?"
+  Returned: abstract / threat-model / communication-cost chunks. Missed §5.1 "Ubuntu 22.04 server
+  … two 28-core Intel Xeon Gold 5420+ … two Nvidia A40 48GB GPUs."
+
+**Caveat on the other two false-negatives (not directly query-attributable):**
+- **DP-Forward** (`4d8024c6`) — never had a *dedicated* query; its cells were populated from the
+  corpus plus DP-Forward chunks that surfaced *incidentally* in other schemes' query results.
+  Those incidental chunks omitted the §5.1 "cluster with Tesla P100 GPUs" line. (Same recall gap;
+  just no single attributable query string.)
+- **Compass** (`7b372edb`) — grounded by a sub-agent (round 1) whose exact query string isn't
+  captured here; the full MD has §6.1 "Google Cloud … n2-standard-8 client / n2-highmem-64
+  server" which the agent's retrieval did not surface.
