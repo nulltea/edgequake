@@ -178,6 +178,80 @@ fn inner_table_html(div_block: &str) -> &str {
     }
 }
 
+/// Render an [`ExtractedTable`] as a GitHub-flavoured-markdown table
+/// (caption + header + body). Used to *typeset* the table back into the text
+/// that feeds the chunker, so the table's cell values (communication cost,
+/// latency, accuracy) land in a vector-indexed text chunk and become
+/// query-retrievable. (Table chunks themselves are not embedded, so without
+/// this the numbers are unreachable via `query`.)
+///
+/// Header source: the parsed `headers` row if present, else the first body
+/// row. Short rows (section labels like `["GPT2-Small"]`) are padded to the
+/// table width so their text survives. Pipes in cells are escaped.
+/// Returns `None` when there are no usable cells (caller keeps the placeholder).
+pub fn render_table_markdown(table: &ExtractedTable) -> Option<String> {
+    let esc = |s: &str| s.replace('|', "\\|").trim().to_string();
+
+    let (header, body): (Vec<String>, &[Vec<String>]) = if !table.headers.is_empty() {
+        (table.headers.iter().map(|s| esc(s)).collect(), &table.rows[..])
+    } else if let Some((first, rest)) = table.rows.split_first() {
+        (first.iter().map(|s| esc(s)).collect(), rest)
+    } else {
+        return None;
+    };
+
+    let width = header
+        .len()
+        .max(table.rows.iter().map(|r| r.len()).max().unwrap_or(0));
+    if width == 0 {
+        return None;
+    }
+
+    let pad = |r: &[String]| -> String {
+        let mut cells: Vec<String> = r.iter().map(|c| esc(c)).collect();
+        cells.resize(width, String::new());
+        format!("| {} |", cells.join(" | "))
+    };
+
+    let mut out = String::new();
+    let caption = table.caption.trim();
+    if !caption.is_empty() {
+        out.push_str(caption);
+        out.push_str("\n\n");
+    }
+    // header (already escaped)
+    let mut hcells = header;
+    hcells.resize(width, String::new());
+    out.push_str(&format!("| {} |\n", hcells.join(" | ")));
+    out.push_str(&format!("| {} |\n", vec!["---"; width].join(" | ")));
+    for r in body {
+        out.push_str(&pad(r));
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// Replace every `![<table_id>](edgequake-table)` placeholder in `markdown`
+/// with the corresponding table typeset as GFM (see [`render_table_markdown`]).
+///
+/// This is applied to the **chunker input** (not the stored `markdown_content`,
+/// which keeps placeholders so the frontend viewer can resolve them from
+/// `chunks.table_html`). A placeholder with no matching table, or a table that
+/// renders to nothing, is left as-is.
+pub fn inline_table_placeholders(markdown: &str, tables: &[ExtractedTable]) -> String {
+    let mut out = markdown.to_string();
+    for table in tables {
+        let placeholder = format!("![{}](edgequake-table)", table.id);
+        if !out.contains(&placeholder) {
+            continue;
+        }
+        if let Some(rendered) = render_table_markdown(table) {
+            out = out.replace(&placeholder, &rendered);
+        }
+    }
+    out
+}
+
 /// Parse a `<table>…</table>` HTML fragment into headers + rows.
 ///
 /// Heuristic:
@@ -298,6 +372,75 @@ fn find_caption_nearby(
 mod tests {
     use super::*;
     use oar_ocr_core::processors::BoundingBox;
+
+    fn tbl(id: &str, caption: &str, headers: Vec<&str>, rows: Vec<Vec<&str>>) -> ExtractedTable {
+        ExtractedTable {
+            id: id.to_string(),
+            html: String::new(),
+            headers: headers.into_iter().map(String::from).collect(),
+            rows: rows
+                .into_iter()
+                .map(|r| r.into_iter().map(String::from).collect())
+                .collect(),
+            caption: caption.to_string(),
+            page: 1,
+            order_index: 0,
+        }
+    }
+
+    #[test]
+    fn render_uses_first_row_as_header_when_no_headers() {
+        let t = tbl(
+            "tbl_6_1",
+            "Table 1: Accuracy",
+            vec![],
+            vec![
+                vec!["Setting", "WebQs", "SciQ"],
+                vec!["GPT2-Small"],
+                vec!["Protected(ours)", "16.8", "91.7"],
+            ],
+        );
+        let md = render_table_markdown(&t).unwrap();
+        assert!(md.starts_with("Table 1: Accuracy\n\n"), "md:\n{md}");
+        assert!(md.contains("| Setting | WebQs | SciQ |"), "md:\n{md}");
+        assert!(md.contains("| --- | --- | --- |"));
+        assert!(md.contains("| Protected(ours) | 16.8 | 91.7 |"), "md:\n{md}");
+        // short section row padded to width
+        assert!(md.contains("| GPT2-Small |  |  |"), "md:\n{md}");
+    }
+
+    #[test]
+    fn render_uses_explicit_headers() {
+        let t = tbl("tbl_1_0", "", vec!["A", "B"], vec![vec!["1", "2"]]);
+        let md = render_table_markdown(&t).unwrap();
+        assert!(md.starts_with("| A | B |\n"), "md:\n{md}");
+        assert!(md.contains("| 1 | 2 |"));
+    }
+
+    #[test]
+    fn render_none_when_empty() {
+        assert!(render_table_markdown(&tbl("t", "cap", vec![], vec![])).is_none());
+    }
+
+    #[test]
+    fn inline_replaces_only_matching_placeholder() {
+        let t = tbl("tbl_6_1", "Cap", vec!["X"], vec![vec!["9"]]);
+        let md = "before\n\n![tbl_6_1](edgequake-table)\n\n![tbl_9_9](edgequake-table)\n\nafter";
+        let out = inline_table_placeholders(md, std::slice::from_ref(&t));
+        assert!(out.contains("| X |"), "out:\n{out}");
+        assert!(out.contains("| 9 |"));
+        // unmatched placeholder untouched
+        assert!(out.contains("![tbl_9_9](edgequake-table)"), "out:\n{out}");
+        // matched placeholder gone
+        assert!(!out.contains("![tbl_6_1](edgequake-table)"), "out:\n{out}");
+    }
+
+    #[test]
+    fn inline_escapes_pipes() {
+        let t = tbl("t1", "", vec!["h"], vec![vec!["a|b"]]);
+        let out = inline_table_placeholders("![t1](edgequake-table)", std::slice::from_ref(&t));
+        assert!(out.contains("a\\|b"), "out:\n{out}");
+    }
 
     fn make_element(
         element_type: LayoutElementType,

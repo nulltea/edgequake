@@ -1,6 +1,6 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -10,6 +10,20 @@ use crate::error::{ApiError, ApiResult};
 use crate::middleware::TenantContext;
 use crate::state::AppState;
 use edgequake_storage::PdfProcessingStatus;
+
+/// Query params for [`get_pdf_content`].
+#[derive(Debug, Default, Deserialize)]
+pub struct PdfContentQuery {
+    /// When true, `![tbl_…](edgequake-table)` placeholders in the returned
+    /// markdown are replaced inline with the stored table content rendered as
+    /// a GitHub-flavoured-markdown table (caption + cells). Default false so
+    /// the frontend viewer (which resolves the placeholders client-side from
+    /// `chunks.table_html`) is unaffected. Agent read paths (MCP
+    /// `document_get_md`) set this so the table numbers — communication cost,
+    /// latency, accuracy — are visible in the text instead of a placeholder.
+    #[serde(default)]
+    pub inline_tables: bool,
+}
 
 // ============================================================================
 // PDF Content Download Endpoints (SPEC-002: Document Viewer)
@@ -155,6 +169,7 @@ pub async fn get_pdf_content(
     State(state): State<AppState>,
     context: TenantContext,
     Path(pdf_id): Path<String>,
+    Query(params): Query<PdfContentQuery>,
 ) -> ApiResult<Json<PdfContentResponse>> {
     let pdf_id = Uuid::parse_str(&pdf_id)
         .map_err(|_| ApiError::BadRequest("Invalid PDF ID format".to_string()))?;
@@ -178,12 +193,170 @@ pub async fn get_pdf_content(
 
     let is_processed = pdf.processing_status == PdfProcessingStatus::Completed;
 
+    let mut markdown_content = pdf.markdown_content;
+
+    // Opt-in: rehydrate `![tbl_…](edgequake-table)` placeholders with the
+    // stored table content so agent read paths see the cell values. The
+    // table HTML/rows live in `chunks.table_html`/`table_rows`; the markdown
+    // only carries a placeholder (the frontend resolves it client-side).
+    #[cfg(feature = "postgres")]
+    if params.inline_tables {
+        if let (Some(md), Some(doc_uuid), Some(pool)) =
+            (markdown_content.as_mut(), pdf.document_id, state.pg_pool.as_ref())
+        {
+            if md.contains("(edgequake-table)") {
+                inline_document_tables(pool, &doc_uuid, md).await;
+            }
+        }
+    }
+
     Ok(Json(PdfContentResponse {
         pdf_id: pdf.pdf_id.to_string(),
         filename: pdf.filename,
         file_size_bytes: pdf.file_size_bytes,
         content_type: pdf.content_type,
-        markdown_content: pdf.markdown_content,
+        markdown_content,
         is_processed,
     }))
+}
+
+/// Replace every `![<table_id>](edgequake-table)` placeholder in `markdown`
+/// with the stored table rendered as a GitHub-flavoured-markdown table.
+///
+/// Best-effort: a placeholder with no matching `chunks` row, or a row with no
+/// structured `table_rows`, is left untouched. Never errors — table inlining
+/// is an enhancement, not a correctness requirement, so a DB hiccup must not
+/// fail the content read.
+#[cfg(feature = "postgres")]
+async fn inline_document_tables(
+    pool: &sqlx::PgPool,
+    document_id: &Uuid,
+    markdown: &mut String,
+) {
+    let rows: Vec<(Option<String>, Option<String>, Option<serde_json::Value>)> =
+        match sqlx::query_as(
+            r#"SELECT table_id, content, table_rows
+                 FROM chunks
+                WHERE document_id = $1 AND kind = 'table'"#,
+        )
+        .bind(document_id)
+        .fetch_all(pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(document_id = %document_id, error = %e, "inline_tables: table fetch failed; leaving placeholders");
+                return;
+            }
+        };
+
+    for (table_id, caption, table_rows) in rows {
+        let Some(table_id) = table_id else { continue };
+        let placeholder = format!("![{table_id}](edgequake-table)");
+        if !markdown.contains(&placeholder) {
+            continue;
+        }
+        let Some(rendered) = render_table_markdown(caption.as_deref(), table_rows.as_ref())
+        else {
+            continue;
+        };
+        *markdown = markdown.replace(&placeholder, &rendered);
+    }
+}
+
+/// Render a stored table (`{"rows": [[..],[..]]}`) plus its caption into a
+/// GFM table. Returns `None` when there are no usable rows. The first row is
+/// treated as the header; short rows (section labels like `["GPT2-Small"]`)
+/// are padded to the header width so their text survives.
+#[cfg(feature = "postgres")]
+fn render_table_markdown(
+    caption: Option<&str>,
+    table_rows: Option<&serde_json::Value>,
+) -> Option<String> {
+    let rows: Vec<Vec<String>> = table_rows
+        .and_then(|v| v.get("rows"))
+        .and_then(|v| v.as_array())
+        .map(|outer| {
+            outer
+                .iter()
+                .filter_map(|row| row.as_array())
+                .map(|cells| {
+                    cells
+                        .iter()
+                        .map(|c| {
+                            // Escape pipes so cell text can't break the GFM grid.
+                            c.as_str().unwrap_or("").replace('|', "\\|").trim().to_string()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if width == 0 {
+        return None;
+    }
+
+    let pad = |r: &[String]| -> String {
+        let mut cells: Vec<String> = r.to_vec();
+        cells.resize(width, String::new());
+        format!("| {} |", cells.join(" | "))
+    };
+
+    let mut out = String::new();
+    if let Some(cap) = caption {
+        let cap = cap.trim();
+        if !cap.is_empty() {
+            out.push_str(cap);
+            out.push_str("\n\n");
+        }
+    }
+    out.push_str(&pad(&rows[0]));
+    out.push('\n');
+    out.push_str(&format!("| {} |", vec!["---"; width].join(" | ")));
+    out.push('\n');
+    for r in &rows[1..] {
+        out.push_str(&pad(r));
+        out.push('\n');
+    }
+    Some(out)
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn renders_gfm_with_caption_and_cells() {
+        let rows = json!({"rows": [
+            ["Setting", "WebQs", "SciQ"],
+            ["GPT2-Small"],
+            ["Protected(ours)", "16.8", "91.7"]
+        ]});
+        let md = render_table_markdown(Some("Table 1: Accuracy"), Some(&rows)).unwrap();
+        // Caption preserved.
+        assert!(md.starts_with("Table 1: Accuracy\n\n"), "md:\n{md}");
+        // Header + separator.
+        assert!(md.contains("| Setting | WebQs | SciQ |"), "md:\n{md}");
+        assert!(md.contains("| --- | --- | --- |"), "md:\n{md}");
+        // Numeric cells survive (the whole point of the fix).
+        assert!(md.contains("| Protected(ours) | 16.8 | 91.7 |"), "md:\n{md}");
+        // Short section row padded to header width.
+        assert!(md.contains("| GPT2-Small |  |  |"), "md:\n{md}");
+    }
+
+    #[test]
+    fn none_when_no_rows() {
+        assert!(render_table_markdown(Some("cap"), None).is_none());
+        assert!(render_table_markdown(None, Some(&json!({"rows": []}))).is_none());
+    }
+
+    #[test]
+    fn escapes_pipes_in_cells() {
+        let rows = json!({"rows": [["a|b", "c"]]});
+        let md = render_table_markdown(None, Some(&rows)).unwrap();
+        assert!(md.contains("a\\|b"), "md:\n{md}");
+    }
 }

@@ -113,9 +113,21 @@ export class PdfResource extends Resource {
     return this._get(`/api/v1/documents/pdf/${pdfId}`);
   }
 
-  /** Get extracted PDF content (markdown). */
-  async getContent(pdfId: string): Promise<PdfContentResponse> {
-    return this._get(`/api/v1/documents/pdf/${pdfId}/content`);
+  /** Get extracted PDF content (markdown).
+   *
+   *  @param opts.inlineTables - when true, `![tbl_…](edgequake-table)`
+   *    placeholders in the returned markdown are replaced with the stored
+   *    table rendered as a GFM table (caption + cell values), so the table
+   *    numbers are present in the text. Default false (the frontend viewer
+   *    resolves placeholders client-side). */
+  async getContent(
+    pdfId: string,
+    opts?: { inlineTables?: boolean },
+  ): Promise<PdfContentResponse> {
+    return this._get(
+      `/api/v1/documents/pdf/${pdfId}/content`,
+      opts?.inlineTables ? { inline_tables: true } : undefined,
+    );
   }
 
   /** Download original PDF as a Blob. */

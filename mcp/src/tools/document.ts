@@ -409,7 +409,13 @@ export function registerDocumentTools(server: McpServer): void {
           (typeof metadata?.pdf_id === "string" ? metadata.pdf_id : undefined);
 
         if (pdfId) {
-          const pdfContent = await client.documents.pdf.getContent(pdfId);
+          // inlineTables: rehydrate `![tbl_…](edgequake-table)` placeholders
+          // with the stored table cells so numeric results (communication
+          // cost, latency, accuracy) are visible in the returned markdown
+          // instead of an opaque placeholder.
+          const pdfContent = await client.documents.pdf.getContent(pdfId, {
+            inlineTables: true,
+          });
           const pdfMarkdown = pdfContent.markdown_content;
           if (typeof pdfMarkdown === "string" && pdfMarkdown.trim().length > 0) {
             return {

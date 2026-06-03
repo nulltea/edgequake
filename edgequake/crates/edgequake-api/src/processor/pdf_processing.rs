@@ -897,16 +897,31 @@ impl DocumentTaskProcessor {
         // bibliography) was already persisted to `pdf_documents.markdown_content`
         // above, so the document Content tab still renders the citations
         // for human reading.
-        let markdown_for_chunking = edgequake_pdf::strip_references_section(&markdown).to_string();
-        if markdown_for_chunking.len() < markdown.len() {
+        let stripped = edgequake_pdf::strip_references_section(&markdown).to_string();
+        if stripped.len() < markdown.len() {
             info!(
                 pdf_id = %data.pdf_id,
                 full_len = markdown.len(),
-                kept_len = markdown_for_chunking.len(),
+                kept_len = stripped.len(),
                 "Stripped references section before chunking ({} bytes dropped)",
-                markdown.len() - markdown_for_chunking.len()
+                markdown.len() - stripped.len()
             );
         }
+        // Typeset tables into the chunker input. Tables are stored as separate
+        // `kind='table'` chunks but those are NOT vector-indexed, so their cell
+        // values (communication cost, latency, accuracy) are unreachable via
+        // `query`. Inlining the table as GFM at its `![tbl_…](edgequake-table)`
+        // placeholder puts the numbers into the surrounding text chunk, which
+        // IS embedded → query-retrievable. The stored `markdown_content` keeps
+        // the placeholder (the frontend resolves it client-side), so this only
+        // affects what the chunker/embedder sees. Tables may then appear both
+        // here and in the separate table chunk — accepted, since the table
+        // chunk isn't vector-retrieved anyway.
+        let markdown_for_chunking = if extracted_tables.is_empty() {
+            stripped
+        } else {
+            edgequake_pdf::inline_table_placeholders(&stripped, &extracted_tables)
+        };
         let text_data = edgequake_tasks::TextInsertData {
             text: markdown_for_chunking,
             file_source: pdf.filename.clone(),
@@ -1256,6 +1271,59 @@ impl DocumentTaskProcessor {
                     table_count = extracted_tables.len(),
                     "Table backfill: wrote HTML + parsed rows to chunks table"
                 );
+            }
+
+            // (b) Embed each table (caption + cells) as a vector chunk so its
+            //     numbers are reachable via dense / naive / hybrid retrieval.
+            //     Runs even in chunks-only mode (mirrors figure embedding) —
+            //     it's a plain text embedding, no LLM.
+            match self
+                .backfill_table_embeddings(
+                    &early_doc_id,
+                    &data.tenant_id.to_string(),
+                    &data.workspace_id.to_string(),
+                    &extracted_tables,
+                )
+                .await
+            {
+                Ok(stored) => info!(
+                    pdf_id = %data.pdf_id,
+                    embedded = stored,
+                    total = extracted_tables.len(),
+                    "Table-embedding backfill: wrote vectors to workspace vector store"
+                ),
+                Err(e) => warn!(
+                    pdf_id = %data.pdf_id,
+                    error = %e,
+                    table_count = extracted_tables.len(),
+                    "Table-embedding backfill failed (non-fatal); tables not dense-retrievable"
+                ),
+            }
+
+            // (c) Graph entities for tables so cells are reachable via
+            //     local/global retrieval. Heavy-ish (per-table embed) — gated
+            //     out of chunks-only mode like the figure-entity backfill.
+            if !data.skip_extraction {
+                match self
+                    .backfill_table_entities(
+                        &early_doc_id,
+                        &data.tenant_id.to_string(),
+                        &data.workspace_id.to_string(),
+                        &extracted_tables,
+                    )
+                    .await
+                {
+                    Ok(n) => info!(
+                        pdf_id = %data.pdf_id,
+                        entities = n,
+                        "Table-entity backfill: upserted table nodes + vectors"
+                    ),
+                    Err(e) => warn!(
+                        pdf_id = %data.pdf_id,
+                        error = %e,
+                        "Table-entity backfill failed (non-fatal); tables not graph-linked"
+                    ),
+                }
             }
 
             // Table classification is a heavy per-row LLM call — skipped in
@@ -1765,6 +1833,249 @@ impl DocumentTaskProcessor {
             stored += 1;
         }
         Ok(Some(stored))
+    }
+
+    /// Embed each extracted table as a vector-store chunk so its cell values
+    /// (communication cost, latency, accuracy) are reachable via dense /
+    /// naive / hybrid retrieval. Mirrors [`backfill_figure_embeddings`] but
+    /// uses a **text** embedding (tables are text, not images), so there is
+    /// no `supports_vision` gate — the workspace's normal embedding model is
+    /// used, matching the text-chunk vector dimension.
+    ///
+    /// The table text embedded is the GFM rendering (caption + cells) from
+    /// [`edgequake_pdf::render_table_markdown`], stored under id
+    /// `{document_id}-table-{table_id}` with `kind=table`. A table that
+    /// renders to nothing is skipped. Best-effort per table.
+    #[cfg(feature = "postgres")]
+    async fn backfill_table_embeddings(
+        &self,
+        document_id: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+        tables: &[edgequake_pdf::ExtractedTable],
+    ) -> Result<usize, String> {
+        use edgequake_pipeline::embedding::{
+            EmbeddingInput, EmbeddingRole, MultimodalEmbeddingClient,
+        };
+        use serde_json::json;
+
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("invalid workspace_id {workspace_id:?}: {e}"))?;
+        let ws = self
+            .workspace_service
+            .as_ref()
+            .ok_or_else(|| "no workspace_service".to_string())?
+            .get_workspace(workspace_uuid)
+            .await
+            .map_err(|e| format!("get_workspace: {e}"))?
+            .ok_or_else(|| format!("workspace {workspace_uuid} not found"))?;
+
+        let base_url = self.resolve_embedding_base_url(&ws)?;
+        let client = MultimodalEmbeddingClient::new(&base_url, &ws.embedding_model);
+        let store = self
+            .get_workspace_vector_storage_strict(workspace_id)
+            .await?;
+
+        let mut stored = 0usize;
+        for table in tables {
+            let Some(rendered) = edgequake_pdf::render_table_markdown(table) else {
+                continue;
+            };
+            let embedding = match client
+                .embed(EmbeddingInput::Text(&rendered), EmbeddingRole::Document)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(table_id = %table.id, error = %e, "table-embedding: text embed call failed");
+                    continue;
+                }
+            };
+
+            let chunk_id = format!("{document_id}-table-{}", table.id);
+            // `content` holds the rendered table so BM25/rerank score it and
+            // build_chunk_from_result returns the cell values into context.
+            let metadata = json!({
+                "type": "chunk",
+                "kind": "table",
+                "content": rendered,
+                "document_id": document_id,
+                "table_id": table.id,
+                "page": table.page,
+                "order_index": table.order_index,
+                "caption": table.caption,
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+                "embedding_provider": ws.embedding_provider,
+                "embedding_model": ws.embedding_model,
+            });
+
+            if let Err(e) = store
+                .upsert(&[(chunk_id.clone(), embedding, metadata)])
+                .await
+            {
+                warn!(table_id = %table.id, chunk_id = %chunk_id, error = %e, "table-embedding: vector upsert failed");
+                continue;
+            }
+            stored += 1;
+        }
+        Ok(stored)
+    }
+
+    /// Upsert one graph entity per extracted table so table content is
+    /// reachable via local/global (graph) retrieval, not just dense search.
+    /// The entity's `description` is the GFM rendering (caption + cells), and
+    /// its `source_chunk_ids` points at the `{document_id}-table-{table_id}`
+    /// vector chunk (embedded by [`backfill_table_embeddings`]). The entity is
+    /// also embedded (`entity:{name}` vector) so local-mode ANN can match it
+    /// by its cell content. Best-effort; never fatal.
+    #[cfg(feature = "postgres")]
+    async fn backfill_table_entities(
+        &self,
+        document_id: &str,
+        tenant_id: &str,
+        workspace_id: &str,
+        tables: &[edgequake_pdf::ExtractedTable],
+    ) -> Result<usize, String> {
+        use edgequake_pipeline::embedding::{
+            EmbeddingInput, EmbeddingRole, MultimodalEmbeddingClient,
+        };
+        use serde_json::json;
+
+        let workspace_uuid = uuid::Uuid::parse_str(workspace_id)
+            .map_err(|e| format!("invalid workspace_id {workspace_id:?}: {e}"))?;
+        let ws = self
+            .workspace_service
+            .as_ref()
+            .ok_or_else(|| "no workspace_service".to_string())?
+            .get_workspace(workspace_uuid)
+            .await
+            .map_err(|e| format!("get_workspace: {e}"))?
+            .ok_or_else(|| format!("workspace {workspace_uuid} not found"))?;
+
+        let base_url = self.resolve_embedding_base_url(&ws)?;
+        let client = MultimodalEmbeddingClient::new(&base_url, &ws.embedding_model);
+        let store = self
+            .get_workspace_vector_storage_strict(workspace_id)
+            .await?;
+
+        let mut nodes_batch: Vec<(String, std::collections::HashMap<String, serde_json::Value>)> =
+            Vec::new();
+        // (entity_name, table_chunk_id) for the entity-vector upsert below.
+        let mut to_embed: Vec<(String, String, String)> = Vec::new();
+
+        for table in tables {
+            let Some(rendered) = edgequake_pdf::render_table_markdown(table) else {
+                continue;
+            };
+            // Name the node by its caption (paper-specific, descriptive); fall
+            // back to a page/order id when the table has no caption. Cap the
+            // length so the graph node name stays sane.
+            let caption = table.caption.trim();
+            let name = if caption.is_empty() {
+                format!("Table {}.{}", table.page, table.order_index)
+            } else {
+                caption.chars().take(120).collect::<String>()
+            };
+            let table_chunk_id = format!("{document_id}-table-{}", table.id);
+
+            let mut props = std::collections::HashMap::new();
+            props.insert("entity_type".to_string(), json!("TABLE"));
+            props.insert("description".to_string(), json!(rendered));
+            props.insert("importance".to_string(), json!(0.5));
+            props.insert("source_ids".to_string(), json!(vec![document_id.to_string()]));
+            props.insert(
+                "source_chunk_ids".to_string(),
+                json!(vec![table_chunk_id.clone()]),
+            );
+            props.insert("tenant_id".to_string(), json!(tenant_id));
+            props.insert("workspace_id".to_string(), json!(workspace_id));
+            nodes_batch.push((name.clone(), props));
+            to_embed.push((name, rendered, table_chunk_id));
+        }
+
+        if nodes_batch.is_empty() {
+            return Ok(0);
+        }
+
+        self.graph_storage
+            .upsert_nodes_batch(&nodes_batch)
+            .await
+            .map_err(|e| format!("upsert_nodes_batch (tables): {e}"))?;
+
+        // Embed each table entity so local-mode ANN over entity vectors can
+        // match it by cell content. Best-effort per entity.
+        let mut embedded = 0usize;
+        for (name, description, _chunk_id) in &to_embed {
+            let embedding = match client
+                .embed(EmbeddingInput::Text(description), EmbeddingRole::Document)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(entity = %name, error = %e, "table-entity: embed call failed");
+                    continue;
+                }
+            };
+            let vec_id = format!("entity:{name}");
+            let metadata = json!({
+                "type": "entity",
+                "name": name,
+                "entity_type": "TABLE",
+                "description": description,
+                "document_id": document_id,
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+            });
+            if let Err(e) = store.upsert(&[(vec_id, embedding, metadata)]).await {
+                warn!(entity = %name, error = %e, "table-entity: vector upsert failed");
+                continue;
+            }
+            embedded += 1;
+        }
+        Ok(embedded)
+    }
+
+    /// Resolve the OpenAI-compatible `/v1` base URL for the workspace's
+    /// embedding provider — explicit TOML `base_url`, then the provider's
+    /// `*_HOST` env var, then well-known defaults. Shared by the table
+    /// embedding/entity backfills (the figure path inlines its own copy).
+    #[cfg(feature = "postgres")]
+    fn resolve_embedding_base_url(
+        &self,
+        ws: &edgequake_core::types::Workspace,
+    ) -> Result<String, String> {
+        let cfg = self
+            .models_config
+            .as_ref()
+            .ok_or_else(|| "no models_config".to_string())?;
+        let provider_cfg = cfg
+            .get_provider(&ws.embedding_provider)
+            .ok_or_else(|| format!("provider {} not in models.toml", ws.embedding_provider))?;
+        provider_cfg
+            .base_url
+            .clone()
+            .or_else(|| {
+                provider_cfg
+                    .base_url_env
+                    .as_ref()
+                    .and_then(|var| std::env::var(var).ok())
+                    .map(|u| ensure_v1_suffix(&u))
+            })
+            .or_else(|| match ws.embedding_provider.to_ascii_lowercase().as_str() {
+                "lmstudio" | "lm-studio" | "lm_studio" => {
+                    std::env::var("LMSTUDIO_HOST").ok().map(|u| ensure_v1_suffix(&u))
+                }
+                "ollama" => std::env::var("OLLAMA_HOST").ok().map(|u| ensure_v1_suffix(&u)),
+                "openai" => Some("https://api.openai.com/v1".to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                format!(
+                    "provider {} has no base_url and no env-var fallback resolved",
+                    ws.embedding_provider
+                )
+            })
     }
 
     /// Run each figure (caption + PNG bytes) through the workspace's

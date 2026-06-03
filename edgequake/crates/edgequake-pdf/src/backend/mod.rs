@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::PdfConversionError;
 
 pub use edgeparse::EdgeParsePdfConverter;
+pub use table_extract::{inline_table_placeholders, render_table_markdown};
 pub use vision::VisionPdfConverter;
 pub use vlm_ocr::{detect_algorithm_blocks, AlgorithmBlock, VlmOcrConverter};
 
