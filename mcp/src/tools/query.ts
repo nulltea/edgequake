@@ -67,9 +67,13 @@ function renderReferenceCode(snippets: ReferenceCodeSnippet[]): string {
 export function registerQueryTools(server: McpServer): void {
   server.tool(
     "query",
-    "Search the EdgeQuake knowledge graph. Returns retrieved text chunks, entities, and relationships, plus any curated algorithm definitions and reference code implementations matched semantically to the question. Use 'hybrid' mode (default) for best results.",
+    "Search the EdgeQuake knowledge graph. Returns retrieved text chunks, entities, and relationships, plus any curated algorithm definitions and reference code implementations matched semantically to the question. Use 'hybrid' mode (default) for best results. Retrieval is strongest for single-aspect queries — split a multi-part question into one query per aspect and merge the results; a single query bundling unrelated aspects retrieves only the dominant one and misses the rest.",
     {
-      query: z.string().describe("Natural language question"),
+      query: z
+        .string()
+        .describe(
+          "A focused question about ONE topic/aspect. Retrieval is embedding-based: a query that bundles several unrelated sub-questions is averaged into a single vector that matches only the dominant aspect, so chunks for the other aspects are silently dropped (you'll get false 'not reported'). Ask one aspect per call and run multiple queries when you need several, combining the results yourself. Good: 'What hardware/GPUs did ObfuscaTune use in experiments?' Bad: 'ObfuscaTune threat model and trusted hardware and TEE-vs-GPU split and overhead and security basis?'",
+        ),
       mode: z
         .enum(["naive", "local", "global", "hybrid", "mix"])
         .optional()

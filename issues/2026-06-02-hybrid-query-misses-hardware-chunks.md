@@ -3,6 +3,33 @@
 **Date:** 2026-06-02
 **Severity:** medium (retrieval completeness)
 **Component:** `mcp__edgequake__query` (mode=hybrid)
+**Status:** WON'T FIX (2026-06-03) — root cause is a multi-aspect query, not a retrieval bug. See Resolution.
+
+> ## Resolution — WON'T FIX (query design, not a system bug)
+>
+> Diagnosed to **query-embedding dilution**: the repro query bundles ~6 unrelated
+> sub-questions (threat model + trusted hardware + TEE-vs-GPU split + what's
+> protected + security basis + 1.5–4.3× overhead). Embedding-based retrieval
+> represents that as ONE averaged vector dominated by the majority aspects, so
+> the minority "hardware" aspect ranks below the cut. Proven: the same hardware
+> chunk (`chunk-7`, "2 GPU devices… simulates the TEE") ranks **#1 at cosine
+> 0.98** for a hardware-focused query, but is absent for the 6-facet query.
+> (Compounded by chunk-side dilution: that GPU sentence is buried in a chunk
+> that is mostly experimental-methodology prose.)
+>
+> The fixes considered — per-keyword multi-query, LLM query decomposition, MMR,
+> re-chunking — each add latency, an LLM hop, or a corpus reprocess to paper over
+> what is fundamentally a malformed query. Not worth it.
+>
+> **Mitigation instead:** steer callers to issue **one focused query per aspect**
+> (and combine results themselves) via guidance in the `mcp__edgequake__query`
+> tool/param descriptions. Multi-aspect "kitchen-sink" queries are documented as
+> an anti-pattern.
+>
+> Note: the two *related* sub-causes from the original report ARE fixed —
+> table-bound numbers (commit `feb1e7cf`) and appendix-after-References chunking
+> (commit `a71b7fd4`). This Resolution applies only to the prose-hardware
+> ranking case.
 
 ## Symptom
 
