@@ -163,8 +163,17 @@ impl SOTAQueryEngine {
                 .await?
             }
             QueryMode::Naive => {
-                self.query_naive(&embeddings, request.tenant_id(), request.workspace_id())
-                    .await?
+                // Must use the workspace-specific vector storage (like the
+                // other arms above) — `self.query_naive` searches the engine's
+                // DEFAULT store, which in a workspace-isolated deployment is
+                // the wrong (usually empty) table, so naive returned nothing.
+                self.query_naive_with_vector_storage(
+                    &embeddings,
+                    request.tenant_id(),
+                    request.workspace_id(),
+                    &vector_storage,
+                )
+                .await?
             }
         };
         stats.retrieval_time_ms = retrieval_start.elapsed().as_millis() as u64;
@@ -403,8 +412,17 @@ impl SOTAQueryEngine {
                 .await?
             }
             QueryMode::Naive => {
-                self.query_naive(&embeddings, request.tenant_id(), request.workspace_id())
-                    .await?
+                // Must use the workspace-specific vector storage (like the
+                // other arms above) — `self.query_naive` searches the engine's
+                // DEFAULT store, which in a workspace-isolated deployment is
+                // the wrong (usually empty) table, so naive returned nothing.
+                self.query_naive_with_vector_storage(
+                    &embeddings,
+                    request.tenant_id(),
+                    request.workspace_id(),
+                    &vector_storage,
+                )
+                .await?
             }
         };
         stats.retrieval_time_ms = retrieval_start.elapsed().as_millis() as u64;

@@ -580,23 +580,27 @@ impl SOTAQueryEngine {
         workspace_id: Option<String>,
     ) -> Result<QueryContext> {
         let mut context = QueryContext::new();
-        let mf = MetadataFilter::from_tenant_workspace(tenant_id, workspace_id);
+        // Push the chunk-type filter into the storage query (SPEC-007:
+        // tenant/workspace already pushed down). WHY: previously this fetched
+        // the top `max_chunks * 2` vectors of ALL types and filtered to chunks
+        // in-app. In workspaces with many entities/relationships, those vectors
+        // dominate the top-K and crowd chunk vectors out before the in-app
+        // type filter runs, so naive mode returned little or nothing. The
+        // hybrid mode's naive arm (`query_naive_with_vector_storage`) already
+        // pushes `type = "chunk"` down for exactly this reason; mirror it here.
+        let mf = MetadataFilter::from_tenant_workspace_type(tenant_id, workspace_id, "chunk");
 
-        // SPEC-007: tenant/workspace filter pushed to storage layer via query_filtered.
         let results = self
             .vector_storage
             .query_filtered(
                 &embeddings.query,
-                self.config.max_chunks * 2,
+                self.config.max_chunks,
                 None,
                 mf.as_ref(),
             )
             .await?;
 
-        // Filter to chunk vectors only
-        let chunk_results = filter_by_type(results, VectorType::Chunk);
-
-        for result in chunk_results
+        for result in results
             .iter()
             .filter(|r| r.score >= self.config.chunk_min_score)
             .take(self.config.max_chunks)
