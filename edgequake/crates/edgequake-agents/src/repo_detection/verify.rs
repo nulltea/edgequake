@@ -175,9 +175,12 @@ fn build_prompt(c: &RepoCandidate, p: &PaperFrontMatter, readme: &str) -> String
         "You are verifying whether a GitHub/GitLab/Bitbucket repository implements a specific research paper.\n\
          \n\
          Classify the relationship with ONE of:\n\
-         - `official`      : The repo is authored by the paper's authors (check repo owner/organisation against author list).\n\
-         - `third_party`   : A faithful reimplementation whose README explicitly cites the paper's title, arXiv id, or authors.\n\
-         - `unrelated`     : The repo is a generic library, dataset, baseline, or tooling that the paper merely uses/cites (examples: langchain, pytorch, numpy, transformers, scikit-learn). Also applies to author profile pages with no specific repo.\n\
+         - `official`      : The repo is the paper authors' OWN release. Any ONE of these is sufficient:\n\
+         \x20    * the repo owner is an author, OR the authors' institution / lab / research group — these are often organisation accounts (e.g. a university-lab GitHub org whose name is an acronym or institution name, not a personal handle);\n\
+         \x20    * the README presents the repo AS this paper's own implementation, prototype, artifact, or released code — phrasings like \"this repository is the/a prototype of <paper>\", \"code for our paper\", \"official implementation\", \"we release\" — without disclaiming authorship.\n\
+         \x20    A repo whose name matches the paper's system/method name and is owned by a research-group organisation is a STRONG `official` signal.\n\
+         - `third_party`   : A reimplementation by someone OTHER than the authors. The README must explicitly frame it that way — e.g. \"unofficial\", \"reproduction\", \"re-implementation\", \"my implementation of\", \"reproduce the results of\". IMPORTANT: merely citing the paper's title / arXiv id / authors is NOT enough to choose `third_party` — the authors' own repo cites its paper too. If the README cites or describes the paper but does not disclaim authorship, prefer `official`.\n\
+         - `unrelated`     : The repo is a generic library, dataset, baseline, or tooling that the paper merely uses/cites (examples: langchain, pytorch, numpy, transformers, scikit-learn). Also applies to author profile pages with no specific repo, and to `awesome-*` / paper-list aggregators.\n\
          - `inconclusive`  : Not enough evidence to decide.\n\
          \n\
          --- PAPER ---\n\

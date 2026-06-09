@@ -203,7 +203,17 @@ const STOPWORDS: &[&str] = &[
 ///    distinctive title token cuts the result set to 3–10 hits with the
 ///    right repo at rank 0.
 ///
-/// Strategy:
+/// Strategy (queries run in this order; hits accumulate in order, so
+/// earlier queries win the shortlist):
+/// - `"{title-phrase}" in:readme fork:true` — the strongest signal that a
+///   repo implements *this* paper is the paper's title appearing verbatim in
+///   its README. This surfaces low-star / no-description academic and
+///   third-party repos that best-match repo ranking buries (e.g.
+///   `bzz/CodeCipher` ranks 0 here vs. 15 for a plain name search). Runs
+///   first so its hit survives the shortlist cap.
+/// - `{name} in:readme fork:true` — recall net keyed on the paper's short
+///   name (acronym / system name), for READMEs that name the method but
+///   don't quote the title verbatim.
 /// - `{ACRONYM} {title-token} fork:true` for each of the top
 ///   title-core tokens (max 4). Empirically these surface niche
 ///   academic repos that broader queries miss.
@@ -220,6 +230,15 @@ pub fn build_repo_queries(title: &str, first_author: Option<&str>) -> Vec<String
         .filter(|s| s.len() >= 3);
 
     let acronym = extract_acronym(title);
+
+    // README-targeted queries FIRST (highest precision for academic repos).
+    if let Some(phrase) = title_readme_phrase(title, 6) {
+        queries.push(format!("\"{phrase}\" in:readme fork:true"));
+    }
+    if let Some(acr) = &acronym {
+        queries.push(format!("{acr} in:readme fork:true"));
+    }
+
     // Filter out the acronym itself from the token list so we don't
     // emit `ACR ACR fork:true`.
     let title_tokens: Vec<String> = title_tokens(title, 6)
@@ -270,17 +289,56 @@ pub fn build_repo_query(title: &str, first_author: Option<&str>) -> String {
         .unwrap_or_else(|| format!("{title} fork:true"))
 }
 
-/// Find an all-caps acronym in the title, e.g. "PACMANN: Efficient ..."
-/// → `Some("PACMANN")`. Heuristic: pick the first standalone token of
-/// length ≥3 whose alphabetic characters are all uppercase. Returns
-/// `None` if no token qualifies (titles like "Stained Glass Transform"
-/// fall through to the broader strategy).
+/// Find the paper's short name (acronym or system name) in the title, e.g.
+/// "PACMANN: Efficient ..." → `Some("PACMANN")`, "PipeLLM: Fast ..." →
+/// `Some("PipeLLM")`. The name is paired with title tokens to build the
+/// targeted GitHub queries that surface niche academic repos; missing it
+/// collapses query generation to a single over-constrained title-core
+/// fallback (the failure mode that hid `SJTU-IPADS/PipeLLM`).
+///
+/// Two heuristics, in priority order:
+///
+/// 1. **Name before the colon.** Papers overwhelmingly title themselves
+///    `Name: descriptive subtitle`. If the segment before the first colon
+///    is 1–3 tokens, the last token is the system name *regardless of
+///    casing* — this is the only way to catch single-capital names like
+///    "Euston", "Opal", "Compass" that no casing rule could tell apart
+///    from ordinary title words.
+/// 2. **Embedded-caps token.** Otherwise, the first token of ≥3 letters
+///    carrying ≥2 uppercase letters: all-caps acronyms ("BERT", "PACMANN")
+///    *and* mixed-case product names ("PipeLLM", "CryptoMoE", "RemoteRAG").
+///    The previous rule required *every* letter to be uppercase, which
+///    silently dropped every camel-case name.
+///
+/// Returns `None` when neither fires (e.g. "Stained Glass Transform",
+/// "Towards Privacy-Preserving …"), leaving the title-core query as the
+/// only path — same as before.
 fn extract_acronym(title: &str) -> Option<String> {
+    // Heuristic 1: `Name: subtitle`. Keep hyphens so "DP-Forward" stays one
+    // token; require the name to carry ≥2 letters so a stray "p^2"-style
+    // numeric prefix segment doesn't win over a real acronym later.
+    if let Some((head, _)) = title.split_once(':') {
+        let tokens: Vec<&str> = head
+            .split(|c: char| !c.is_alphanumeric() && c != '-')
+            .filter(|t| !t.is_empty())
+            .collect();
+        if (1..=3).contains(&tokens.len()) {
+            if let Some(name) = tokens.last() {
+                if name.chars().filter(|c| c.is_alphabetic()).count() >= 2 {
+                    return Some((*name).to_string());
+                }
+            }
+        }
+    }
+
+    // Heuristic 2: first token with ≥2 uppercase letters (≥3 letters total
+    // keeps generic 2-letter tokens like "AI"/"ML" out).
     title
         .split(|c: char| !c.is_alphanumeric())
         .find(|t| {
-            t.chars().filter(|c| c.is_alphabetic()).count() >= 3
-                && t.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase())
+            let alpha = t.chars().filter(|c| c.is_alphabetic()).count();
+            let upper = t.chars().filter(|c| c.is_uppercase()).count();
+            alpha >= 3 && upper >= 2
         })
         .map(|s| s.to_string())
 }
@@ -296,6 +354,65 @@ fn title_tokens(title: &str, max_tokens: usize) -> Vec<String> {
         .take(max_tokens)
         .map(str::to_string)
         .collect()
+}
+
+/// Build a verbatim, contiguous phrase from the paper title for a quoted
+/// GitHub `"…" in:readme` search. Because the quote must appear verbatim in a
+/// repo's README to match, we keep internal short stopwords (e.g. "to",
+/// "and") and only trim leading/trailing ones. Prefers the descriptive
+/// subtitle after the first colon; otherwise uses the whole title. Bounds the
+/// window to `max_significant` non-stopword tokens so a very long title
+/// doesn't over-constrain the match.
+///
+/// "CodeCipher: Learning to Obfuscate Source Code Against LLMs"
+///   → `Learning to Obfuscate Source Code Against LLMs`
+/// "… : Fast and Confidential Large Language Model Services with …"
+///   → `Fast and Confidential Large Language Model Services`
+fn title_readme_phrase(title: &str, max_significant: usize) -> Option<String> {
+    // Prefer the subtitle after the first colon, when it has content.
+    let segment = match title.split_once(':') {
+        Some((_, sub)) if sub.split_whitespace().next().is_some() => sub,
+        _ => title,
+    };
+
+    let is_stop = |w: &str| STOPWORDS.contains(&w.to_ascii_lowercase().as_str());
+
+    // Strip surrounding punctuation per word for the significance test, but
+    // keep the cleaned word in the phrase so the result stays verbatim-ish.
+    let words: Vec<String> = segment
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    // Take a contiguous window up to `max_significant` non-stopword tokens.
+    let mut window: Vec<String> = Vec::new();
+    let mut significant = 0usize;
+    for w in &words {
+        if !is_stop(w) {
+            if significant >= max_significant {
+                break;
+            }
+            significant += 1;
+        }
+        window.push(w.clone());
+    }
+    // Don't start or end on a low-signal stopword.
+    while window.first().is_some_and(|w| is_stop(w)) {
+        window.remove(0);
+    }
+    while window.last().is_some_and(|w| is_stop(w)) {
+        window.pop();
+    }
+    // A single token is too weak for a quoted phrase (the name-net query
+    // already covers the bare name); require ≥2 words.
+    if window.len() < 2 {
+        return None;
+    }
+    Some(window.join(" "))
 }
 
 #[cfg(test)]
@@ -330,12 +447,17 @@ mod tests {
     #[test]
     fn queries_skip_acronym_when_title_has_none() {
         let qs = build_repo_queries("Stained Glass Transform Embeddings", Some("Alice Smith"));
-        // No all-caps token → only the fallback query.
-        assert_eq!(qs.len(), 1, "expected 1 query, got {:?}", qs);
-        assert!(qs[0].contains("Stained"));
-        assert!(qs[0].contains("Smith"));
-        assert!(qs[0].contains("in:name,description,readme"));
-        assert!(qs[0].contains("fork:true"));
+        // No acronym → README phrase query (leads) + title-core fallback only.
+        assert_eq!(qs.len(), 2, "expected 2 queries, got {:?}", qs);
+        assert_eq!(
+            qs[0],
+            "\"Stained Glass Transform Embeddings\" in:readme fork:true"
+        );
+        // Title-core fallback keeps the surname + field qualifier.
+        assert!(qs[1].contains("Stained"));
+        assert!(qs[1].contains("Smith"));
+        assert!(qs[1].contains("in:name,description,readme"));
+        assert!(qs[1].contains("fork:true"));
     }
 
     #[test]
@@ -348,21 +470,139 @@ mod tests {
 
     #[test]
     fn single_query_helper_returns_first() {
-        // First query is `{acronym} {first-title-token} fork:true`.
+        // First query is now the high-precision quoted README phrase query.
         let q = build_repo_query("BERT Language Model", Some("Devlin"));
-        assert_eq!(q, "BERT Language fork:true");
+        assert_eq!(q, "\"BERT Language Model\" in:readme fork:true");
+    }
+
+    #[test]
+    fn readme_queries_lead_and_quote_title_phrase() {
+        // The CodeCipher regression: a 0-star third-party repo whose README
+        // quotes the paper title. The quoted-phrase README query must lead so
+        // its rank-0 hit survives the shortlist cap.
+        let qs = build_repo_queries(
+            "CodeCipher: Learning to Obfuscate Source Code Against LLMs",
+            Some("Yalan Lin"),
+        );
+        assert_eq!(
+            qs[0],
+            "\"Learning to Obfuscate Source Code Against LLMs\" in:readme fork:true"
+        );
+        assert_eq!(qs[1], "CodeCipher in:readme fork:true");
+        // Acronym/title-core queries still follow.
+        assert!(qs.iter().any(|q| q.contains("in:name,description,readme")));
+    }
+
+    #[test]
+    fn readme_phrase_prefers_subtitle_keeping_internal_stopwords() {
+        // Verbatim contiguous slice of the subtitle, internal "and" kept,
+        // trailing "with" trimmed, bounded to 6 significant tokens.
+        let p = title_readme_phrase(
+            "PipeLLM: Fast and Confidential Large Language Model Services with \
+             Speculative Pipelined Encryption",
+            6,
+        );
+        assert_eq!(
+            p.as_deref(),
+            Some("Fast and Confidential Large Language Model Services")
+        );
+    }
+
+    #[test]
+    fn readme_phrase_no_colon_uses_whole_title_run() {
+        let p = title_readme_phrase("Secure Transformer Inference Made Non-interactive", 6);
+        assert_eq!(
+            p.as_deref(),
+            Some("Secure Transformer Inference Made Non-interactive")
+        );
+    }
+
+    #[test]
+    fn readme_phrase_single_word_title_is_none() {
+        // A bare one-word title has no usable phrase; the name-net query
+        // (`<name> in:readme`) covers that case instead.
+        assert_eq!(title_readme_phrase("PipeLLM", 6), None);
     }
 
     #[test]
     fn extract_acronym_finds_all_caps_token() {
         assert_eq!(extract_acronym("PACMANN: foo"), Some("PACMANN".into()));
         assert_eq!(extract_acronym("BERT for NLP"), Some("BERT".into()));
-        // First all-caps wins.
+        // First embedded-caps token wins (no colon → heuristic 2).
         assert_eq!(extract_acronym("xyz ABC DEF"), Some("ABC".into()));
-        // Length-2 doesn't qualify (too noisy — would match "AN", "OR", etc.).
+        // Length-2 doesn't qualify (too noisy — would match "AI", "ML", etc.).
         assert_eq!(extract_acronym("AI for ML systems"), None);
         // Plain title has none.
         assert_eq!(extract_acronym("a study of foo"), None);
+    }
+
+    #[test]
+    fn extract_acronym_catches_mixed_case_system_names() {
+        // The PipeLLM regression: "PipeLLM" is mixed-case, so the old
+        // all-uppercase rule returned None and collapsed query generation
+        // to a single over-constrained fallback that missed the repo.
+        assert_eq!(
+            extract_acronym(
+                "PipeLLM: Fast and Confidential Large Language Model Services \
+                 with Speculative Pipelined Encryption"
+            ),
+            Some("PipeLLM".into())
+        );
+        // Other camel-case names in the corpus.
+        assert_eq!(
+            extract_acronym("CryptoMoE: Privacy-Preserving and Scalable Mixture of Experts"),
+            Some("CryptoMoE".into())
+        );
+        assert_eq!(
+            extract_acronym("RemoteRAG: A Privacy-Preserving LLM Cloud RAG Service"),
+            Some("RemoteRAG".into())
+        );
+        // Hyphenated system name survives as one token.
+        assert_eq!(
+            extract_acronym("DP-Forward: Fine-tuning and Inference on Language Models"),
+            Some("DP-Forward".into())
+        );
+    }
+
+    #[test]
+    fn extract_acronym_uses_colon_for_single_capital_names() {
+        // Single-capital names are indistinguishable from ordinary title
+        // words by casing alone — the `Name:` prefix is the only signal.
+        assert_eq!(
+            extract_acronym("Euston: Efficient and User-Friendly Secure Transformer Inference"),
+            Some("Euston".into())
+        );
+        assert_eq!(
+            extract_acronym("Opal: Private Memory for Personal AI"),
+            Some("Opal".into())
+        );
+        // A long descriptive clause before the colon (>3 tokens) is not a
+        // name — fall through to heuristic 2 (which finds nothing here).
+        assert_eq!(
+            extract_acronym("Shadow in the Cache: Unveiling and Mitigating Privacy Risks"),
+            None
+        );
+    }
+
+    #[test]
+    fn pipellm_queries_include_bare_name_fallback() {
+        // End-to-end: the fix must make the resolver emit `PipeLLM fork:true`,
+        // the broad query that returns SJTU-IPADS/PipeLLM at rank 0.
+        let qs = build_repo_queries(
+            "PipeLLM: Fast and Confidential Large Language Model Services \
+             with Speculative Pipelined Encryption",
+            Some("Yifan Tan"),
+        );
+        assert!(
+            qs.iter().any(|q| q == "PipeLLM fork:true"),
+            "expected bare-name fallback, got {qs:?}"
+        );
+        assert!(qs.iter().any(|q| q == "PipeLLM Tan fork:true"));
+        // Acronym paired with title tokens, never with itself.
+        assert!(qs.iter().any(|q| q == "PipeLLM Fast fork:true"));
+        for q in &qs {
+            assert!(!q.contains("PipeLLM PipeLLM"), "duplicated name: {q}");
+        }
     }
 
     // Construction tests need a Tokio runtime — octocrab's tower buffer
