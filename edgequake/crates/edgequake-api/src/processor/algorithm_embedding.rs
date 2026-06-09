@@ -176,7 +176,10 @@ impl DocumentTaskProcessor {
         // pipeline still has reference-repo detection + entity extraction
         // to run after us; `process_text_insert` owns the final status.
         if finalize_status {
-            self.update_document_status(document_id, "completed", None)
+            // Chunks-only docs (`extraction_skipped`) stay `partial` — don't
+            // promote them to `completed` (no entities/graph).
+            let terminal_status = self.post_stage_terminal_status(document_id).await;
+            self.update_document_status(document_id, terminal_status, None)
                 .await
                 .ok();
             task.update_progress("completed".to_string(), 1, 100);

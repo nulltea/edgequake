@@ -6,6 +6,34 @@ impl DocumentTaskProcessor {
     /// @implements SPEC-002: Unified Ingestion Pipeline
     /// Updates both legacy `status` field and new `current_stage` field for backward compatibility.
     /// Creates metadata if it doesn't exist (for PDF documents that bypass upload handler).
+    /// Terminal status to restore after a standalone stage (e.g. algorithm
+    /// extraction / embedding) finishes.
+    ///
+    /// Chunks-only documents (`extraction_skipped == true`) never ran entity
+    /// extraction, so they have no entities/relationships and must NOT be
+    /// promoted to `completed` — that would (wrongly) light up the "View in
+    /// Graph" affordance for an empty graph. They stay `partial`. Documents
+    /// that went through full extraction restore to `completed`.
+    pub(super) async fn post_stage_terminal_status(&self, document_id: &str) -> &'static str {
+        let metadata_key = format!("{}-metadata", document_id);
+        let skipped = self
+            .kv_storage
+            .get_by_id(&metadata_key)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|m| {
+                m.get("extraction_skipped")
+                    .and_then(|v| v.as_bool())
+            })
+            .unwrap_or(false);
+        if skipped {
+            "partial"
+        } else {
+            "completed"
+        }
+    }
+
     pub(super) async fn update_document_status(
         &self,
         document_id: &str,

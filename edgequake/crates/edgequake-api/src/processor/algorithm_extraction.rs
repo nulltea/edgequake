@@ -27,6 +27,12 @@ impl DocumentTaskProcessor {
             "Processing algorithm extraction task"
         );
 
+        // Status to restore when this task finishes. Chunks-only documents
+        // (`extraction_skipped`) stay `partial` — algorithm extraction must not
+        // promote them to `completed`, since they have no entities/graph. Read
+        // once up front (the flag isn't touched by the passes below).
+        let terminal_status = self.post_stage_terminal_status(document_id).await;
+
         // Resolve per-pass LLM providers from workspace config
         let workspace_id = if !data.workspace_id.is_empty() && data.workspace_id != "default" {
             Some(data.workspace_id.as_str())
@@ -115,7 +121,7 @@ impl DocumentTaskProcessor {
 
             if blocks.is_empty() {
                 info!(document_id = %document_id, "No algorithm blocks detected in PDF");
-                self.update_document_status(document_id, "completed", None)
+                self.update_document_status(document_id, terminal_status, None)
                     .await
                     .ok();
                 task.update_progress("completed".to_string(), 3, 100);
@@ -241,7 +247,7 @@ impl DocumentTaskProcessor {
 
             if flagged_pairs.is_empty() {
                 info!(document_id = %document_id, "No algorithms found across any chunk pair");
-                self.update_document_status(document_id, "completed", None)
+                self.update_document_status(document_id, terminal_status, None)
                     .await
                     .ok();
                 task.update_progress("completed".to_string(), 3, 100);
@@ -527,7 +533,7 @@ impl DocumentTaskProcessor {
         }
 
         // Restore document to completed status
-        self.update_document_status(document_id, "completed", None)
+        self.update_document_status(document_id, terminal_status, None)
             .await
             .ok();
         task.update_progress("completed".to_string(), 3, 100);

@@ -690,9 +690,20 @@ async fn extract_algorithms_impl(
         .get("status")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    if doc_status != "completed" && doc_status != "indexed" {
+    // Chunks-only documents (`skip_extraction`) finalize as `partial` +
+    // `extraction_skipped: true` (see processor/text_insert.rs). They have
+    // chunks (and, for PDFs, a `pdf_id`), so algorithm extraction can run —
+    // indeed triggering it later is the whole point of chunks-only ingestion.
+    // Only reject states that genuinely lack indexed content.
+    let extraction_skipped = metadata
+        .get("extraction_skipped")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let ready = matches!(doc_status, "completed" | "indexed" | "partial") || extraction_skipped;
+    if !ready {
         return Err(ApiError::BadRequest(format!(
-            "Document must be completed before extraction (current status: {doc_status})"
+            "Document is not ready for extraction (current status: {doc_status}); \
+             wait for processing to finish or reprocess it first"
         )));
     }
 
