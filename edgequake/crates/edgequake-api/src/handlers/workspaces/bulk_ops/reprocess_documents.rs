@@ -126,8 +126,17 @@ pub async fn reprocess_all_documents(
         mark_document_pending(&state, &doc.doc_id, &track_id).await;
 
         let extra_meta = serde_json::Map::new();
-        if let Some((task_type, task_value)) =
-            build_reprocess_task(&state, &workspace, workspace_id, doc, &track_id, extra_meta).await
+        if let Some((task_type, task_value)) = build_reprocess_task(
+            &state,
+            &workspace,
+            workspace_id,
+            doc,
+            &track_id,
+            extra_meta,
+            // Bulk reprocess always runs the full pipeline.
+            false,
+        )
+        .await
         {
             let task = edgequake_tasks::Task::new(
                 workspace.tenant_id,

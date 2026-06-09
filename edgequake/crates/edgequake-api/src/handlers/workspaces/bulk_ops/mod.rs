@@ -19,11 +19,13 @@ mod extract_pending_documents;
 mod rebuild_embeddings;
 mod rebuild_knowledge_graph;
 mod reprocess_documents;
+mod reprocess_single;
 
 pub use extract_pending_documents::extract_pending_documents;
 pub use rebuild_embeddings::rebuild_embeddings;
 pub use rebuild_knowledge_graph::rebuild_knowledge_graph;
 pub use reprocess_documents::reprocess_all_documents;
+pub use reprocess_single::reprocess_document;
 
 use uuid::Uuid;
 
@@ -168,6 +170,7 @@ pub(super) fn build_pdf_task(
     workspace_id: Uuid,
     pdf_id: Uuid,
     doc_id: &str,
+    skip_extraction: bool,
 ) -> edgequake_tasks::PdfProcessingData {
     // WHY: When workspace has no explicit vision_llm_provider, fall back to the
     // workspace's main llm_provider instead of hardcoding "ollama". This ensures
@@ -193,8 +196,10 @@ pub(super) fn build_pdf_task(
         pdf_parser_backend: workspace.resolved_pdf_parser_backend(),
         rename_after_parse: false,
         source_url: None,
-        // Reprocess always runs the full pipeline.
-        skip_extraction: false,
+        // Chunks-only reprocess (`skip_extraction = true`) re-parses, re-chunks,
+        // and re-embeds but guards out the heavy LLM stages; the default full
+        // reprocess passes `false`.
+        skip_extraction,
     }
 }
 
@@ -261,6 +266,7 @@ pub(super) async fn build_reprocess_task(
     doc: &DocumentInfo,
     track_id: &str,
     extra_metadata: serde_json::Map<String, serde_json::Value>,
+    skip_extraction: bool,
 ) -> Option<(edgequake_tasks::TaskType, serde_json::Value)> {
     use edgequake_tasks::{TaskType, TextInsertData};
 
@@ -269,7 +275,8 @@ pub(super) async fn build_reprocess_task(
     if doc.source_type.as_deref() == Some("pdf") {
         if let Some(pdf_id_str) = doc.pdf_id_str.as_deref() {
             if let Ok(pdf_id_uuid) = Uuid::parse_str(pdf_id_str) {
-                let pdf_task = build_pdf_task(workspace, workspace_id, pdf_id_uuid, &doc.doc_id);
+                let pdf_task =
+                    build_pdf_task(workspace, workspace_id, pdf_id_uuid, &doc.doc_id, skip_extraction);
                 return Some((
                     TaskType::PdfProcessing,
                     serde_json::to_value(&pdf_task).unwrap(),
@@ -293,6 +300,12 @@ pub(super) async fn build_reprocess_task(
     metadata_map.insert("title".to_string(), serde_json::json!(doc.title));
     metadata_map.insert("track_id".to_string(), serde_json::json!(track_id));
     metadata_map.insert("is_reprocess".to_string(), serde_json::json!(true));
+    // Chunks-only reprocess: the flag travels in TextInsertData metadata and is
+    // honored by `processor/text_insert.rs` (stops after chunks+embeddings).
+    metadata_map.insert(
+        "skip_extraction".to_string(),
+        serde_json::json!(skip_extraction),
+    );
     metadata_map.insert(
         "workspace_id".to_string(),
         serde_json::json!(workspace_id.to_string()),

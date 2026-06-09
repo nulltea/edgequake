@@ -310,6 +310,12 @@ fn api_v1_routes() -> Router<AppState> {
             "/documents/{document_id}/extract",
             post(handlers::trigger_extraction),
         )
+        // Reprocess a single document (defaults to chunks-only / skip-extraction).
+        // MUST come before /documents/{document_id}
+        .route(
+            "/documents/{document_id}/reprocess",
+            post(handlers::reprocess_document),
+        )
         // Set / clear a document's user-assigned label.
         // MUST come before /documents/{document_id}
         .route(

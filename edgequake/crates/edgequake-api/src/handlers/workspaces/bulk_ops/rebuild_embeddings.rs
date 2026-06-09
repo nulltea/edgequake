@@ -254,6 +254,8 @@ pub async fn rebuild_embeddings(
                 doc,
                 &track_id,
                 extra_meta.clone(),
+                // Rebuild runs the full pipeline.
+                false,
             )
             .await
             {

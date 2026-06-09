@@ -210,6 +210,8 @@ pub async fn rebuild_knowledge_graph(
                 doc,
                 &track_id,
                 extra_meta.clone(),
+                // Rebuild runs the full pipeline.
+                false,
             )
             .await
             {
