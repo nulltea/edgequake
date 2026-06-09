@@ -275,6 +275,37 @@ export function DocumentManager() {
     }
   };
 
+  // Reprocess a single document chunks-only: re-embed without the heavy LLM
+  // stages. Keeps any existing entities/relationships untouched.
+  const handleReprocessChunksOnly = async (documentId: string) => {
+    try {
+      const { reprocessDocumentChunksOnly } = await import('@/lib/api/edgequake');
+      const { toast } = await import('sonner');
+      await reprocessDocumentChunksOnly(documentId, true);
+      toast.success('Reprocessing chunks (skip extraction)');
+      refetch();
+    } catch {
+      const { toast } = await import('sonner');
+      toast.error('Failed to start reprocess');
+    }
+  };
+
+  // (Re-)run reference-implementation detection (repo search) for a document.
+  const handleDetectRepos = async (documentId: string) => {
+    try {
+      const { detectRepos } = await import('@/lib/api/edgequake');
+      const { toast } = await import('sonner');
+      const res = await detectRepos(documentId);
+      toast.success('Searching for reference implementations', {
+        description: `Track ID: ${res.track_id}`,
+      });
+      refetch();
+    } catch {
+      const { toast } = await import('sonner');
+      toast.error('Failed to start reference-implementation search');
+    }
+  };
+
   // Trigger extraction for every chunks-only document in the workspace.
   const handleExtractPending = async () => {
     if (!selectedWorkspaceId) return;
@@ -466,6 +497,8 @@ export function DocumentManager() {
         onArchive={(id) => setArchiveTargetId(id)}
         onExtractAlgorithms={handleExtractAlgorithms}
         onTriggerExtraction={handleTriggerExtraction}
+        onReprocessChunksOnly={handleReprocessChunksOnly}
+        onDetectRepos={handleDetectRepos}
         onSetLabel={(doc) => setLabelTargetDoc(doc)}
         onViewAlgorithms={handleViewAlgorithms}
         docsWithAlgorithms={docsWithAlgorithms}

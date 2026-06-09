@@ -731,6 +731,33 @@ export async function triggerExtraction(
   );
 }
 
+export interface ReprocessDocumentResponse {
+  document_id: string;
+  status: string;
+  track_id: string;
+  skip_extraction: boolean;
+}
+
+/**
+ * Reprocess a single document via the per-document endpoint
+ * (`POST /documents/{id}/reprocess`). Defaults to chunks-only
+ * (`skipExtraction = true`): re-parse, re-chunk, and re-embed without the heavy
+ * LLM stages, leaving any existing entities/relationships untouched. Pass
+ * `false` to run the full pipeline.
+ *
+ * Distinct from {@link reprocessDocument}, which targets the legacy
+ * failed-document recovery endpoint.
+ */
+export async function reprocessDocumentChunksOnly(
+  documentId: string,
+  skipExtraction = true,
+): Promise<ReprocessDocumentResponse> {
+  return api.post<ReprocessDocumentResponse>(
+    `/documents/${documentId}/reprocess`,
+    { skip_extraction: skipExtraction },
+  );
+}
+
 /**
  * Trigger extraction for every chunks-only document in a workspace.
  */

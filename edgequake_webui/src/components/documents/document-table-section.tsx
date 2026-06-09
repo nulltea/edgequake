@@ -77,6 +77,10 @@ export interface DocumentTableSectionProps {
   onExtractAlgorithms?: (id: string) => void;
   /** Handler for run-extraction (chunks-only) action */
   onTriggerExtraction?: (id: string) => void;
+  /** Handler for reprocess (chunks-only) action */
+  onReprocessChunksOnly?: (id: string) => void;
+  /** Handler for find-reference-implementations (repo detection) action */
+  onDetectRepos?: (id: string) => void;
   /** Handler for "Set label" — receives full doc so the dialog can pre-fill. */
   onSetLabel?: (doc: Document) => void;
   /** Handler for view algorithms action */
@@ -136,6 +140,8 @@ export const DocumentTableSection = memo(function DocumentTableSection({
   onArchive,
   onExtractAlgorithms,
   onTriggerExtraction,
+  onReprocessChunksOnly,
+  onDetectRepos,
   onSetLabel,
   onViewAlgorithms,
   docsWithAlgorithms,
@@ -218,6 +224,8 @@ export const DocumentTableSection = memo(function DocumentTableSection({
                       onArchive={onArchive}
                       onExtractAlgorithms={onExtractAlgorithms}
                       onTriggerExtraction={onTriggerExtraction}
+                      onReprocessChunksOnly={onReprocessChunksOnly}
+                      onDetectRepos={onDetectRepos}
                       onSetLabel={onSetLabel}
                       onViewAlgorithms={onViewAlgorithms}
                       hasAlgorithms={docsWithAlgorithms?.has(doc.id) ?? false}

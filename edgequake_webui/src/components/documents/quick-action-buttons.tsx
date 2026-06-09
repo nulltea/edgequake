@@ -113,10 +113,18 @@ export function QuickActionButtons({
   children,
 }: QuickActionButtonsProps) {
   const status = doc.status ?? '';
-  const canViewInGraph = GRAPH_VIEWABLE_STATUSES.includes(status);
+  // Graph view requires extracted entities. Chunks-only docs (`extraction_skipped`)
+  // never ran entity extraction — even if a later stage (e.g. algorithm
+  // extraction) flipped their status to completed, they have no graph.
+  const canViewInGraph =
+    GRAPH_VIEWABLE_STATUSES.includes(status) && !doc.extraction_skipped;
   const canRetry = RETRYABLE_STATUSES.includes(status);
-  const canViewAlgorithms = canViewInGraph && hasAlgorithms;
-  const canViewCodeArtifacts = canViewInGraph && hasCodeArtifacts;
+  // Algorithms / reference-code buttons are gated solely on whether the data
+  // EXISTS (count > 0), not on doc status. Chunks-only docs are `partial` but
+  // can still have algorithms extracted or reference repos found/indexed, so
+  // gating these on graph-viewable status wrongly hid them.
+  const canViewAlgorithms = hasAlgorithms;
+  const canViewCodeArtifacts = hasCodeArtifacts;
 
   return (
     <div className="flex items-center gap-1 justify-start">

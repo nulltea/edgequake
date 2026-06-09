@@ -10,7 +10,7 @@ import {
 import { getAlgorithms } from '@/lib/api/edgequake';
 import type { Document } from '@/types';
 import { useQuery } from '@tanstack/react-query';
-import { Archive, Brain, Copy, Eye, MoreVertical, RefreshCcw, RefreshCw, StopCircle, Tag, Trash2, Zap } from 'lucide-react';
+import { Archive, Brain, Copy, Eye, Github, Layers, MoreVertical, RefreshCcw, RefreshCw, StopCircle, Tag, Trash2, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { ResetDocumentStatusButton } from './reset-document-status-button';
@@ -35,6 +35,10 @@ interface DocumentActionsMenuProps {
   onExtractAlgorithms?: (id: string) => void;
   /** Callback to run all heavy LLM extraction stages for a chunks-only document */
   onTriggerExtraction?: (id: string) => void;
+  /** Callback to reprocess chunks-only (re-embed without the heavy LLM stages) */
+  onReprocessChunksOnly?: (id: string) => void;
+  /** Callback to (re-)run reference-implementation (repo) detection */
+  onDetectRepos?: (id: string) => void;
   /** Callback to open the "Set label" dialog for this document */
   onSetLabel?: (doc: Document) => void;
   /** Whether a cancel operation is in progress */
@@ -66,6 +70,8 @@ export function DocumentActionsMenu({
   onArchive,
   onExtractAlgorithms,
   onTriggerExtraction,
+  onReprocessChunksOnly,
+  onDetectRepos,
   onSetLabel,
   isCancelling = false,
 }: DocumentActionsMenuProps) {
@@ -77,7 +83,7 @@ export function DocumentActionsMenu({
   const { data: algoData } = useQuery({
     queryKey: ['algorithms', doc.id],
     queryFn: () => getAlgorithms(doc.id),
-    enabled: isCompleted && !!onExtractAlgorithms,
+    enabled: (isCompleted || !!doc.extraction_skipped) && !!onExtractAlgorithms,
     staleTime: 60 * 1000,
   });
   const hasAlgorithms = (algoData?.algorithms?.length ?? 0) > 0;
@@ -93,7 +99,10 @@ export function DocumentActionsMenu({
     doc.track_id;
 
   const showViewPdf = doc.source_type === 'pdf' || doc.pdf_id;
-  const showExtractAlgorithms = onExtractAlgorithms && isCompleted;
+  // Chunks-only docs (status `partial` / extraction_skipped) can run algorithm
+  // extraction too — the backend allows it; surface the action for them.
+  const canExtractAlgorithms = isCompleted || !!doc.extraction_skipped;
+  const showExtractAlgorithms = onExtractAlgorithms && canExtractAlgorithms;
   // Chunks-only documents (uploaded with "Skip extraction") expose a
   // "Run extraction" action that kicks off all heavy LLM stages.
   const showTriggerExtraction = onTriggerExtraction && doc.extraction_skipped;
@@ -157,6 +166,14 @@ export function DocumentActionsMenu({
           </DropdownMenuItem>
         )}
 
+        {/* Search for reference implementations (repo detection) */}
+        {onDetectRepos && (
+          <DropdownMenuItem onClick={() => onDetectRepos(doc.id)}>
+            <Github className="h-4 w-4 mr-2" />
+            {t('documents.actions.detectRepos', 'Find reference implementations')}
+          </DropdownMenuItem>
+        )}
+
         {/* Reset status option for failed documents */}
         {showReset && (
           <DropdownMenuItem asChild>
@@ -183,6 +200,14 @@ export function DocumentActionsMenu({
           <RefreshCw className="h-4 w-4 mr-2" />
           {t('documents.actions.reprocess')}
         </DropdownMenuItem>
+
+        {/* Reprocess chunks-only — re-embed without the heavy LLM stages */}
+        {onReprocessChunksOnly && (
+          <DropdownMenuItem onClick={() => onReprocessChunksOnly(doc.id)}>
+            <Layers className="h-4 w-4 mr-2" />
+            {t('documents.actions.reprocessChunksOnly', 'Reprocess (chunks only)')}
+          </DropdownMenuItem>
+        )}
 
         {/* Archive — soft-delete that keeps PDF/MD/algorithms/references */}
         <DropdownMenuItem onClick={() => onArchive(doc.id)}>

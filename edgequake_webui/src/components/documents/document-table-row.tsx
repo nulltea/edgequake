@@ -137,6 +137,10 @@ export interface DocumentTableRowProps {
   onExtractAlgorithms?: (docId: string) => void;
   /** Called when Run Extraction (chunks-only) action is triggered */
   onTriggerExtraction?: (docId: string) => void;
+  /** Called when Reprocess (chunks-only) action is triggered */
+  onReprocessChunksOnly?: (docId: string) => void;
+  /** Called when Find reference implementations (repo detection) is triggered */
+  onDetectRepos?: (docId: string) => void;
   /** Called when "Set label" action is triggered. Receives the full doc so
    *  the dialog can pre-fill the current label. */
   onSetLabel?: (doc: Document) => void;
@@ -178,6 +182,8 @@ export const DocumentTableRow = memo(function DocumentTableRow({
   onArchive,
   onExtractAlgorithms,
   onTriggerExtraction,
+  onReprocessChunksOnly,
+  onDetectRepos,
   onSetLabel,
   onViewAlgorithms,
   hasAlgorithms = false,
@@ -280,6 +286,8 @@ export const DocumentTableRow = memo(function DocumentTableRow({
             onArchive={onArchive}
             onExtractAlgorithms={onExtractAlgorithms}
             onTriggerExtraction={onTriggerExtraction}
+            onReprocessChunksOnly={onReprocessChunksOnly}
+            onDetectRepos={onDetectRepos}
             onSetLabel={onSetLabel}
             isCancelling={isCancelling}
           />
