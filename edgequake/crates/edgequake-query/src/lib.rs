@@ -61,6 +61,7 @@ pub mod helpers;
 pub mod keywords;
 pub mod modes;
 pub mod reference_code_enrichment;
+pub mod reference_marker_enrichment;
 pub mod sota_engine;
 pub mod strategies;
 pub mod tokenizer;

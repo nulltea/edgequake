@@ -249,6 +249,16 @@ impl SOTAQueryEngine {
         )
         .await;
 
+        // Step 5.7: Citation-marker enrichment. Resolves each surviving
+        // chunk's `[n]` markers to that document's parsed references and
+        // appends them to the chunk text. No-op without a reference store.
+        crate::reference_marker_enrichment::enrich_with_references(
+            &mut final_context,
+            &request,
+            self.reference_storage(),
+        )
+        .await;
+
         // Step 6: Generate answer
         let (answer, generated_tokens) = if request.context_only {
             (String::new(), 0)
@@ -487,6 +497,17 @@ impl SOTAQueryEngine {
             &embeddings.query,
             &vector_storage,
             self.algorithm_vector_storage(),
+        )
+        .await;
+
+        // Step 5.7: Citation-marker enrichment. Deterministic join — resolves
+        // each surviving chunk's `[n]` markers to that document's parsed
+        // references and appends them to the chunk text. No-op without a
+        // reference store (see `with_references`).
+        crate::reference_marker_enrichment::enrich_with_references(
+            &mut final_context,
+            &request,
+            self.reference_storage(),
         )
         .await;
 

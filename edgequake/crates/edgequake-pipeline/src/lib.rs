@@ -67,6 +67,7 @@ pub mod merger;
 pub mod pipeline;
 pub mod progress;
 pub mod prompts;
+pub mod references;
 pub mod sanitizer;
 pub mod summarizer;
 pub mod table_preprocessor;
@@ -113,6 +114,7 @@ pub use prompts::{
     JsonExtractionParser, SummarizationPrompts, TupleParser, DEFAULT_COMPLETION_DELIMITER,
     DEFAULT_TUPLE_DELIMITER, SUPPORTED_LANGUAGES,
 };
+pub use references::{parse_references, scan_citation_markers, ParsedReference};
 pub use sanitizer::{EmojiMode, SanitizeConfig, SanitizeReport, Sanitizer};
 pub use summarizer::{DescriptionSummarizer, LLMSummarizer, SimpleSummarizer, SummarizerConfig};
 pub use table_preprocessor::{

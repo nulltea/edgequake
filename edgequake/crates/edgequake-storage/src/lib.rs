@@ -90,7 +90,7 @@ pub use adapters::memory::{
 #[cfg(feature = "postgres")]
 pub use adapters::postgres::{
     ConversationRow, FolderRow, MessageRow, PgAlgorithmVectorStorage, PgCodeVectorStorage,
-    PgReferenceCodebaseVectorStorage, PgVectorStorage, PgWorkspaceVectorRegistry,
+    PgReferenceCodebaseVectorStorage, PgReferenceStorage, PgVectorStorage, PgWorkspaceVectorRegistry,
     PostgresAGEGraphStorage, PostgresConfig, PostgresConversationStorage, PostgresKVStorage,
     PostgresPdfStorage, PostgresPool,
 };

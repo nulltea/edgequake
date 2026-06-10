@@ -152,6 +152,9 @@ pub struct DocumentTaskProcessor {
     /// PDF storage for PDF document management (SPEC-007, postgres-only).
     #[cfg(feature = "postgres")]
     pdf_storage: Option<Arc<dyn edgequake_storage::PdfDocumentStorage>>,
+    /// Reference storage for the inline citation-parsing step (postgres-only).
+    #[cfg(feature = "postgres")]
+    reference_storage: Option<Arc<dyn edgequake_storage::traits::ReferenceStorage>>,
     /// Task storage for persisting task_data mid-processing.
     /// FIX-DUPLICATE-BUG: Needed so that `existing_document_id` patched into task_data
     /// survives restarts (otherwise auto-recovery creates a new doc UUID → duplicate).
@@ -191,6 +194,8 @@ impl DocumentTaskProcessor {
             graph_storage,
             #[cfg(feature = "postgres")]
             pdf_storage: None,
+            #[cfg(feature = "postgres")]
+            reference_storage: None,
             task_storage: None,
             pipeline_state,
             progress_broadcaster: None, // OODA-10: Added for WebSocket clients
@@ -229,6 +234,8 @@ impl DocumentTaskProcessor {
             graph_storage,
             #[cfg(feature = "postgres")]
             pdf_storage: None,
+            #[cfg(feature = "postgres")]
+            reference_storage: None,
             task_storage: None,
             pipeline_state,
             progress_broadcaster: None, // OODA-10: Added for WebSocket clients
@@ -264,6 +271,8 @@ impl DocumentTaskProcessor {
             graph_storage,
             #[cfg(feature = "postgres")]
             pdf_storage: None,
+            #[cfg(feature = "postgres")]
+            reference_storage: None,
             task_storage: None,
             pipeline_state,
             progress_broadcaster: None, // OODA-10: Added for WebSocket clients
@@ -284,6 +293,68 @@ impl DocumentTaskProcessor {
     ) -> Self {
         self.pdf_storage = Some(pdf_storage);
         self
+    }
+
+    /// Attach reference storage so the inline parsing step can persist parsed
+    /// references during ingestion.
+    #[cfg(feature = "postgres")]
+    pub fn with_reference_storage(
+        mut self,
+        reference_storage: Arc<dyn edgequake_storage::traits::ReferenceStorage>,
+    ) -> Self {
+        self.reference_storage = Some(reference_storage);
+        self
+    }
+
+    /// Parse the reference section out of `full_markdown` and replace the
+    /// document's rows in `document_references`.
+    ///
+    /// `full_markdown` MUST be the complete document text — for PDFs that is
+    /// the markdown *before* the reference-stripping done for chunking; for
+    /// text uploads it is the upload body. Deterministic, no LLM. Best-effort:
+    /// a failure is logged and never aborts ingestion. Idempotent (replaces).
+    #[cfg(feature = "postgres")]
+    pub(crate) async fn parse_and_store_references(
+        &self,
+        document_id: &str,
+        tenant_id: Option<&str>,
+        workspace_id: &str,
+        full_markdown: &str,
+    ) {
+        let Some(ref ref_store) = self.reference_storage else {
+            return;
+        };
+        let (Some(tenant_uuid), Ok(workspace_uuid)) = (
+            tenant_id.and_then(|t| uuid::Uuid::parse_str(t).ok()),
+            uuid::Uuid::parse_str(workspace_id),
+        ) else {
+            return;
+        };
+        let rows: Vec<edgequake_storage::traits::NewDocumentReference> =
+            edgequake_pipeline::parse_references(full_markdown)
+                .into_iter()
+                .map(|r| edgequake_storage::traits::NewDocumentReference {
+                    reference_number: r.number as i32,
+                    raw_text: r.raw_text,
+                    doi: r.doi,
+                    url: r.url,
+                })
+                .collect();
+        match ref_store
+            .replace_references(tenant_uuid, workspace_uuid, document_id, &rows)
+            .await
+        {
+            Ok(()) => info!(
+                document_id = %document_id,
+                references = rows.len(),
+                "Parsed and persisted document references"
+            ),
+            Err(e) => warn!(
+                document_id = %document_id,
+                error = %e,
+                "Failed to persist parsed references (non-fatal)"
+            ),
+        }
     }
 
     /// Set task storage so the processor can persist task_data mid-processing.

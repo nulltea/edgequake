@@ -1322,6 +1322,24 @@ impl DocumentTaskProcessor {
             }
         }
 
+        // ── References: parse the reference section and persist ──
+        // PDF documents are handled upstream in `process_pdf_processing`,
+        // which parses the FULL markdown *before* it strips the reference
+        // section for chunking — `data.text` here is already stripped, so
+        // re-parsing it would write nothing and clobber those rows. Only the
+        // non-PDF (text/markdown upload) path, whose `data.text` is the full
+        // document, parses here. Best-effort; never fails ingestion.
+        #[cfg(feature = "postgres")]
+        if !is_pdf_source {
+            self.parse_and_store_references(
+                &document_id,
+                tenant_id.as_deref(),
+                &workspace_id_meta,
+                &data.text,
+            )
+            .await;
+        }
+
         // OODA-06: Persist DocumentLineage to KV storage for lineage API queries
 
         // ── CANCELLATION GATE: before lineage persistence ──

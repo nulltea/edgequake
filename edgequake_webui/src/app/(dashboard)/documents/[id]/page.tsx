@@ -1,6 +1,7 @@
 'use client';
 
 import { AlgorithmsTabContent } from '@/components/algorithms';
+import { CitationsTabContent } from '@/components/documents/citations-tab-content';
 import { CodeMatchesTabContent } from '@/components/code-artifacts';
 import { CodeGraphTabContent } from '@/components/code-graph';
 import { DocumentReposTabContent } from '@/components/document-repos';
@@ -27,6 +28,7 @@ import {
     Images,
     Loader2,
     Network,
+    Quote,
     RefreshCw,
     StopCircle,
 } from 'lucide-react';
@@ -51,6 +53,7 @@ const VALID_TABS = [
   'code-matches',
   'code-graph',
   'figures',
+  'citations',
   'pdf',
   'metadata',
 ] as const;
@@ -345,6 +348,10 @@ export default function DocumentViewPage() {
                 <Images className="h-3.5 w-3.5" />
                 Figures
               </TabsTrigger>
+              <TabsTrigger value="citations">
+                <Quote className="h-3.5 w-3.5" />
+                Citations
+              </TabsTrigger>
             </TabsList>
 
             {/* Content tab */}
@@ -437,13 +444,18 @@ export default function DocumentViewPage() {
             <TabsContent value="figures" className="flex-1 overflow-auto m-0 mt-0">
               <FiguresTabContent documentId={documentId} />
             </TabsContent>
+
+            {/* Citations — parsed reference list. */}
+            <TabsContent value="citations" className="flex-1 overflow-auto m-0 mt-0">
+              <CitationsTabContent documentId={documentId} />
+            </TabsContent>
           </Tabs>
         </div>
 
         {/* Mobile/Tablet: Tabbed layout */}
         <div className="flex-1 lg:hidden overflow-hidden">
           <Tabs value={activeTab} onValueChange={handleTabChange} className="h-full flex flex-col">
-            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-8' : 'grid-cols-7'} rounded-none border-b`}>
+            <TabsList className={`grid w-full ${isPdfDocument ? 'grid-cols-9' : 'grid-cols-8'} rounded-none border-b`}>
               {isPdfDocument && <TabsTrigger value="pdf">PDF</TabsTrigger>}
               <TabsTrigger value="content">Markdown</TabsTrigger>
               <TabsTrigger value="algorithms">
@@ -465,6 +477,10 @@ export default function DocumentViewPage() {
               <TabsTrigger value="figures">
                 <Images className="h-3.5 w-3.5" />
                 Figures
+              </TabsTrigger>
+              <TabsTrigger value="citations">
+                <Quote className="h-3.5 w-3.5" />
+                Citations
               </TabsTrigger>
               <TabsTrigger value="metadata">Details</TabsTrigger>
             </TabsList>
@@ -505,6 +521,9 @@ export default function DocumentViewPage() {
             </TabsContent>
             <TabsContent value="figures" className="flex-1 overflow-auto m-0 mt-0">
               <FiguresTabContent documentId={documentId} />
+            </TabsContent>
+            <TabsContent value="citations" className="flex-1 overflow-auto m-0 mt-0">
+              <CitationsTabContent documentId={documentId} />
             </TabsContent>
             <TabsContent value="metadata" className="flex-1 overflow-hidden m-0 mt-0">
               <MetadataSidebar

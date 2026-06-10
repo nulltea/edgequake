@@ -44,6 +44,11 @@ path = "examples/graph_exploration.rs"
 name = "multi_tenant"
 path = "examples/multi_tenant.rs"
 
+[[example]]
+name = "backfill_references"
+path = "examples/backfill_references.rs"
+required-features = ["postgres"]
+
 [features]
 default = ["postgres", "vision"]
 postgres = ["edgequake-api/postgres", "edgequake-storage/postgres"]
@@ -66,6 +71,7 @@ futures = { workspace = true }
 num_cpus = { workspace = true }
 sqlx = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

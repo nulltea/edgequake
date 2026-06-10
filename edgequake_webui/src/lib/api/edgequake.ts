@@ -588,6 +588,32 @@ export async function getDocument(documentId: string): Promise<Document> {
   return api.get<Document>(`/documents/${documentId}`);
 }
 
+/** One parsed reference (citation) for a document. */
+export interface DocumentReference {
+  reference_number: number;
+  raw_text: string;
+  doi?: string;
+  url?: string;
+}
+
+export interface DocumentReferencesResponse {
+  document_id: string;
+  references: DocumentReference[];
+  total: number;
+}
+
+/**
+ * Fetch the references parsed from a document's reference section, ordered by
+ * reference number. Read-only — references are deterministic parser output.
+ */
+export async function getDocumentReferences(
+  documentId: string,
+): Promise<DocumentReferencesResponse> {
+  return api.get<DocumentReferencesResponse>(
+    `/documents/${documentId}/references`,
+  );
+}
+
 export async function uploadDocument(
   data: UploadDocumentRequest,
 ): Promise<UploadDocumentResponse> {

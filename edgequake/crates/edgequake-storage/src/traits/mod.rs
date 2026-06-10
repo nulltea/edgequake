@@ -24,6 +24,7 @@
 
 mod algorithm_vector;
 mod code_vector;
+mod document_references;
 mod graph;
 mod kv;
 mod reference_codebase_vector;
@@ -32,6 +33,9 @@ mod workspace_vector;
 
 pub use algorithm_vector::{AlgorithmSearchHit, AlgorithmStepSummary, AlgorithmVectorStorage};
 pub use code_vector::{CodeSearchHit, CodeVectorStorage};
+pub use document_references::{
+    DocumentReference, NewDocumentReference, ReferenceStorage,
+};
 pub use graph::{GraphEdge, GraphNode, GraphStorage, KnowledgeGraph};
 pub use kv::KVStorage;
 pub use reference_codebase_vector::{ReferenceCodebaseSearchHit, ReferenceCodebaseVectorStorage};

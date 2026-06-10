@@ -58,6 +58,7 @@ mod label;
 mod lattice;
 mod query;
 mod recovery;
+mod references;
 pub(crate) mod storage_helpers;
 mod upload;
 
@@ -67,6 +68,7 @@ pub use delete::*;
 pub use extraction::*;
 pub use label::*;
 pub use lattice::*;
+pub use references::*;
 pub use query::*;
 pub use recovery::*;
 pub use storage_helpers::CleanupStats;

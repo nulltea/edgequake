@@ -907,6 +907,17 @@ impl DocumentTaskProcessor {
                 markdown.len() - stripped.len()
             );
         }
+
+        // Parse + persist references from the FULL markdown (with the
+        // bibliography) BEFORE it is stripped for chunking. process_text_insert
+        // only sees the stripped text, so the PDF path must do this itself.
+        self.parse_and_store_references(
+            &early_doc_id,
+            Some(&data.tenant_id.to_string()),
+            &data.workspace_id.to_string(),
+            &markdown,
+        )
+        .await;
         // Typeset tables into the chunker input. Tables are stored as separate
         // `kind='table'` chunks but those are NOT vector-indexed, so their cell
         // values (communication cost, latency, accuracy) are unreachable via

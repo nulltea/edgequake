@@ -87,7 +87,7 @@ use edgequake_agents::code_analysis::JinaEmbedder;
 use edgequake_llm::traits::{EmbeddingProvider, LLMProvider};
 use edgequake_llm::Reranker;
 use edgequake_storage::traits::{
-    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, VectorStorage,
+    AlgorithmVectorStorage, CodeVectorStorage, GraphStorage, ReferenceStorage, VectorStorage,
 };
 
 /// Configuration for the SOTA query engine.
@@ -329,6 +329,9 @@ pub struct SOTAQueryEngine {
     /// Approved-algorithm vector store used by the sibling enrichment pass.
     /// `None` disables the post-retrieval algorithm-enrichment step.
     algorithm_vector_storage: Option<Arc<dyn AlgorithmVectorStorage>>,
+    /// Parsed-reference store used by the citation-marker enrichment pass.
+    /// `None` disables the post-retrieval reference-enrichment step.
+    reference_storage: Option<Arc<dyn ReferenceStorage>>,
     /// Default reranker (BM25 in production). `None` skips the rerank step.
     /// Wired via [`Self::with_reranker`].
     reranker: Option<Arc<dyn Reranker>>,
@@ -375,6 +378,7 @@ impl SOTAQueryEngine {
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
+            reference_storage: None,
             reranker: None,
             semantic_config: None,
             semantic_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
@@ -405,6 +409,7 @@ impl SOTAQueryEngine {
             code_vector_storage: None,
             code_embedder: None,
             algorithm_vector_storage: None,
+            reference_storage: None,
             reranker: None,
             semantic_config: None,
             semantic_cache: tokio::sync::RwLock::new(std::collections::HashMap::new()),
@@ -456,6 +461,18 @@ impl SOTAQueryEngine {
     /// Accessor for the algorithm vector store (None = feature off).
     pub fn algorithm_vector_storage(&self) -> Option<&Arc<dyn AlgorithmVectorStorage>> {
         self.algorithm_vector_storage.as_ref()
+    }
+
+    /// Wire in the parsed-reference store used by the post-retrieval
+    /// citation-marker enrichment step.
+    pub fn with_references(mut self, storage: Arc<dyn ReferenceStorage>) -> Self {
+        self.reference_storage = Some(storage);
+        self
+    }
+
+    /// Accessor for the reference store (None = feature off).
+    pub fn reference_storage(&self) -> Option<&Arc<dyn ReferenceStorage>> {
+        self.reference_storage.as_ref()
     }
 
     /// Wire in the BM25 reranker that rescores retrieved chunks against

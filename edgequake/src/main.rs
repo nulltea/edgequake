@@ -733,6 +733,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("📄 PDF storage attached to task processor");
     }
 
+    // Attach reference storage so the inline citation-parsing step persists
+    // parsed references during ingestion.
+    if let Some(ref pool) = state.pg_pool {
+        let ref_store: Arc<dyn edgequake_storage::traits::ReferenceStorage> =
+            Arc::new(edgequake_storage::PgReferenceStorage::new(pool.clone()));
+        processor = processor.with_reference_storage(ref_store);
+        info!("📚 References storage attached to task processor");
+    }
+
     // FIX-DUPLICATE-BUG: Attach task storage so the processor can persist
     // task_data mid-processing (needed for restart-safe existing_document_id).
     processor = processor.with_task_storage(Arc::clone(&state.task_storage));

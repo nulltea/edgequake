@@ -344,6 +344,15 @@ impl AppState {
             sota_builder = sota_builder.with_approved_algorithms(algo_store);
         }
 
+        // Citation-marker enrichment: deterministic reference lookup, cheap to
+        // wire unconditionally under the postgres feature.
+        {
+            let ref_store: Arc<dyn edgequake_storage::traits::ReferenceStorage> =
+                Arc::new(edgequake_storage::PgReferenceStorage::new(pool.clone()));
+            tracing::info!("✓ Citation-marker enrichment: pg storage wired");
+            sota_builder = sota_builder.with_references(ref_store);
+        }
+
         let sota_engine = Arc::new(sota_builder);
 
         // Create workspace vector registry for per-workspace dimensions
