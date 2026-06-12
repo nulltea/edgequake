@@ -64,6 +64,13 @@ export interface SourceReference {
   end_line?: number;
   /** Chunk index in the document. */
   chunk_index?: number;
+  /** Chunk kind discriminator (e.g. "text", "table", "figure"). Only set for
+   *  source_type === "chunk". */
+  kind?: string;
+  /** Extractor-side figure id (e.g. "fig_3_5") for figure chunks. Combine with
+   *  `document_id` to fetch the image via
+   *  `GET /api/v1/documents/{document_id}/figures/{figure_id}`. */
+  figure_id?: string;
 }
 
 /** Query statistics. Matches Rust QueryStats. */

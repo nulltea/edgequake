@@ -214,6 +214,22 @@ export class DocumentsResource extends Resource {
     await this._del(`/api/v1/documents/${documentId}`);
   }
 
+  /**
+   * Fetch an extracted figure as a Blob (always WEBP).
+   *
+   * Figures are cropped from the PDF during VLM-OCR and stored keyed by
+   * `(documentId, figureId)` (e.g. `fig_3_5`). The endpoint serves WEBP for
+   * every figure — captured-as-WEBP figures stream unchanged, legacy PNG
+   * figures are transcoded server-side — so the bytes are compact enough to
+   * inline as base64 into an agent/LLM read path.
+   */
+  async getFigureMedia(documentId: string, figureId: string): Promise<Blob> {
+    return this.transport.requestBlob({
+      method: "GET",
+      path: `/api/v1/documents/${documentId}/figures/${figureId}`,
+    });
+  }
+
   /** Delete all documents in the workspace. */
   async deleteAll(): Promise<void> {
     await this._del("/api/v1/documents");
