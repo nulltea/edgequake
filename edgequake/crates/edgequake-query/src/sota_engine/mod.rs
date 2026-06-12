@@ -519,21 +519,34 @@ impl SOTAQueryEngine {
             return Some(Arc::clone(r));
         }
 
-        // Cloud rerankers (Jina, Cohere, Aliyun) already return [0,1]
-        // relevance scores. Anything else (llama.cpp / llama-swap fronts,
-        // self-hosted endpoints) is a cross-encoder emitting raw classifier
-        // logits — apply sigmoid so the engine's `min_rerank_score` floor
-        // (tuned for [0,1]) stays meaningful regardless of which reranker
-        // the workspace selects.
+        // Some rerankers already return [0,1] relevance scores; others
+        // (classic cross-encoders behind llama.cpp / llama-swap) emit raw
+        // classifier logits. We apply sigmoid ONLY to the latter, so the
+        // engine's `min_rerank_score` floor (tuned for [0,1]) stays meaningful.
+        // Applying sigmoid to already-normalized scores is harmful: it
+        // compresses [0,1]→[0.5,0.73], flattens ranking margins, and makes the
+        // floor inert (everything lands ≥0.5).
         //
-        // Detection is on `base_url`, not model name: e.g. `jina-reranker-v3`
-        // exists both as a cloud API (api.jina.ai → normalized) and as a
-        // local llama.cpp build (llama-swap → raw logits). Same model name,
-        // different score scale.
+        // Pre-normalized when ANY of:
+        //   - cloud API host (Jina/Cohere/Aliyun normalize server-side);
+        //   - the model is a known normalized reranker (Qwen3-Reranker emits
+        //     [0,1] even when self-hosted via llama-swap);
+        //   - `RERANKER_SCORES_NORMALIZED` env override (escape hatch for any
+        //     other self-hosted endpoint that returns [0,1]).
+        // base_url alone is insufficient because the same llama-swap host
+        // fronts both logit models (bge) and normalized models (qwen3).
         let host = cfg.base_url.to_ascii_lowercase();
         let cloud_normalized = host.contains("api.jina.ai")
             || host.contains("api.cohere.com")
             || host.contains("dashscope.aliyuncs.com");
+        let model_lc = model.to_ascii_lowercase();
+        let model_normalized =
+            model_lc.contains("qwen3-reranker") || model_lc.contains("qwen3_reranker");
+        let env_normalized = std::env::var("RERANKER_SCORES_NORMALIZED")
+            .ok()
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1");
+        let normalized =
+            env_normalized.unwrap_or(cloud_normalized || model_normalized);
         let rerank_config = edgequake_llm::reranker::RerankConfig {
             model: model.clone(),
             base_url: cfg.base_url.clone(),
@@ -542,7 +555,7 @@ impl SOTAQueryEngine {
             timeout: cfg.timeout,
             enable_chunking: false,
             max_tokens_per_doc: 480,
-            sigmoid_normalize: !cloud_normalized,
+            sigmoid_normalize: !normalized,
         };
         let new: Arc<dyn Reranker> =
             Arc::new(edgequake_llm::reranker::HttpReranker::new(rerank_config));

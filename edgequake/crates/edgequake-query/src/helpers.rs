@@ -73,6 +73,15 @@ pub fn extract_document_id(chunk_id: &str) -> Option<String> {
             return Some(chunk_id[..suffix_idx].to_string());
         }
     }
+    // Table chunks: `{doc_id}-table-{table_id}` (backfill_table_embeddings
+    // emits this form for kind=Table vector chunks). Without this branch the
+    // document_id can't be recovered, so table sources surface with empty
+    // attribution (`[]:`) in query results.
+    if let Some(suffix_idx) = chunk_id.rfind("-table-") {
+        if suffix_idx > 0 {
+            return Some(chunk_id[..suffix_idx].to_string());
+        }
+    }
     None
 }
 
@@ -204,6 +213,14 @@ pub fn build_chunk_from_result(result: &VectorSearchResult) -> RetrievedChunk {
     chunk.caption = result
         .metadata
         .get("caption")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    // Alternative rerank text (table chunks store a caption + axis-labels
+    // summary here so the reranker scores that instead of the dense GFM
+    // `content`). Absent for ordinary chunks → reranker falls back to content.
+    chunk.rerank_text = result
+        .metadata
+        .get("rerank_text")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -384,6 +401,22 @@ mod tests {
 
         // Malformed (chunk at start)
         assert_eq!(extract_document_id("-chunk-0"), None);
+
+        // Figure chunk: `{doc_id}-figure-{figure_id}`
+        assert_eq!(
+            extract_document_id("f0291a69-8b63-46d5-b44b-24095b3a8283-figure-fig_12_0"),
+            Some("f0291a69-8b63-46d5-b44b-24095b3a8283".to_string())
+        );
+
+        // Table chunk: `{doc_id}-table-{table_id}` (regression — previously
+        // returned None, surfacing tables with empty `[]:` attribution).
+        assert_eq!(
+            extract_document_id("f0291a69-8b63-46d5-b44b-24095b3a8283-table-tbl_2_0"),
+            Some("f0291a69-8b63-46d5-b44b-24095b3a8283".to_string())
+        );
+
+        // Malformed (table at start)
+        assert_eq!(extract_document_id("-table-tbl_2_0"), None);
     }
 
     #[test]

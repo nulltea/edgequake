@@ -319,6 +319,14 @@ pub struct RetrievedChunk {
     /// or as a hint to chat models for what the figure depicts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
+
+    /// Optional alternative text the reranker scores INSTEAD of `content`.
+    /// Set for `kind="table"` chunks to a caption + axis-labels summary so a
+    /// caption-matching reranker (qwen3) rates the table by what it's about,
+    /// not its dense GFM grid. `None` → reranker scores `content`. Never
+    /// returned to consumers — `content` stays the displayed payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_text: Option<String>,
 }
 
 impl RetrievedChunk {
@@ -338,6 +346,7 @@ impl RetrievedChunk {
             kind: None,
             figure_id: None,
             caption: None,
+            rerank_text: None,
         }
     }
 

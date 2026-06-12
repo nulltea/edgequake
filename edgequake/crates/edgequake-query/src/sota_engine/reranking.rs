@@ -57,7 +57,15 @@ impl SOTAQueryEngine {
             },
         };
 
-        let documents: Vec<String> = chunks.iter().map(|c| c.content.clone()).collect();
+        // Score the cross-encoder on `rerank_text` when a chunk supplies one
+        // (table chunks provide a caption + axis-labels summary; for the
+        // workspace's qwen3-reranker this matches caption-style queries far
+        // better than the dense GFM grid, lifting tables to their rightful
+        // rank). Falls back to `content` for ordinary chunks.
+        let documents: Vec<String> = chunks
+            .iter()
+            .map(|c| c.rerank_text.clone().unwrap_or_else(|| c.content.clone()))
+            .collect();
 
         let results = reranker.rerank(query, &documents, Some(rerank_top_k)).await?;
 
