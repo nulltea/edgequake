@@ -745,11 +745,11 @@ impl DocumentTaskProcessor {
                     .map(|g| g.clone())
                     .unwrap_or_else(|e| e.into_inner().clone());
                 if !figs.is_empty() {
-                    let total_bytes: usize = figs.iter().map(|f| f.png_bytes.len()).sum();
+                    let total_bytes: usize = figs.iter().map(|f| f.image_bytes.len()).sum();
                     info!(
                         pdf_id = %data.pdf_id,
                         figure_count = figs.len(),
-                        total_png_bytes = total_bytes,
+                        total_image_bytes = total_bytes,
                         "VLM-OCR: captured figures (chunker integration pending)"
                     );
                 }
@@ -918,20 +918,22 @@ impl DocumentTaskProcessor {
             &markdown,
         )
         .await;
-        // Typeset tables into the chunker input. Tables are stored as separate
-        // `kind='table'` chunks but those are NOT vector-indexed, so their cell
-        // values (communication cost, latency, accuracy) are unreachable via
-        // `query`. Inlining the table as GFM at its `![tbl_…](edgequake-table)`
-        // placeholder puts the numbers into the surrounding text chunk, which
-        // IS embedded → query-retrievable. The stored `markdown_content` keeps
-        // the placeholder (the frontend resolves it client-side), so this only
-        // affects what the chunker/embedder sees. Tables may then appear both
-        // here and in the separate table chunk — accepted, since the table
-        // chunk isn't vector-retrieved anyway.
+        // Table POINTER into the chunker input (not inline GFM). Each table is
+        // embedded as its own dedicated `kind='table'` vector chunk (see
+        // `backfill_table_embeddings`, caption-led embed + full GFM as content),
+        // so expanding the full GFM into the neighbouring prose chunk here would
+        // (a) bloat that chunk's embedding with symbol-heavy grid noise and
+        // (b) double-count the table in the index. Instead we leave a lightweight
+        // `[[table:<id>]]` pointer in the prose chunk; at query-assembly the
+        // referenced table is hydrated from its dedicated chunk and deduped by id
+        // (so a referenced table still reaches context, exactly once). The stored
+        // `markdown_content` keeps the original `![tbl_…](edgequake-table)`
+        // placeholder for the frontend, so this only affects what the
+        // chunker/embedder sees.
         let markdown_for_chunking = if extracted_tables.is_empty() {
             stripped
         } else {
-            edgequake_pdf::inline_table_placeholders(&stripped, &extracted_tables)
+            edgequake_pdf::mark_table_placeholders(&stripped, &extracted_tables)
         };
         let text_data = edgequake_tasks::TextInsertData {
             text: markdown_for_chunking,
@@ -1789,7 +1791,7 @@ impl DocumentTaskProcessor {
                 .embed(
                     EmbeddingInput::Figure {
                         caption: &fig.caption,
-                        bytes: &fig.png_bytes,
+                        bytes: &fig.image_bytes,
                         mime: &fig.mime,
                     },
                     EmbeddingRole::Document,
@@ -1889,11 +1891,22 @@ impl DocumentTaskProcessor {
 
         let mut stored = 0usize;
         for table in tables {
-            let Some(rendered) = edgequake_pdf::render_table_markdown(table) else {
+            // Decouple the three texts so each stage gets the right signal:
+            //   embed_text  — caption + column headers (the vector; the raw grid
+            //                 dilutes cosine similarity for caption-style queries)
+            //   rerank_text — caption + both axes (headers + first-column labels);
+            //                 the workspace reranker (qwen3) scores this instead
+            //                 of `content`, ranking the table by what it's about
+            //                 rather than its dense grid (see reranking.rs)
+            //   content     — the full GFM, returned into context + displayed
+            let Some(embed_text) = edgequake_pdf::render_table_embed_text(table) else {
                 continue;
             };
+            let content =
+                edgequake_pdf::render_table_markdown(table).unwrap_or_else(|| embed_text.clone());
+            let rerank_text = edgequake_pdf::render_table_rerank_text(table);
             let embedding = match client
-                .embed(EmbeddingInput::Text(&rendered), EmbeddingRole::Document)
+                .embed(EmbeddingInput::Text(&embed_text), EmbeddingRole::Document)
                 .await
             {
                 Ok(v) => v,
@@ -1904,12 +1917,11 @@ impl DocumentTaskProcessor {
             };
 
             let chunk_id = format!("{document_id}-table-{}", table.id);
-            // `content` holds the rendered table so BM25/rerank score it and
-            // build_chunk_from_result returns the cell values into context.
             let metadata = json!({
                 "type": "chunk",
                 "kind": "table",
-                "content": rendered,
+                "content": content,
+                "rerank_text": rerank_text,
                 "document_id": document_id,
                 "table_id": table.id,
                 "page": table.page,
@@ -1972,13 +1984,19 @@ impl DocumentTaskProcessor {
 
         let mut nodes_batch: Vec<(String, std::collections::HashMap<String, serde_json::Value>)> =
             Vec::new();
-        // (entity_name, table_chunk_id) for the entity-vector upsert below.
-        let mut to_embed: Vec<(String, String, String)> = Vec::new();
+        // (entity_name, caption-led embed_text, GFM description, table_chunk_id)
+        // for the entity-vector upsert below.
+        let mut to_embed: Vec<(String, String, String, String)> = Vec::new();
 
         for table in tables {
             let Some(rendered) = edgequake_pdf::render_table_markdown(table) else {
                 continue;
             };
+            // Embed the entity vector on the caption-led text (consistent with the
+            // dedicated table chunk — the raw grid dilutes the vector); keep the
+            // full GFM as the entity `description` returned into context.
+            let embed_text =
+                edgequake_pdf::render_table_embed_text(table).unwrap_or_else(|| rendered.clone());
             // Name the node by its caption (paper-specific, descriptive); fall
             // back to a page/order id when the table has no caption. Cap the
             // length so the graph node name stays sane.
@@ -2002,7 +2020,7 @@ impl DocumentTaskProcessor {
             props.insert("tenant_id".to_string(), json!(tenant_id));
             props.insert("workspace_id".to_string(), json!(workspace_id));
             nodes_batch.push((name.clone(), props));
-            to_embed.push((name, rendered, table_chunk_id));
+            to_embed.push((name, embed_text, rendered, table_chunk_id));
         }
 
         if nodes_batch.is_empty() {
@@ -2017,9 +2035,9 @@ impl DocumentTaskProcessor {
         // Embed each table entity so local-mode ANN over entity vectors can
         // match it by cell content. Best-effort per entity.
         let mut embedded = 0usize;
-        for (name, description, _chunk_id) in &to_embed {
+        for (name, embed_text, description, _chunk_id) in &to_embed {
             let embedding = match client
-                .embed(EmbeddingInput::Text(description), EmbeddingRole::Document)
+                .embed(EmbeddingInput::Text(embed_text), EmbeddingRole::Document)
                 .await
             {
                 Ok(v) => v,
@@ -2184,7 +2202,7 @@ impl DocumentTaskProcessor {
         for fig in figures {
             let chunk_id = format!("{document_id}-figure-{}", fig.id);
             let mut result = match client
-                .extract(&fig.caption, &fig.png_bytes, &fig.mime, &chunk_id)
+                .extract(&fig.caption, &fig.image_bytes, &fig.mime, &chunk_id)
                 .await
             {
                 Ok(r) => r,
@@ -2668,7 +2686,7 @@ async fn backfill_figure_media(
         .bind(&fig.caption)
         .bind(chunk_index)
         .bind(&fig.id)
-        .bind(&fig.png_bytes)
+        .bind(&fig.image_bytes)
         .bind(&fig.mime)
         .bind(&metadata)
         .execute(&pool)

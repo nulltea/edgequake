@@ -152,6 +152,240 @@ pub(crate) async fn resolve_chunk_file_paths(
     }
 }
 
+/// Resolve `[[table:<id>]]` pointers left in retrieved prose chunks (written by
+/// `edgequake_pdf::mark_table_placeholders` on the chunker input) into the
+/// table's GFM, **deduplicated by `table_id`**.
+///
+/// A table is rendered exactly once per response:
+///   - if it's already returned as its own retrieved `kind="table"` chunk, the
+///     prose pointer is stripped (the grid shows in that chunk);
+///   - otherwise the first prose chunk referencing it gets the GFM hydrated
+///     inline (fetched from the `chunks` table) so a referenced table still
+///     reaches context; later references are stripped.
+///
+/// Best-effort: on any DB error the affected pointer is left/stripped without
+/// failing the query. No-op when there's no Postgres pool.
+#[cfg(feature = "postgres")]
+pub(crate) async fn hydrate_table_references(
+    pool: Option<&sqlx::PgPool>,
+    sources: &mut [SourceRef],
+) {
+    use std::collections::{HashMap, HashSet};
+    let Some(pool) = pool else { return };
+
+    // table_ids already present as their own retrieved chunk (`{doc}-table-{id}`).
+    let mut seen: HashSet<String> = HashSet::new();
+    for s in sources.iter() {
+        if s.kind.as_deref() == Some("table") {
+            if let Some((_, tid)) = s.id.rsplit_once("-table-") {
+                seen.insert(tid.to_string());
+            }
+        }
+    }
+
+    // Collect, per document, the referenced table ids not already present.
+    let mut needed: HashMap<String, HashSet<String>> = HashMap::new();
+    for s in sources.iter() {
+        if s.kind.as_deref() == Some("table") {
+            continue;
+        }
+        let (Some(doc), Some(snip)) = (s.document_id.as_deref(), s.snippet.as_deref()) else {
+            continue;
+        };
+        for tid in edgequake_pdf::table_refs_in(snip) {
+            if !seen.contains(&tid) {
+                needed.entry(doc.to_string()).or_default().insert(tid);
+            }
+        }
+    }
+
+    // Fetch GFM for the needed (document, table) pairs.
+    let mut gfm: HashMap<(String, String), String> = HashMap::new();
+    for (doc, ids) in &needed {
+        let Ok(doc_uuid) = uuid::Uuid::parse_str(doc) else {
+            continue;
+        };
+        let id_list: Vec<String> = ids.iter().cloned().collect();
+        let rows: Vec<(Option<String>, Option<String>, Option<serde_json::Value>)> =
+            match sqlx::query_as(
+                r#"SELECT table_id, content, table_rows
+                     FROM chunks
+                    WHERE document_id = $1 AND kind = 'table' AND table_id = ANY($2)"#,
+            )
+            .bind(doc_uuid)
+            .bind(&id_list)
+            .fetch_all(pool)
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(document_id = %doc, error = %e, "hydrate_table_references: fetch failed");
+                    continue;
+                }
+            };
+        for (tid, caption, table_rows) in rows {
+            let Some(tid) = tid else { continue };
+            if let Some(rendered) = crate::handlers::pdf_upload::content::render_table_markdown(
+                caption.as_deref(),
+                table_rows.as_ref(),
+            ) {
+                gfm.insert((doc.clone(), tid), rendered);
+            }
+        }
+    }
+
+    // Replace markers in prose snippets in rank order, deduping by table_id.
+    for s in sources.iter_mut() {
+        if s.kind.as_deref() == Some("table") {
+            continue;
+        }
+        let Some(doc) = s.document_id.clone() else { continue };
+        let Some(snip) = s.snippet.as_mut() else { continue };
+        for tid in edgequake_pdf::table_refs_in(snip) {
+            let marker = format!("[[table:{tid}]]");
+            if !seen.contains(&tid) {
+                if let Some(rendered) = gfm.get(&(doc.clone(), tid.clone())) {
+                    *snip = snip.replace(&marker, &format!("\n\n{rendered}\n"));
+                    seen.insert(tid);
+                    continue;
+                }
+            }
+            // Already present elsewhere, or not hydratable: drop the raw pointer
+            // so `[[table:…]]` never leaks into the returned context.
+            *snip = snip.replace(&marker, "");
+        }
+    }
+}
+
+/// Matches a `<div…>…</div>` caption block; group 1 is the inner text. Used to
+/// locate figure-caption divs in retrieved prose chunks.
+#[cfg(feature = "postgres")]
+static CAPTION_DIV_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?s)<div[^>]*>(.*?)</div>").unwrap());
+
+/// Normalize a caption for matching: collapse all whitespace runs to single
+/// spaces, trim, lowercase. Both the div inner text and the stored figure
+/// caption are normalized the same way so they compare equal despite OCR/markup
+/// whitespace differences.
+#[cfg(feature = "postgres")]
+fn normalize_caption(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Inline figure-image markdown with a RELATIVE media URL. Consumers transform
+/// it: the MCP tool fetches it as a base64 block, the OpenWebUI tool prepends
+/// its public base. Relative (not absolute) because the backend doesn't know
+/// the browser-facing base URL.
+#[cfg(feature = "postgres")]
+fn figure_image_md(caption: &str, document_id: &str, figure_id: &str) -> String {
+    format!(
+        "![{}](/api/v1/documents/{}/figures/{})",
+        caption.trim(),
+        document_id,
+        figure_id
+    )
+}
+
+/// Hydrate figure captions in retrieved chunks into inline image markdown so
+/// every figure occurrence renders where it appears — not just figures whose
+/// own `kind="figure"` chunk was retrieved.
+///
+/// Each occurrence is rewritten to
+/// `![<caption>](/api/v1/documents/<doc>/figures/<figure_id>)`:
+///   - a `kind="figure"` chunk's caption snippet (figure_id known directly);
+///   - any `<div…>…</div>` in a text chunk whose inner text exact-normalized-
+///     matches one of that document's figure captions (`chunks.content` where
+///     `kind='figure'`).
+///
+/// **No dedup here** — a figure referenced N times yields N markdown tags;
+/// consumers dedup as they see fit (the MCP tool by first occurrence, since
+/// base64 is costly; OpenWebUI not at all, since URLs are cheap). Unmatched divs
+/// are left untouched. Query-time only: embeddings and stored markdown are not
+/// modified. No-op without a Postgres pool; best-effort on DB errors.
+#[cfg(feature = "postgres")]
+pub(crate) async fn hydrate_figure_captions(
+    pool: Option<&sqlx::PgPool>,
+    sources: &mut [SourceRef],
+) {
+    use std::collections::{HashMap, HashSet};
+    let Some(pool) = pool else { return };
+
+    // Documents present among the chunk sources.
+    let docs: HashSet<String> = sources
+        .iter()
+        .filter(|s| s.source_type == "chunk")
+        .filter_map(|s| s.document_id.clone())
+        .collect();
+    if docs.is_empty() {
+        return;
+    }
+
+    // Per-document normalized-caption → figure_id map (for prose-div matching).
+    let mut by_doc: HashMap<String, HashMap<String, String>> = HashMap::new();
+    for doc in &docs {
+        let Ok(doc_uuid) = uuid::Uuid::parse_str(doc) else {
+            continue;
+        };
+        let rows: Vec<(Option<String>, Option<String>)> = match sqlx::query_as(
+            r#"SELECT figure_id, content
+                 FROM chunks
+                WHERE document_id = $1 AND kind = 'figure' AND figure_id IS NOT NULL"#,
+        )
+        .bind(doc_uuid)
+        .fetch_all(pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(document_id = %doc, error = %e, "hydrate_figure_captions: fetch failed");
+                continue;
+            }
+        };
+        let mut map = HashMap::new();
+        for (fid, caption) in rows {
+            if let (Some(fid), Some(caption)) = (fid, caption) {
+                let key = normalize_caption(&caption);
+                if !key.is_empty() {
+                    map.insert(key, fid);
+                }
+            }
+        }
+        if !map.is_empty() {
+            by_doc.insert(doc.clone(), map);
+        }
+    }
+
+    for s in sources.iter_mut() {
+        if s.source_type != "chunk" {
+            continue;
+        }
+        let Some(doc) = s.document_id.clone() else { continue };
+        let Some(snip) = s.snippet.as_mut() else { continue };
+
+        // Figure chunk: its snippet IS the caption; replace it wholesale (the
+        // figure_id is known, no caption match needed).
+        if s.kind.as_deref() == Some("figure") {
+            if let Some(fid) = s.figure_id.clone() {
+                let caption = snip.trim().to_string();
+                *snip = figure_image_md(&caption, &doc, &fid);
+            }
+            continue;
+        }
+
+        // Text chunk: replace each caption div whose inner text matches a figure
+        // caption for this document; leave non-matching divs as-is.
+        let Some(map) = by_doc.get(&doc) else { continue };
+        let replaced = CAPTION_DIV_RE.replace_all(snip, |caps: &regex::Captures| {
+            let inner = &caps[1];
+            match map.get(&normalize_caption(inner)) {
+                Some(fid) => figure_image_md(inner, &doc, fid),
+                None => caps[0].to_string(),
+            }
+        });
+        *snip = replaced.into_owned();
+    }
+}
+
 // Re-export workspace resolve functions for other modules
 pub use workspace_resolve::{get_workspace_embedding_provider, get_workspace_vector_storage};
 

@@ -28,6 +28,11 @@ edgequake-algorithms = { path = "../edgequake-algorithms" }
 edgequake-agents = { path = "../edgequake-agents" }
 # Direct dependency kept because the API crate implements the progress callback type.
 edgequake-pdf2md = "=0.8.0"
+# On-the-fly figure transcoding for the media endpoint (?format=webp). `image`
+# decodes the stored PNG/WEBP; `webp` re-encodes lossy. Lets legacy PNG-stored
+# figures serve as compact WEBP without reprocessing the document.
+image = "0.25"
+webp = "0.3"
 
 axum.workspace = true
 axum-extra = { version = "0.10", features = ["multipart"] }
@@ -36,6 +41,7 @@ tokio-stream = "0.1"
 futures-util = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+regex = "1"
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }

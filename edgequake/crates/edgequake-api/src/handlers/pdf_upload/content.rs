@@ -269,7 +269,7 @@ async fn inline_document_tables(
 /// treated as the header; short rows (section labels like `["GPT2-Small"]`)
 /// are padded to the header width so their text survives.
 #[cfg(feature = "postgres")]
-fn render_table_markdown(
+pub(crate) fn render_table_markdown(
     caption: Option<&str>,
     table_rows: Option<&serde_json::Value>,
 ) -> Option<String> {

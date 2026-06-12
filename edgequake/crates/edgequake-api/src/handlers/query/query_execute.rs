@@ -367,6 +367,19 @@ pub async fn execute_query(
     // Resolve document_id → file_path (document title) for chunk sources
     resolve_chunk_file_paths(state.kv_storage.as_ref(), &mut chunk_sources).await;
 
+    // Hydrate `[[table:…]]` pointers left in prose chunks into the table's GFM,
+    // deduped by table_id so a referenced table reaches context exactly once
+    // (and never as a raw marker). See `hydrate_table_references`.
+    #[cfg(feature = "postgres")]
+    super::hydrate_table_references(state.pg_pool.as_ref(), &mut chunk_sources).await;
+
+    // Hydrate figure captions (figure-chunk snippets + matching prose caption
+    // divs) into inline `![cap](/api/v1/documents/{doc}/figures/{id})` markdown,
+    // so every figure renders where it appears. Consumers transform it (MCP →
+    // base64 with first-occurrence dedup; OpenWebUI → prepend public base).
+    #[cfg(feature = "postgres")]
+    super::hydrate_figure_captions(state.pg_pool.as_ref(), &mut chunk_sources).await;
+
     // SPEC-0002: Exclude injection artifacts from cited sources.
     // Injection chunks enrich LLM context but must NOT appear as source citations.
     chunk_sources.retain(|s| {
