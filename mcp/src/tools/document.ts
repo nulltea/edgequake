@@ -5,8 +5,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFile } from "fs/promises";
 import { basename, extname } from "path";
 import { z } from "zod";
-import { getClient } from "../client.js";
+import { getClient, getConfig } from "../client.js";
 import { formatError } from "../errors.js";
+import { rewriteFigureSentinelsToUrls } from "./figures.js";
 
 export function registerDocumentTools(server: McpServer): void {
   // document_upload
@@ -418,8 +419,18 @@ export function registerDocumentTools(server: McpServer): void {
           });
           const pdfMarkdown = pdfContent.markdown_content;
           if (typeof pdfMarkdown === "string" && pdfMarkdown.trim().length > 0) {
+            // Rewrite each `![<id>](edgequake-figure)` sentinel to a real,
+            // fetchable media URL rather than inlining base64. This keeps the
+            // response valid markdown, carries no per-figure payload, and can't
+            // be truncated by the response token cap the way trailing image
+            // blocks would be on a large document.
+            const text = rewriteFigureSentinelsToUrls(
+              pdfMarkdown,
+              params.document_id,
+              getConfig().baseUrl,
+            );
             return {
-              content: [{ type: "text" as const, text: pdfMarkdown }],
+              content: [{ type: "text" as const, text }],
             };
           }
         }

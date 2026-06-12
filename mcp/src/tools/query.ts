@@ -22,6 +22,7 @@ import { EdgeQuake } from "edgequake-sdk";
 import { z } from "zod";
 import { getClient, getConfig } from "../client.js";
 import { formatError } from "../errors.js";
+import { fetchFigureBlock, MAX_INLINE_FIGURES, type ImageBlock } from "./figures.js";
 
 function renderAlgorithms(algorithms: ApprovedAlgorithm[]): string {
   const lines: string[] = ["**Algorithms:**"];
@@ -118,16 +119,21 @@ export function registerQueryTools(server: McpServer): void {
           context_only: true,
         });
 
-        const chunks: string[] = [];
+        // The backend hydrates every figure occurrence into inline markdown
+        // `![caption](/api/v1/documents/{doc}/figures/{id})` (figure-chunk
+        // snippets + matched prose caption divs). We collect chunk text, then
+        // swap each figure-image markdown for a base64 image block AT its
+        // position — deduped by figure_id (first occurrence becomes the image;
+        // later occurrences keep just the caption text, since base64 is costly).
+        const chunkLines: string[] = [];
         const entities: string[] = [];
         const relationships: string[] = [];
         const sourceDocs = new Set<string>();
-
         for (const s of result.sources) {
           if (s.source_type === "chunk" && s.snippet) {
             const doc = s.file_path || s.document_id || "";
-            chunks.push(`[${doc}]: ${s.snippet}`);
             if (doc) sourceDocs.add(doc);
+            if (chunkLines.length < 12) chunkLines.push(`[${doc}]: ${s.snippet}`);
           } else if (s.source_type === "entity" && s.snippet) {
             entities.push(`- ${s.id}: ${s.snippet}`);
           } else if (s.source_type === "relationship" && s.snippet) {
@@ -137,37 +143,113 @@ export function registerQueryTools(server: McpServer): void {
 
         const approvedAlgorithms = result.approved_algorithms ?? [];
         const referenceCode = result.reference_code ?? [];
+        const body = chunkLines.join("\n\n");
 
-        const parts: string[] = [];
-        if (chunks.length > 0) {
-          parts.push("**Text chunks:**\n" + chunks.slice(0, 10).join("\n\n"));
+        // Figure-image markdown injected by the backend (relative media URL).
+        // Group 1 = caption, 2 = document_id, 3 = figure_id.
+        const FIG_RE =
+          /!\[([^\]]*)\]\(\/api\/v1\/documents\/([^/]+)\/figures\/([^)]+)\)/g;
+
+        // First pass: unique figures in order; fetch base64 for up to the cap.
+        const uniqueFigs: { doc: string; fid: string; key: string }[] = [];
+        const seenKeys = new Set<string>();
+        for (const m of body.matchAll(FIG_RE)) {
+          const key = `${m[2]}/${m[3]}`;
+          if (!seenKeys.has(key)) {
+            seenKeys.add(key);
+            uniqueFigs.push({ doc: m[2], fid: m[3], key });
+          }
         }
+        const wanted = uniqueFigs.slice(0, MAX_INLINE_FIGURES);
+        const figuresTruncated = uniqueFigs.length - wanted.length;
+        const imageByKey = new Map<string, ImageBlock>();
+        await Promise.all(
+          wanted.map(async (f) => {
+            const block = await fetchFigureBlock(queryClient, f.doc, f.fid);
+            if (block) imageByKey.set(f.key, block);
+          }),
+        );
+
+        // Second pass: split the text at each figure-image markdown, emitting a
+        // base64 block for the FIRST occurrence of each figure_id and the bare
+        // caption for the rest (dedup; no broken relative URLs leak).
+        const content: Array<{ type: "text"; text: string } | ImageBlock> = [];
+        let buf = "";
+        let headerEmitted = false;
+        const flush = () => {
+          if (buf.trim() === "") {
+            buf = "";
+            return;
+          }
+          content.push({
+            type: "text" as const,
+            text: headerEmitted ? buf : "**Text chunks:**\n" + buf,
+          });
+          headerEmitted = true;
+          buf = "";
+        };
+        const renderedFigs = new Set<string>();
+        let lastIndex = 0;
+        FIG_RE.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = FIG_RE.exec(body)) !== null) {
+          const [whole, caption, doc, fid] = match;
+          buf += body.slice(lastIndex, match.index);
+          lastIndex = match.index + whole.length;
+          const key = `${doc}/${fid}`;
+          const block = imageByKey.get(key);
+          // Keep the caption as text either way (image blocks carry no alt text,
+          // so the caption must survive next to the image).
+          buf += caption;
+          if (block && !renderedFigs.has(key)) {
+            renderedFigs.add(key);
+            flush();
+            content.push(block);
+          }
+        }
+        buf += body.slice(lastIndex);
+        flush();
+
+        // Trailing context blocks (entities, relationships, enrichment, sources).
+        const trailing: string[] = [];
         if (entities.length > 0) {
-          parts.push("**Entities:**\n" + entities.slice(0, 15).join("\n"));
+          trailing.push("**Entities:**\n" + entities.slice(0, 15).join("\n"));
         }
         if (relationships.length > 0) {
-          parts.push(
+          trailing.push(
             "**Relationships:**\n" + relationships.slice(0, 10).join("\n"),
           );
         }
         if (approvedAlgorithms.length > 0) {
-          parts.push(renderAlgorithms(approvedAlgorithms));
+          trailing.push(renderAlgorithms(approvedAlgorithms));
         }
         if (referenceCode.length > 0) {
-          parts.push(renderReferenceCode(referenceCode));
+          trailing.push(renderReferenceCode(referenceCode));
         }
         if (sourceDocs.size > 0) {
-          parts.push("**Source documents:** " + [...sourceDocs].join(", "));
+          trailing.push("**Source documents:** " + [...sourceDocs].join(", "));
+        }
+        if (figuresTruncated > 0) {
+          trailing.push(
+            `_(${figuresTruncated} additional figure(s) omitted — exceeds the ${MAX_INLINE_FIGURES}-image inline cap.)_`,
+          );
+        }
+        if (trailing.length > 0) {
+          content.push({ type: "text" as const, text: trailing.join("\n\n") });
         }
 
-        const text =
-          parts.length > 0
-            ? parts.join("\n\n")
-            : "No relevant context found in the knowledge base.";
+        if (content.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "No relevant context found in the knowledge base.",
+              },
+            ],
+          };
+        }
 
-        return {
-          content: [{ type: "text" as const, text }],
-        };
+        return { content };
       } catch (error) {
         return formatError(error);
       }

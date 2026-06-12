@@ -7,11 +7,18 @@ description: Query the EdgeQuake knowledge graph, upload documents, and explore 
 
 import json
 import os
+import re
 from typing import Optional
 from urllib.parse import quote
 
 import requests
 from pydantic import BaseModel, Field
+
+# Figure-image markdown the backend injects with a RELATIVE media URL:
+# ![caption](/api/v1/documents/{document_id}/figures/{figure_id}).
+# Groups: 1 = document_id, 2 = figure_id. We rewrite the URL to absolute
+# (prepend the public base) so OpenWebUI's browser can load the image.
+_FIGURE_URL_RE = re.compile(r"\(/api/v1/documents/([^/]+)/figures/([^)]+)\)")
 
 # SPEC-006 P3 — cap on `start_nodes` carried in the WebUI deep-link URL.
 # Mirrors `MAX_SUBGRAPH_START_NODES` in
@@ -160,12 +167,12 @@ class Tools:
         if not sources and not reference_code and not approved_algorithms:
             return "No relevant context found in the knowledge base."
 
-        chunks = []
-        figures = []
+        rendered = []  # text chunks + figure images, interleaved in rank order
         entities = []
         entity_ids: list[str] = []
         relationships = []
         seen_docs = set()
+        any_figure = False
         # WHY public_base_url: image URLs go into the chat response and are
         # loaded by the user's browser. edgequake_base_url is typically
         # host.docker.internal which only resolves inside Docker. Fall back
@@ -178,26 +185,22 @@ class Tools:
         for src in sources:
             stype = src.get("source_type", "")
             if stype == "chunk":
-                # VLM-OCR figure chunk: render as inline markdown image so
-                # OpenWebUI displays the PNG in the chat thread. The
-                # /api/v1/documents/{doc}/figures/{figure_id} endpoint streams
-                # the bytes the figure-extractor captured during PDF ingest.
-                if src.get("kind") == "figure":
-                    doc_id = src.get("document_id", "")
-                    fid = src.get("figure_id", "")
-                    if doc_id and fid:
-                        caption = src.get("caption") or src.get("snippet") or fid
-                        img_url = (
-                            f"{public_base}/api/v1/documents/{doc_id}/figures/{fid}"
-                        )
-                        figures.append(f"![{caption}]({img_url})\n\n*{caption}*")
-                        if src.get("file_path"):
-                            seen_docs.add(src["file_path"])
-                        continue
+                # The backend injects figure images inline as
+                # ![caption](/api/v1/documents/{doc}/figures/{id}) at every
+                # figure occurrence (figure-chunk snippets + matched prose
+                # caption divs). Rewrite those RELATIVE media URLs to absolute so
+                # the browser can load them; OpenWebUI renders the markdown image
+                # inline where it sits. No dedup — URLs are cheap and cached.
                 snippet = src.get("snippet", "")
                 doc = src.get("file_path", "")
                 if snippet:
-                    chunks.append(f"[{doc}]: {snippet}")
+                    snippet, n = _FIGURE_URL_RE.subn(
+                        lambda m: f"({public_base}/api/v1/documents/{m.group(1)}/figures/{m.group(2)})",
+                        snippet,
+                    )
+                    if n:
+                        any_figure = True
+                    rendered.append(f"[{doc}]: {snippet}")
                 if doc:
                     seen_docs.add(doc)
             elif stype == "entity":
@@ -211,15 +214,15 @@ class Tools:
                 relationships.append(f"- {desc}")
 
         parts = []
-        if figures:
+        if any_figure:
             # WHY this banner comes first: many open-weight chat models
             # (Qwen3.6, Gemma, Llama) drop image-markdown when summarising
             # tool output. Front-loading an explicit rule, in imperative
             # form, before any other content steers them to copy the
             # `![alt](url)` snippets into the final answer verbatim.
             parts.append(
-                "**RENDERING RULE — important:** the **Figures** section "
-                "below contains retrieved figure images as markdown "
+                "**RENDERING RULE — important:** the **Text chunks** section "
+                "below contains retrieved figure images inline as markdown "
                 "`![caption](url)`. Copy each such image-markdown line "
                 "verbatim into your answer where you discuss the figure. "
                 "OpenWebUI will inline-render the image to the user. Do "
@@ -246,12 +249,12 @@ class Tools:
                 "graph\". The link is the user's only path from chat to "
                 "the visual subgraph; omitting it breaks the feature."
             )
-        if chunks:
-            parts.append("**Text chunks:**\n" + "\n\n".join(chunks[:10]))
-        if figures:
-            # Cap at 6 — more would clutter the chat thread and bloat tokens
-            # going into the chat model. OpenWebUI renders ![alt](url) inline.
-            parts.append("**Figures:**\n\n" + "\n\n".join(figures[:6]))
+        if rendered:
+            # Text chunks and figure images interleaved in retrieved order, so
+            # each figure sits next to the prose that discusses it. Cap at 12
+            # (slightly above the old 10 text-chunk cap) to leave room for the
+            # interleaved figures without bloating the chat-model context.
+            parts.append("**Text chunks:**\n\n" + "\n\n".join(rendered[:12]))
         if entities:
             parts.append("**Entities:**\n" + "\n".join(entities[:15]))
         if relationships:

@@ -12,12 +12,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const getDoc = vi.fn();
 const getPdfContent = vi.fn();
+const getFigureMedia = vi.fn();
 
 vi.mock("../src/client.js", () => ({
   getClient: async () => ({
     documents: {
       get: getDoc,
       pdf: { getContent: getPdfContent },
+      getFigureMedia,
     },
   }),
   getConfig: () => ({ baseUrl: "http://x", apiKey: undefined }),
@@ -25,9 +27,15 @@ vi.mock("../src/client.js", () => ({
 
 const { createServer } = await import("../src/server.js");
 
+interface ContentItem {
+  type: string;
+  text?: string;
+  data?: string;
+  mimeType?: string;
+}
 interface ToolResult {
   isError?: boolean;
-  content: Array<{ type: string; text: string }>;
+  content: ContentItem[];
 }
 
 describe("document_get_md", () => {
@@ -98,6 +106,50 @@ describe("document_get_md", () => {
     const body = result.content[0].text;
     expect(body).not.toContain("trim");
     expect(body).toContain("Document markdown not available");
+  });
+
+  it("rewrites figure sentinels to fetchable media URLs (no base64 inlining)", async () => {
+    getDoc.mockResolvedValueOnce({
+      id: "doc-fig",
+      pdf_id: "pdf-fig",
+      status: "completed",
+      content: null,
+    });
+    getPdfContent.mockResolvedValueOnce({
+      pdf_id: "pdf-fig",
+      filename: "paper.pdf",
+      file_size_bytes: 2048,
+      content_type: "application/pdf",
+      markdown_content:
+        "Intro.\n\n![fig_1_0](edgequake-figure)\n\nMiddle.\n\n![fig_2_0](edgequake-figure)\n\nEnd.",
+      is_processed: true,
+    });
+
+    const result = (await client.callTool({
+      name: "document_get_md",
+      arguments: { document_id: "doc-fig" },
+    })) as ToolResult;
+
+    expect(result.isError).toBeFalsy();
+    // Single text block — no base64 image blocks, no figure fetches.
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content.some((c) => c.type === "image")).toBe(false);
+    expect(getFigureMedia).not.toHaveBeenCalled();
+
+    const text = result.content[0].text ?? "";
+    // Opaque sentinel replaced by a real markdown image link to the media URL.
+    expect(text).not.toContain("edgequake-figure");
+    expect(text).toContain(
+      "![fig_1_0](http://x/api/v1/documents/doc-fig/figures/fig_1_0)",
+    );
+    expect(text).toContain(
+      "![fig_2_0](http://x/api/v1/documents/doc-fig/figures/fig_2_0)",
+    );
+    // Surrounding prose preserved.
+    expect(text).toContain("Intro.");
+    expect(text).toContain("Middle.");
+    expect(text).toContain("End.");
   });
 
   it("falls back to doc.content when there is no PDF backing", async () => {
