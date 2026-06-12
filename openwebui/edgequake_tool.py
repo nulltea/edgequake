@@ -34,27 +34,25 @@ class Tools:
             description="EdgeQuake API base URL — used by the tool's server-side HTTP client",
         )
         public_base_url: str = Field(
-            default="",
+            default="https://timo-framework-desktop.tail59ea6b.ts.net:8443",
             description=(
-                "Public base URL used in markdown image links the chat model emits "
-                "(e.g. https://edgequake.tail59ea6b.ts.net). The URL must be reachable "
-                "from the END USER'S browser, not the OpenWebUI container — so this is "
-                "typically the Tailscale / public proxy URL, NOT host.docker.internal. "
-                "This points at the **API** (port 8080) — used for /api/v1/documents/... "
-                "figure image URLs. For the WebUI graph deep-links, set webui_base_url "
-                "below. If empty, falls back to edgequake_base_url which usually only "
-                "resolves inside the Docker network."
+                "Public base URL of the EdgeQuake **API/backend**, used for the figure "
+                "image links the chat model emits (/api/v1/documents/.../figures/...). "
+                "Must be reachable from the END USER'S browser, not the OpenWebUI "
+                "container — i.e. the Tailscale / public proxy URL of the backend, NOT "
+                "host.docker.internal. Distinct from frontend_base_url (the web app). "
+                "If empty, falls back to edgequake_base_url, which usually only resolves "
+                "inside the Docker network."
             ),
         )
-        webui_base_url: str = Field(
-            default="",
+        frontend_base_url: str = Field(
+            default="https://edgequake.tail59ea6b.ts.net",
             description=(
-                "Public base URL for the EdgeQuake WebUI (port 3000), used by SPEC-006 "
-                "graph deep-links — *separate* from public_base_url because the WebUI "
-                "and the API are different services on different ports. Example: "
-                "https://edgequake-ui.tail59ea6b.ts.net or http://localhost:3000. "
-                "If empty, falls back to public_base_url (which usually points at the "
-                "API and will 404 on /graph)."
+                "Public base URL of the EdgeQuake **front-end** (the web app), used for "
+                "knowledge-graph deep-links (/graph?...). A different service from the "
+                "API/backend (public_base_url), so it has its own valve. Must be "
+                "reachable from the user's browser. If empty, falls back to "
+                "public_base_url — which points at the API and will 404 on /graph."
             ),
         )
         workspace_id: str = Field(
@@ -284,20 +282,17 @@ class Tools:
             # canvas renders empty (or 404s).
             ws = quote(self.valves.workspace_id, safe="")
             tn = quote(self.valves.tenant_id, safe="")
-            # The graph link must hit the WebUI (port 3000), NOT the API
-            # (port 8080). public_base_url is for API image URLs and will
-            # 404 on /graph. Use webui_base_url when set; otherwise warn
-            # by labelling the link explicitly.
-            webui_base = (
-                self.valves.webui_base_url or self.valves.public_base_url
-                or self.valves.edgequake_base_url
+            # The graph link must hit the EdgeQuake FRONT-END (the web app),
+            # NOT the API/backend (public_base_url), which 404s on /graph.
+            frontend_base = (
+                self.valves.frontend_base_url or self.valves.public_base_url
             ).rstrip("/")
             # depth=0 = seeds only on initial render. Backend fills in
             # inter-seed edges via get_edges_for_node_set, and the user
             # explicitly expands a node via right-click when they want
             # to see its neighbours. Keeps the initial canvas focused.
             link = (
-                f"{webui_base}/graph?start_nodes={encoded}"
+                f"{frontend_base}/graph?start_nodes={encoded}"
                 f"&depth=0&q={q}&workspace_id={ws}&tenant_id={tn}"
             )
             label = f"{len(seeds)} entit{'y' if len(seeds) == 1 else 'ies'}"
