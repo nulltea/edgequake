@@ -13,13 +13,17 @@ use serde::{Deserialize, Serialize};
 use crate::error::PdfConversionError;
 
 pub use edgeparse::EdgeParsePdfConverter;
-pub use table_extract::{inline_table_placeholders, render_table_markdown};
+pub use table_extract::{
+    inline_table_placeholders, mark_table_placeholders, render_table_embed_text,
+    render_table_markdown, render_table_rerank_text, table_refs_in,
+};
 pub use vision::VisionPdfConverter;
 pub use vlm_ocr::{detect_algorithm_blocks, AlgorithmBlock, VlmOcrConverter};
 
-/// A figure extracted from a PDF during VLM-OCR conversion: PNG bytes of the
-/// cropped layout region plus the VLM-recognized caption and the metadata
-/// needed to re-anchor it to the source markdown (page, reading order).
+/// A figure extracted from a PDF during VLM-OCR conversion: encoded image
+/// bytes of the cropped layout region plus the VLM-recognized caption and the
+/// metadata needed to re-anchor it to the source markdown (page, reading
+/// order).
 ///
 /// The pipeline writes a stable `![figure:<id>](caption: …)` placeholder into
 /// the markdown for each extracted figure; the chunker pairs that placeholder
@@ -28,9 +32,9 @@ pub use vlm_ocr::{detect_algorithm_blocks, AlgorithmBlock, VlmOcrConverter};
 pub struct ExtractedFigure {
     /// Stable extractor-side id, `fig_{page}_{order_index}`.
     pub id: String,
-    /// PNG-encoded crop of the figure region.
-    pub png_bytes: Vec<u8>,
-    /// MIME of `png_bytes` — currently always `"image/png"`.
+    /// Encoded crop of the figure region (lossy WEBP — see `figure_extract`).
+    pub image_bytes: Vec<u8>,
+    /// MIME of `image_bytes` — currently always `"image/webp"`.
     pub mime: String,
     /// VLM-generated caption / description for the figure.
     pub caption: String,

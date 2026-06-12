@@ -25,6 +25,10 @@ hayro = "0.5"
 # HTTP client for VlmClientBackend (OpenAI-compatible VLM server calls).
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 image = "0.25"
+# Lossy WEBP encoding for extracted figure crops (vendored libwebp). The
+# `image` crate only encodes lossless WEBP, which is larger than lossy q80 for
+# the chart/line-art figures we crop, so figure_extract uses this directly.
+webp = "0.3"
 rayon = "1.8"
 base64 = "0.22"
 serde_json = "1.0"

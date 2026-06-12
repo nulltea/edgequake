@@ -6,8 +6,9 @@ pub mod repos;
 
 pub use backend::{
     create_pdf_converter, detect_algorithm_blocks, inline_table_placeholders,
-    render_table_markdown, AlgorithmBlock, ExtractedFigure, ExtractedTable, PdfConversionConfig,
-    PdfConverter, PdfParserBackend, VisionConversionConfig,
+    mark_table_placeholders, render_table_embed_text, render_table_markdown,
+    render_table_rerank_text, table_refs_in, AlgorithmBlock, ExtractedFigure, ExtractedTable,
+    PdfConversionConfig, PdfConverter, PdfParserBackend, VisionConversionConfig,
 };
 pub use error::PdfConversionError;
 pub use links::{

@@ -55,6 +55,10 @@ static TD_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?si)<td[^>]*>(.*?)</td>"#).unwrap());
 /// Strips any HTML tag — used to clean cell contents to plain text.
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"<[^>]+>"#).unwrap());
+/// Matches the compact `[[table:<id>]]` inline reference written into the
+/// chunker input by [`mark_table_placeholders`] (id in group 1).
+static TABLE_REF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[table:([A-Za-z0-9_]+)\]\]").unwrap());
 
 /// Walk `elements`, find Table regions, pair each with its matching
 /// `<div…><table…>` block in `markdown`, parse the HTML into headers + rows,
@@ -231,6 +235,96 @@ pub fn render_table_markdown(table: &ExtractedTable) -> Option<String> {
     Some(out)
 }
 
+/// Split a table into `(header cells, body rows)` using the same rule as
+/// [`render_table_markdown`]: the explicit `headers` row when present, else the
+/// first body row promoted to a header. Cells are trimmed. Returns an empty
+/// header + empty body when the table has no rows at all.
+fn table_header_body(table: &ExtractedTable) -> (Vec<String>, &[Vec<String>]) {
+    let trim = |s: &String| s.trim().to_string();
+    if !table.headers.is_empty() {
+        (table.headers.iter().map(trim).collect(), &table.rows[..])
+    } else if let Some((first, rest)) = table.rows.split_first() {
+        (first.iter().map(trim).collect(), rest)
+    } else {
+        (Vec::new(), &[])
+    }
+}
+
+/// Caption-led **embed-text** for a table chunk's vector embedding: the caption
+/// plus the column-header names, WITHOUT the numeric grid.
+///
+/// The dense cell grid embeds poorly — markup and bare numbers dilute the
+/// caption's semantic signal, so a query like "the comparison table" ranks
+/// behind on-topic prose. Embedding the high-signal caption + column names
+/// instead keeps the vector aligned with how tables are actually queried,
+/// while the full GFM ([`render_table_markdown`]) is retained only as the
+/// chunk's displayed/returned content. Returns `None` when there is neither a
+/// caption nor any header cell to embed.
+pub fn render_table_embed_text(table: &ExtractedTable) -> Option<String> {
+    let (header, _) = table_header_body(table);
+    let caption = table.caption.trim();
+    let header: Vec<&str> = header.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    if caption.is_empty() && header.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    if !caption.is_empty() {
+        out.push_str(caption);
+    }
+    if !header.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("Columns: ");
+        out.push_str(&header.join(", "));
+    }
+    Some(out)
+}
+
+/// **Rerank-text** for a table chunk's cross-encoder scoring: the caption plus
+/// BOTH axes — column headers and the first-column row labels — but not the
+/// numeric cells.
+///
+/// The reranker scores this instead of the dense GFM `content`. For the
+/// workspace's caption-matching reranker (qwen3-reranker), a caption + axis
+/// labels string matches caption-style queries ("the comparison table") far
+/// better than the full grid, so the table ranks by what it's about rather
+/// than being diluted by cell values. The full GFM is still returned as
+/// content. Returns `None` when there is nothing usable to rerank on.
+pub fn render_table_rerank_text(table: &ExtractedTable) -> Option<String> {
+    let (header, body) = table_header_body(table);
+    let caption = table.caption.trim();
+    let header: Vec<&str> = header.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+    let row_labels: Vec<&str> = body
+        .iter()
+        .filter_map(|r| r.first())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if caption.is_empty() && header.is_empty() && row_labels.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    if !caption.is_empty() {
+        out.push_str(caption);
+    }
+    if !header.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("Columns: ");
+        out.push_str(&header.join(", "));
+    }
+    if !row_labels.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("Rows: ");
+        out.push_str(&row_labels.join(", "));
+    }
+    Some(out)
+}
+
 /// Replace every `![<table_id>](edgequake-table)` placeholder in `markdown`
 /// with the corresponding table typeset as GFM (see [`render_table_markdown`]).
 ///
@@ -250,6 +344,44 @@ pub fn inline_table_placeholders(markdown: &str, tables: &[ExtractedTable]) -> S
         }
     }
     out
+}
+
+/// Replace every `![<table_id>](edgequake-table)` placeholder in `markdown`
+/// with a compact, parseable inline reference `[[table:<table_id>]]`.
+///
+/// Used on the **chunker input** (not the stored `markdown_content`, which keeps
+/// the original placeholder for the frontend). Unlike [`inline_table_placeholders`]
+/// — which expands the placeholder to the full GFM and thereby (a) bloats the
+/// surrounding prose chunk and (b) double-counts the table that already exists as
+/// its own embedded chunk — this leaves only a lightweight pointer in the prose
+/// chunk. At query-assembly the referenced table is hydrated from its dedicated
+/// chunk and deduped by id, so a table's grid is embedded once and rendered once.
+pub fn mark_table_placeholders(markdown: &str, tables: &[ExtractedTable]) -> String {
+    let mut out = markdown.to_string();
+    for table in tables {
+        let placeholder = format!("![{}](edgequake-table)", table.id);
+        if out.contains(&placeholder) {
+            out = out.replace(&placeholder, &format!("[[table:{}]]", table.id));
+        }
+    }
+    out
+}
+
+/// Extract the table ids referenced by `[[table:<id>]]` markers in `text`
+/// (the chunker-input markers written by [`mark_table_placeholders`]), in order
+/// of appearance, deduplicated. Used at query-assembly to resolve which tables a
+/// retrieved prose chunk points at so they can be hydrated.
+pub fn table_refs_in(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for cap in TABLE_REF_RE.captures_iter(text) {
+        if let Some(m) = cap.get(1) {
+            let id = m.as_str().to_string();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    ids
 }
 
 /// Parse a `<table>…</table>` HTML fragment into headers + rows.
@@ -407,6 +539,73 @@ mod tests {
         assert!(md.contains("| Protected(ours) | 16.8 | 91.7 |"), "md:\n{md}");
         // short section row padded to width
         assert!(md.contains("| GPT2-Small |  |  |"), "md:\n{md}");
+    }
+
+    #[test]
+    fn embed_text_is_caption_plus_headers_only() {
+        let t = tbl(
+            "tbl_1_0",
+            "Table 1: Comparison with existing volume-hiding EMM schemes",
+            vec!["Scheme", "Server Storage", "Query Complexity"],
+            vec![
+                vec!["Naive Padding", "O(m·l)", "O(l)"],
+                vec!["XorMM", "1.23n+β", "l"],
+            ],
+        );
+        let e = render_table_embed_text(&t).unwrap();
+        assert!(
+            e.starts_with("Table 1: Comparison with existing volume-hiding EMM schemes"),
+            "embed:\n{e}"
+        );
+        assert!(e.contains("Columns: Scheme, Server Storage, Query Complexity"), "embed:\n{e}");
+        // embed-text carries no grid cells (the dilution we're avoiding)
+        assert!(!e.contains("1.23n+β"), "embed:\n{e}");
+        assert!(!e.contains("Naive Padding"), "embed:\n{e}");
+    }
+
+    #[test]
+    fn rerank_text_is_caption_plus_both_axes() {
+        let t = tbl(
+            "tbl_1_0",
+            "Table 1: Comparison",
+            vec!["Scheme", "Server Storage"],
+            vec![
+                vec!["Naive Padding", "O(m·l)"],
+                vec!["XorMM", "1.23n+β"],
+                vec!["VXorMM", "2(1.23n+β)"],
+            ],
+        );
+        let r = render_table_rerank_text(&t).unwrap();
+        assert!(r.contains("Columns: Scheme, Server Storage"), "rerank:\n{r}");
+        // both axes: first-column row labels included, value cells excluded
+        assert!(r.contains("Rows: Naive Padding, XorMM, VXorMM"), "rerank:\n{r}");
+        assert!(!r.contains("O(m·l)"), "rerank:\n{r}");
+        assert!(!r.contains("1.23n+β"), "rerank:\n{r}");
+    }
+
+    #[test]
+    fn embed_and_rerank_text_none_when_empty() {
+        let t = tbl("tbl_1_0", "", vec![], vec![]);
+        assert!(render_table_embed_text(&t).is_none());
+        assert!(render_table_rerank_text(&t).is_none());
+    }
+
+    #[test]
+    fn mark_table_placeholders_and_refs() {
+        let t = tbl("tbl_2_0", "Table 1: Comparison", vec!["A"], vec![vec!["x"]]);
+        let marked =
+            mark_table_placeholders("Intro ![tbl_2_0](edgequake-table) outro.", std::slice::from_ref(&t));
+        assert_eq!(marked, "Intro [[table:tbl_2_0]] outro.");
+        // the chunker sentinel is gone, so the marker won't be split into its
+        // own placeholder chunk — it stays inline in the prose chunk.
+        assert!(!marked.contains("edgequake-table"));
+        assert_eq!(table_refs_in(&marked), vec!["tbl_2_0".to_string()]);
+        // refs are returned in order, deduplicated
+        assert_eq!(
+            table_refs_in("[[table:a]] x [[table:b]] y [[table:a]]"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(table_refs_in("no refs here").is_empty());
     }
 
     #[test]

@@ -20,8 +20,11 @@
 //! 2. For each, locates the nearest caption-class element directly below it
 //!    in the same column (mirrors the spatial heuristic used by
 //!    `build_algorithm_blocks`'s `find_caption_below`).
-//! 3. Re-crops the figure region from a clone of the page image, PNG-encodes
-//!    it, and pushes an `ExtractedFigure` payload into the caller's sink.
+//! 3. Re-crops the figure region from a clone of the page image, WEBP-encodes
+//!    it (lossy, q≈80 — paper figures are line-art/charts where WEBP is ~70%
+//!    smaller than PNG at visually-lossless quality, which keeps the inlined
+//!    base64 payload on agent read paths small), and pushes an
+//!    `ExtractedFigure` payload into the caller's sink.
 //! 4. Replaces the on-disk img div with `![fig_{page}_{i}](edgequake-figure)`
 //!    so the chunker can pair markdown sites with PNG payloads. The caption
 //!    div is left intact so the rendered markdown still has human-readable
@@ -29,7 +32,7 @@
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use image::{codecs::png::PngEncoder, ImageEncoder, RgbImage};
+use image::RgbImage;
 use oar_ocr_core::domain::structure::{LayoutElement, LayoutElementType};
 use oar_ocr_core::utils::BBoxCrop;
 use regex::Regex;
@@ -98,7 +101,7 @@ pub fn extract_and_patch(
 
         let figure_id = format!("fig_{page_num}_{i}");
 
-        // Crop + PNG-encode FIRST. The placeholder write and the sink push
+        // Crop + WEBP-encode FIRST. The placeholder write and the sink push
         // must be atomic — either both happen for this figure or neither.
         // The previous ordering emitted the `![fig_X_Y](edgequake-figure)`
         // sentinel before attempting the crop, so a crop / encode failure
@@ -112,7 +115,7 @@ pub fn extract_and_patch(
                 continue;
             }
         };
-        let Some(png_bytes) = encode_png(&crop) else {
+        let Some(image_bytes) = encode_webp(&crop) else {
             continue;
         };
 
@@ -133,8 +136,8 @@ pub fn extract_and_patch(
 
         new_figures.push(ExtractedFigure {
             id: figure_id,
-            png_bytes,
-            mime: "image/png".to_string(),
+            image_bytes,
+            mime: "image/webp".to_string(),
             caption,
             page: page_num,
             order_index: i as u32,
@@ -210,21 +213,23 @@ fn find_caption_below(
         .map(|s| s.trim().to_string())
 }
 
-fn encode_png(image: &RgbImage) -> Option<Vec<u8>> {
-    let mut buf = Vec::with_capacity((image.width() as usize) * (image.height() as usize) * 3);
-    let encoder = PngEncoder::new(&mut buf);
-    match encoder.write_image(
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        image::ExtendedColorType::Rgb8,
-    ) {
-        Ok(()) => Some(buf),
-        Err(e) => {
-            warn!(error = %e, "figure_extract: PNG encode failed");
-            None
-        }
+/// Lossy WEBP quality for figure crops. 80 keeps chart axes / small-font
+/// labels legible to a vision model while cutting ~70% off the PNG size.
+const WEBP_QUALITY: f32 = 80.0;
+
+/// Lossy-WEBP-encode an RGB crop. Returns `None` (and warns) on encode
+/// failure so the caller drops the figure rather than committing a markdown
+/// placeholder with no matching sink entry.
+fn encode_webp(image: &RgbImage) -> Option<Vec<u8>> {
+    // `webp::Encoder::from_rgb` borrows the raw RGB8 buffer directly; the
+    // returned `WebPMemory` owns the encoded bytes which we copy into a Vec.
+    let encoder = webp::Encoder::from_rgb(image.as_raw(), image.width(), image.height());
+    let encoded = encoder.encode(WEBP_QUALITY);
+    if encoded.is_empty() {
+        warn!("figure_extract: WEBP encode produced empty output");
+        return None;
     }
+    Some(encoded.to_vec())
 }
 
 #[cfg(test)]
@@ -303,8 +308,12 @@ mod tests {
         assert_eq!(figs.len(), 1);
         assert_eq!(figs[0].id, "fig_3_1");
         assert_eq!(figs[0].caption, "Figure 1: Overview of the system.");
-        assert_eq!(figs[0].mime, "image/png");
-        assert!(!figs[0].png_bytes.is_empty());
+        assert_eq!(figs[0].mime, "image/webp");
+        assert!(!figs[0].image_bytes.is_empty());
+        // Sanity: the bytes are a real WEBP that decodes back to the crop size.
+        let decoded = image::load_from_memory(&figs[0].image_bytes)
+            .expect("encoded figure should decode as WEBP");
+        assert_eq!((decoded.width(), decoded.height()), (100, 70));
         assert_eq!(figs[0].page, 3);
     }
 
